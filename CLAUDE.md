@@ -56,6 +56,8 @@ don't invent new claims.
 
 | Area | Choice | Note |
 |---|---|---|
+| LLM | Anthropic Claude (Messages API, tool-calling) | Used only inside `apps/api/orchestrator.py` — routing decisions and the final explanation. Reads `ANTHROPIC_API_KEY`; no other file touches it |
+| RAG / retrieval | Chroma (embedded) + sentence-transformers | `agents/reliability/rag.py` — local embeddings, no external embedding API; index on a Docker volume, built from `data/manuals/*.pdf` |
 | ML | scikit-learn, XGBoost, LightGBM | No CNN/autoencoder — dropped by design, not by omission |
 | AutoML search | Optuna | Tree models only |
 | Explainability | SHAP | Feeds `explain()` in the Reliability Agent |
