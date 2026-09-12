@@ -127,6 +127,17 @@ thor/
 
 ## 6. Agent build spec (condensed — full detail in the linked artifact)
 
+**Terminology note — read before implementing any of this:** there is exactly **one agent**,
+in the AI-reasoning sense, anywhere in this system — the LangGraph Orchestrator (§4, node
+`ORCH`). It is the only place an LLM decides anything at runtime. The five "agents" in the
+table below are **deterministic toolboxes**, not independent reasoning loops: plain Python
+functions with no LLM call inside any of them (that's Rule #7 in §7). "Agent" here is a naming
+convenience carried over from early planning — it means "a named group of related tools," not
+"a separate thing that thinks." Do not give any of these five their own LLM call, and do not
+split them into services that each make their own model-routing decisions. That would turn one
+auditable decision point into five, which quietly breaks the governance claim in §2 — the whole
+pitch depends on this staying literally true, not just true as a slogan.
+
 | # | Agent | Key functions | Produces → consumed by |
 |---|---|---|---|
 | 04 | Data Reliability | `profile_dataset()`, `detect_missingness()`, `detect_regime()`, `validate_schema()` | Data Quality Contract → 05 |
