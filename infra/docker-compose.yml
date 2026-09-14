@@ -1,0 +1,124 @@
+# Thor -- one command: `docker compose -f infra/docker-compose.yml up --build`
+# (or `docker compose up --build` from the repo root via the symlinked compose.yaml).
+#
+# Services: timescale, mqtt, mlflow, api (control plane + orchestrator), edge (ONNX inference),
+# replay (MQTT telemetry replay), web (React). No Kubernetes, no MinIO, no Redis.
+
+name: thor
+
+services:
+  timescale:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: thor
+      POSTGRES_PASSWORD: thor
+      POSTGRES_DB: thor
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U thor -d thor"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ../streaming/mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t healthcheck -C 1 -W 2 -h localhost || exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.1.0
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --artifacts-destination /mlflow/artifacts
+      --serve-artifacts
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow-data:/mlflow
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://thor:thor@timescale:5432/thor
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MQTT_BROKER_URL: mqtt://mqtt:1883
+      CHROMA_PATH: /data/chroma
+      MANUALS_DIR: /app/data/manuals
+      MODELS_DIR: /models
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
+      SEED_ON_START: "1"
+    ports:
+      - "8000:8000"
+    volumes:
+      - models:/models
+      - chroma-data:/data/chroma
+    depends_on:
+      timescale:
+        condition: service_healthy
+      mqtt:
+        condition: service_started
+      mlflow:
+        condition: service_started
+
+  edge:
+    build:
+      context: ..
+      dockerfile: edge/Dockerfile
+    environment:
+      MQTT_BROKER_URL: mqtt://mqtt:1883
+      MODELS_DIR: /models
+      CONTROL_PLANE_URL: http://api:8000
+    ports:
+      - "8001:8001"
+    volumes:
+      - models:/models
+    depends_on:
+      mqtt:
+        condition: service_started
+
+  replay:
+    build:
+      context: ..
+      dockerfile: streaming/replay/Dockerfile
+    environment:
+      MQTT_BROKER_URL: mqtt://mqtt:1883
+      REPLAY_SPEED: ${REPLAY_SPEED:-600}
+      CONTROL_PLANE_URL: http://api:8000
+    depends_on:
+      mqtt:
+        condition: service_started
+      api:
+        condition: service_started
+
+  web:
+    build:
+      context: ../apps/web
+      dockerfile: Dockerfile
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5173:80"
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  timescale-data:
+  mlflow-data:
+  models:
+  chroma-data:

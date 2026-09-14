@@ -56,9 +56,11 @@ don't invent new claims.
 
 | Area | Choice | Note |
 |---|---|---|
+| LLM | Anthropic Claude (Messages API, tool-calling) | Read **only** in `apps/api/orchestrator.py` — two calls per run: route, then draft the explanation |
 | ML | scikit-learn, XGBoost, LightGBM | No CNN/autoencoder — dropped by design, not by omission |
 | AutoML search | Optuna | Tree models only |
 | Explainability | SHAP | Feeds `explain()` in the Reliability Agent |
+| RAG / retrieval | Chroma (embedded) + sentence-transformers | Local embedding model — **no external embedding API**. Index built once at startup from `data/manuals/*.pdf`, persisted to a Docker volume |
 | Agent orchestration | LangGraph | One process, five agent node groups — not five services |
 | API | FastAPI + Pydantic | Single control-plane service |
 | Frontend | React + TypeScript | Five screens (§5) |
@@ -108,7 +110,7 @@ thor/
 │   ├── data_agent/
 │   ├── ml_architect/
 │   ├── validation/
-│   ├── reliability/
+│   ├── reliability/          # explain.py (SHAP) + rag.py (manual retrieval)
 │   └── mlops/
 ├── edge/                    # ONNX Runtime inference container
 ├── streaming/
@@ -116,7 +118,8 @@ thor/
 │   └── replay/               # historical-sequence replay script
 ├── data/
 │   ├── simulator/             # synthetic regime + bearing-degradation generator (primary demo data)
-│   └── benchmark/              # AI4I 2020 validation notebook (credibility check, not the demo)
+│   ├── benchmark/              # AI4I 2020 validation notebook (credibility check, not the demo)
+│   └── manuals/                # PDF corpus for retrieve_manual_context(); indexed into Chroma at startup
 ├── infra/
 │   └── docker-compose.yml
 ├── tests/
@@ -132,13 +135,18 @@ thor/
 | 04 | Data Reliability | `profile_dataset()`, `detect_missingness()`, `detect_regime()`, `validate_schema()` | Data Quality Contract → 05 |
 | 05 | ML Architect | `infer_task()`, `build_feature_pipeline()`, `launch_trial()`, `compare_models()` | Candidate models + Industrial Model Score (MLflow) → 06 |
 | 06 | Validation | `detect_leakage()`, `run_backtest()`, `calibrate_probabilities()`, `compute_lead_time()`, `estimate_rul_interval()` | Validation Report + Champion → 07, 08 |
-| 07 | Reliability | `explain()`, `calculate_failure_cost()`, `find_maintenance_window()`, `run_whatif()`, `create_decision_contract()` | Decision Contract + recommendation → 09 |
+| 07 | Reliability | `explain()`, `retrieve_manual_context()`, `calculate_failure_cost()`, `find_maintenance_window()`, `run_whatif()`, `create_decision_contract()` | Decision Contract + recommendation → 09 |
 | 08 | MLOps | `register_model()`, `compare_champion()`, `promote()`, `detect_drift()`, `deploy_edge()` | Promotion request → 09; on drift, re-triggers 05 |
 | 09 | Human Approval Gate | `present_evidence()`, `record_decision()` | Approved action → Edge deploy or logged Decision Contract |
 
 `promote()` models the lifecycle (`candidate → validated → shadow → production`) as a **database
 enum**, not live traffic-splitting — there is no real production traffic to shadow-test against
 in a demo. Don't build real shadow/canary infrastructure.
+
+The orchestrator itself (`apps/api/orchestrator.py`) is the only *agent* in the AI sense — the
+five groups above are deterministic toolboxes it calls. Its own surface is small: `route()`
+picks the next tool from `GraphState`, `await_approval()` pauses the graph at the Human
+Approval Gate node, `resume()` continues once a decision is recorded.
 
 ## 7. Non-negotiable rules
 
@@ -150,6 +158,11 @@ in a demo. Don't build real shadow/canary infrastructure.
   has never seen).
 - **NEVER** let the LLM compute a metric, a cost, or a SHAP value. It explains numbers that
   deterministic Python already produced — it does not produce them itself.
+- **NEVER** read `ANTHROPIC_API_KEY` outside `apps/api/orchestrator.py`. One file calls the LLM;
+  every other module is deterministic local compute. This is what makes the governance claim
+  checkable rather than rhetorical.
+- **NEVER** let the LLM invent a manual citation. `retrieve_manual_context()` returns retrieved
+  passages with their source and section; the explanation may only quote what it returned.
 - **ALWAYS** log Decision Contracts as immutable rows (insert-only; no in-place edits).
 - **ALWAYS** default new agents/services to the `docker-compose.yml` — if it doesn't start with
   `docker compose up`, it isn't done.
@@ -221,8 +234,10 @@ item runs end to end:
 - **P0 (must work flawlessly):** ingest/replay → profile → train 3 candidates → validate →
   champion → SHAP explain → cost-based recommendation → human approval → Decision Contract
   logged. One motor, one fault, one decision, live in the demo.
-- **P1:** MLflow registry + promote() state machine, drift detection, edge ONNX container,
-  Fleet + ModelOps screens, Copilot chat.
+- **P1:** cited manual context (Chroma RAG) on the explanation, MLflow registry + promote()
+  state machine, drift detection, edge ONNX container, Fleet + ModelOps screens, Copilot chat.
+  The P0 chain must produce a complete recommendation from SHAP + cost alone — retrieval
+  enriches that explanation, it is never load-bearing for it.
 - **P2 (cut first if time runs short):** what-if reliability sandbox, energy-residual feature,
   AI4I benchmark writeup polish.
 

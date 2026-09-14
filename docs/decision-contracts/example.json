@@ -1,0 +1,92 @@
+{
+  "contract_id": "dc_MTR-042_20260924143210",
+  "created_at": "2026-09-24T14:32:10+00:00",
+  "asset_id": "MTR-042",
+  "run_id": "r_9f21c3",
+  "model_version": "v17",
+  "champion_mlflow_run_id": "8a1c4e0f2b7d4c1e9f3a6b5d8e2c7a10",
+  "failure_probability": 0.81,
+  "recommendation": "maintain_later",
+  "window_start": "2026-09-26T02:00:00+00:00",
+  "window_end": "2026-09-26T05:00:00+00:00",
+  "expected_cost": 5900.0,
+  "cost_comparison": {
+    "asset_id": "MTR-042",
+    "options": [
+      {
+        "option": "maintain_now",
+        "when": "2026-09-24T14:32:10+00:00",
+        "expected_cost": 8400.0,
+        "p_failure_before": 0.0,
+        "downtime_h": 3.0,
+        "breakdown": {
+          "planned_maintenance": 4200.0,
+          "planned_downtime": 4200.0,
+          "expected_unplanned": 0.0
+        }
+      },
+      {
+        "option": "maintain_later",
+        "when": "2026-09-26T02:00:00+00:00",
+        "expected_cost": 5900.0,
+        "p_failure_before": 0.06,
+        "downtime_h": 3.0,
+        "breakdown": {
+          "planned_maintenance": 4200.0,
+          "planned_downtime": 930.0,
+          "expected_unplanned": 770.0
+        }
+      },
+      {
+        "option": "run_to_failure",
+        "when": null,
+        "expected_cost": 46700.0,
+        "p_failure_before": 0.76,
+        "downtime_h": 14.0,
+        "breakdown": {
+          "planned_maintenance": 0.0,
+          "planned_downtime": 0.0,
+          "expected_unplanned": 46700.0
+        }
+      }
+    ],
+    "recommended": "maintain_later",
+    "assumptions": {
+      "cost_planned_maintenance": 4200.0,
+      "cost_unplanned_repair": 18500.0,
+      "cost_downtime_per_hour": 3100.0,
+      "downtime_planned_h": 3.0,
+      "downtime_unplanned_h": 14.0
+    }
+  },
+  "top_features": [
+    { "feature": "vib_rms_z", "shap_value": 0.212, "feature_value": 3.4, "direction": "raises_risk" },
+    { "feature": "vib_kurt_mean", "shap_value": 0.141, "feature_value": 5.9, "direction": "raises_risk" },
+    { "feature": "bearing_temp_slope", "shap_value": 0.097, "feature_value": 0.42, "direction": "raises_risk" },
+    { "feature": "temp_delta", "shap_value": 0.061, "feature_value": 11.8, "direction": "raises_risk" },
+    { "feature": "load_mean", "shap_value": -0.034, "feature_value": 56.2, "direction": "lowers_risk" },
+    { "feature": "rpm_mean", "shap_value": -0.012, "feature_value": 1481.0, "direction": "lowers_risk" }
+  ],
+  "manual_context": [
+    {
+      "source": "motor-maintenance.md",
+      "section": "4.2 Drive-end bearing wear",
+      "page": null,
+      "text": "A rising vibration RMS accompanied by increasing kurtosis and a bearing housing temperature more than 10 C above the motor frame indicates advanced drive-end bearing wear. Schedule replacement within the next planned window; do not defer beyond 72 hours once kurtosis exceeds 5.",
+      "score": 0.87
+    },
+    {
+      "source": "plant-maintenance-policy.md",
+      "section": "3.1 Planned versus unplanned intervention",
+      "page": null,
+      "text": "Where the expected cost of a planned intervention in the next low-load window is below the expected cost of run-to-failure, the planned window is the default recommendation and requires shift-engineer approval.",
+      "score": 0.74
+    }
+  ],
+  "lead_time_h": 41.5,
+  "calibration_brier": 0.071,
+  "data_quality_score": 96.4,
+  "explanation_text": "MTR-042 has an 81% calibrated probability of drive-end bearing failure within the 48-hour horizon. The strongest evidence is vibration RMS sitting 3.4 standard deviations above its high-load regime baseline, together with rising kurtosis (5.9) and a bearing-temperature slope of 0.42 C/h, which motor-maintenance.md section 4.2 Drive-end bearing wear identifies as the signature of advanced bearing wear. Under the configured plant-cost assumptions, maintaining in the next low-load window (2026-09-26 02:00-05:00 UTC) has an expected cost of $5,900 versus $8,400 to stop now and $46,700 to run to failure. The recommended action is to schedule bearing replacement for that window, consistent with plant-maintenance-policy.md section 3.1. The model warned a median 41.5 hours before failure on held-out machines, so the window falls inside its demonstrated lead time.",
+  "explanation_source": "llm",
+  "evidence_hash": "3f9c1a7d4b2e6f8a0c5d9e1b7a3f6c2d8e4b0a9f1c7d3e5b2a8f6c4d0e9b1a7c"
+}

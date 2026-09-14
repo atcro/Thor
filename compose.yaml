@@ -1,0 +1,3 @@
+# Root shim so `docker compose up --build` works from the repo root (CLAUDE.md section 10).
+include:
+  - infra/docker-compose.yml
