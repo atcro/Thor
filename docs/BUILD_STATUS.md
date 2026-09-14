@@ -62,9 +62,22 @@ seven services came up healthy. Observed within the first minute:
 - Fixed while verifying: the API probed `localhost:8001` for the edge health dot; compose now
   sets `EDGE_URL=http://edge:8001`.
 
-Not completed in containers: the approve → promote → edge-pickup step, because the stack was
-stopped mid-run. It is covered locally by `tests/test_e2e_pipeline.py` and the ad-hoc runs in
-this document; re-run `docs/DEMO.md` end to end in Docker before the demo.
+Second run (stack restarted with the `EDGE_URL` fix): the full approval flow was driven
+through the containers via the HTTP API —
+
+- run to the approval gate in 82 s (XGBoost champion, held-out recall 0.76, lead time 37.8 h,
+  validation passed; at that point the replay was ~4 days before MTR-042's failure, so the
+  48 h probability was honestly low at 0.07);
+- approval → `thor-bearing-classifier v62033` promoted to production → ONNX + sidecar
+  written to the shared `models` volume;
+- the **edge container picked the model up on its own** (`model_version v62033`,
+  168 predictions within ~30 s, no errors) and published `predictions/{asset_id}`, which the
+  API ingested: `/system/health` shows `edge: true`, and `/fleet` switched from the health
+  index to model-driven probabilities (MTR-042 p = 0.56 → health 43.7 as the replay advanced).
+
+Note: the edge serves the tree model's *uncalibrated* probability (`calibration: "none"` in
+the sidecar), so fleet numbers from the edge and the contract's calibrated probability are
+not on the same scale; healthy motors sit at the uncalibrated base rate (~0.11).
 
 ## Not verified in this session
 
