@@ -360,11 +360,14 @@ def tool_deploy_edge(
     features: list[str],
     models_dir: Path,
     window_rows: int,
+    baseline: dict[str, Any] | None = None,
 ) -> EdgeDeployment:
-    """08: `agents.mlops.lifecycle.deploy_edge(model, artifact_path, features, models_dir, window_rows)`."""
+    """08: `agents.mlops.lifecycle.deploy_edge(model, artifact_path, features, models_dir, window_rows, baseline)`."""
     from agents.mlops.lifecycle import deploy_edge
 
-    return deploy_edge(model, artifact_path, features, models_dir, window_rows=window_rows)
+    return deploy_edge(
+        model, artifact_path, features, models_dir, window_rows=window_rows, baseline=baseline
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -645,6 +648,10 @@ def _train(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
     artifacts_dir = Path(get_settings().models_dir) / "artifacts" / gs.run_id
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     cs = tool_train_candidates(features_df, spec, task, h.n_trials, 0, artifacts_dir, gs.asset_id)
+    # The regime baseline travels with the FeatureSpec so deploy_edge can ship it to the edge.
+    baseline = features_df.attrs.get("baseline") if hasattr(features_df, "attrs") else None
+    if baseline and cs.features.baseline is None:
+        cs.features.baseline = baseline
     gs.candidates = cs
     h.cache["spec"] = cs.features
     ranked = ", ".join(cs.ranked) if cs.ranked else "unranked"
@@ -817,9 +824,15 @@ def _finalize(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
         artifact = _champion_artifact(gs)
         features = gs.candidates.features.features if gs.candidates else []
         window_rows = gs.candidates.features.window_rows if gs.candidates else 12
+        baseline = gs.candidates.features.baseline if gs.candidates else None
         if artifact:
             dep = tool_deploy_edge(
-                rm, Path(artifact), features, Path(get_settings().models_dir), window_rows
+                rm,
+                Path(artifact),
+                features,
+                Path(get_settings().models_dir),
+                window_rows,
+                baseline=baseline,
             )
             append_event(
                 gs,

@@ -135,6 +135,10 @@ class FeatureSpec(BaseModel):
     window_rows: int
     regime_normalized: bool = True
     description: str
+    baseline: dict[str, Any] | None = Field(
+        default=None,
+        description="Per-sensor regime baseline (mean/std + centroids) shipped to the edge sidecar",
+    )
 
 
 class IndustrialModelScore(BaseModel):

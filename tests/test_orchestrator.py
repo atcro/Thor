@@ -389,7 +389,14 @@ def install_fake_toolbox(monkeypatch: pytest.MonkeyPatch, orchestrator: Any) -> 
         calls["promote"].append(promotion_id)
         return make_registered(stage=ModelStage.production)
 
-    def fake_deploy(model: RegisteredModel, artifact_path: Path, features: list[str], models_dir: Path, window_rows: int) -> EdgeDeployment:
+    def fake_deploy(
+        model: RegisteredModel,
+        artifact_path: Path,
+        features: list[str],
+        models_dir: Path,
+        window_rows: int,
+        baseline: dict[str, Any] | None = None,
+    ) -> EdgeDeployment:
         calls["deploy_edge"].append(str(artifact_path))
         return EdgeDeployment(
             model_name=model.name, version=model.version, onnx_path=str(models_dir / "m.onnx"),
