@@ -1,0 +1,117 @@
+# Thor — Build Status (2026-09-13)
+
+Prototype build of the full Theme 1 platform, done in one session by six parallel agents
+working against `docs/INTERFACES.md`. Everything below is committed on `main`.
+
+## What runs
+
+The P0 chain from CLAUDE.md §13 runs end to end with no faked components, through the HTTP API:
+
+```
+ingest / replay → 04 profile (3 operating regimes, data-quality score)
+→ 05 three Optuna candidates (RF / XGBoost / LightGBM) ranked by Industrial Model Score
+→ 06 asset-level, time-ordered validation (leakage, backtest, isotonic calibration,
+     warning lead time, quantile RUL interval) → champion
+→ 07 SHAP attribution + cited manual passages (Chroma) + cost comparison
+     (maintain now / maintain later / run to failure) → immutable Decision Contract
+→ 09 human approval (a second decision on the same contract is refused with 409)
+→ 08 promotion to production + ONNX export + baseline sidecar for the edge container
+```
+
+Result on the real 24-motor, 30-day synthetic fleet with MTR-042 inside its alarm window
+(`SEED_FRACTION=0.95`, `n_trials=6`):
+
+| item | value |
+|---|---|
+| champion | LightGBM, IMS 0.883 |
+| held-out recall | 0.89 |
+| warning lead time (held-out failures) | median 100.7 h, p90 114.8 h (2 events) |
+| validation gate | passed |
+| calibrated P(failure within 48 h) | 0.50 |
+| top SHAP drivers | bearing temperature (+0.19), bearing-temp z-score (+0.17), vibration RMS (+0.12) — all raise risk |
+| first citation | `motor-maintenance.md` §4.2 Drive-end bearing wear |
+| recommendation | maintain now (under the configured plant-cost assumptions) |
+| wall time to approval gate | ~85 s |
+
+After approval: `thor-bearing-classifier v… → production`, `models/<name>_<version>.onnx` plus
+a JSON sidecar carrying `features`, `window_rows`, `calibration`, and the per-regime
+`baseline` the edge container needs to compute the same features.
+
+## Verification
+
+- `ruff check .` — clean
+- `pytest` — **146 passed**, including `tests/test_e2e_pipeline.py` (the whole chain, real
+  toolboxes, ~10 s on the conftest fleet)
+- `npm --prefix apps/web run build` and `npm --prefix apps/web test -- --run` — pass
+- AI4I 2020 credibility benchmark (`python -m data.benchmark.ai4i_benchmark`, real UCI data):
+  LightGBM champion, recall 0.75 / precision 0.87 / AUROC 0.98 / Brier 0.011 after calibration
+  (see `data/benchmark/README.md` for what is and is not comparable)
+
+## Not verified in this session
+
+- **`docker compose up --build`** — the Docker Desktop daemon was not running on the build
+  machine. `docker compose config -q` validates the file; the four Dockerfiles
+  (`apps/api`, `edge`, `streaming/replay`, `apps/web`) have not been built. Run this first.
+- **LLM mode** — no `ANTHROPIC_API_KEY` was configured, so every run used the deterministic
+  template explanation and the template Copilot. Both LLM paths exist in
+  `apps/api/orchestrator.py` (the only module allowed to read the key) and fall back to the
+  template on any failure.
+
+## Decisions made during integration
+
+1. **Seven injected faults instead of "1-2".** MTR-042 is the live demo fault (onset 55 %,
+   caught before failure); MTR-021 fails live on a held-out motor; MTR-003/009/013/023 are
+   completed historical failures the model learns from. With a single training failure the
+   champion was unusable (recall 0.33, lead time 0 h). CLAUDE.md §9 updated.
+2. **Only completed failures produce training labels.** The simulator carries ground truth
+   for degradations still in progress; labelling those rows would be looking into the future.
+   In-progress faults are treated as unknown (`agents/ml_architect/features.py`).
+3. **Alarm threshold 0.3 for lead-time measurement** (classification metrics keep 0.5): a
+   calibrated 30 % chance of failure within the horizon is actionable when unplanned cost far
+   exceeds planned cost. Shared constant in `agents/validation/checks.py` and
+   `agents/ml_architect/automl.py`.
+4. **Demo timing.** The API seeds the first 80 % of the history (`SEED_FRACTION`); the replay
+   streams the remaining six days at 1800× (`REPLAY_SPEED`, `REPLAY_START_FRACTION`), so the
+   alarm window for MTR-042 arrives ~3 min after start. `docs/DEMO.md` has the shot list.
+5. **12 h hazard floor.** A model that has not demonstrated early warning gets a conservative
+   hazard scale instead of a curve that jumps to 100 % at the first planned window.
+6. **SHAP robustness.** LightGBM + this shap release returns non-additive attributions from
+   `TreeExplainer`; `explain()` checks additivity (base + Σ ≈ probability) and falls back to
+   a model-agnostic explainer over the tree model with a stratified background (healthy fleet
+   rows + the asset's recent rows).
+7. **RAG self-heals** (builds the Chroma index from `data/manuals` if missing) and returns
+   one passage per manual section.
+
+## Known soft spots (P1 / P2 candidates)
+
+- Calibrated P(failure) plateaus near 0.50 inside the 48 h window — honest isotonic behaviour
+  on rare positives (the model fires ~100 h early, and rows 48–100 h before failure are labelled
+  0 by the horizon definition), but less punchy on stage. A 72 h horizon would raise it.
+- What-if deltas are 0 through the isotonic step function (`POST /whatif`).
+- MLflow model registration logs a warning: params/metrics are tracked but no model artifact
+  is logged under `model`, so `mlflow.register_model` is skipped (best effort).
+- Fleet health before any prediction exists uses the simulator's ground-truth `health` column;
+  once the edge container publishes predictions the score switches to `100·(1−p)`.
+- `apps/web` types do not yet expose `FeatureSpec.baseline` (harmless; unused by the UI).
+
+## Environment notes (Windows build box)
+
+- In Git Bash the Microsoft Store `python` stub can shadow the real interpreter and hang; use
+  `C:/Users/<you>/AppData/Local/Python/pythoncore-3.14-64/python.exe` or PowerShell. `ruff` is
+  not on PATH — use `python -m ruff`.
+- `docs/decision-contracts/example.json` is the reference Decision Contract shape and is
+  validated against the schema by `tests/test_schemas.py`.
+
+## Commit log
+
+```
+8738cae Integrate the P0 chain end to end on real simulator data
+136a88e Add AI4I 2020 credibility benchmark
+f09a98d Add Validation (06) and Reliability (07) agents with manual corpus
+6e67d64 Ship the regime baseline to the edge sidecar
+9946fd9 Add LangGraph orchestrator, FastAPI control plane, and human approval gate
+e6735a3 Add React + TypeScript frontend with five screens
+6bfc24b Add Data Reliability (04) and ML Architect (05) agents
+248e9e7 Add synthetic fleet simulator, MQTT replay, telemetry ingest, edge ONNX service
+3f12368 Scaffold Thor platform: contracts, DB layer, compose, MLOps agent
+```
