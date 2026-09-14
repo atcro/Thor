@@ -47,11 +47,27 @@ a JSON sidecar carrying `features`, `window_rows`, `calibration`, and the per-re
   LightGBM champion, recall 0.75 / precision 0.87 / AUROC 0.98 / Brier 0.011 after calibration
   (see `data/benchmark/README.md` for what is and is not comparable)
 
+## Docker verification (2026-09-14)
+
+`docker compose up --build` was run after starting Docker Desktop. All four images built
+(`thor-api` 3.4 GB, `thor-replay` 634 MB, `thor-edge` 440 MB, `thor-web` 103 MB) and all
+seven services came up healthy. Observed within the first minute:
+
+- `GET /system/health` → db ok, mqtt true, mlflow true, 85,058 telemetry rows (80 % seed +
+  live rows arriving through replay → Mosquitto → API subscriber; `last_ingest_ts` advancing).
+- `GET /fleet` → 24 assets; MTR-021 (failing live) and MTR-042 (amber) ranked first.
+- Edge: MQTT connected, 24 assets seen, 2.8 k rows buffered, no model yet (expected).
+- Web (`:5173`) and MLflow (`:5000`) serve; the API downloaded the MiniLM embedding model and
+  built the manual index in its background thread.
+- Fixed while verifying: the API probed `localhost:8001` for the edge health dot; compose now
+  sets `EDGE_URL=http://edge:8001`.
+
+Not completed in containers: the approve → promote → edge-pickup step, because the stack was
+stopped mid-run. It is covered locally by `tests/test_e2e_pipeline.py` and the ad-hoc runs in
+this document; re-run `docs/DEMO.md` end to end in Docker before the demo.
+
 ## Not verified in this session
 
-- **`docker compose up --build`** — the Docker Desktop daemon was not running on the build
-  machine. `docker compose config -q` validates the file; the four Dockerfiles
-  (`apps/api`, `edge`, `streaming/replay`, `apps/web`) have not been built. Run this first.
 - **LLM mode** — no `ANTHROPIC_API_KEY` was configured, so every run used the deterministic
   template explanation and the template Copilot. Both LLM paths exist in
   `apps/api/orchestrator.py` (the only module allowed to read the key) and fall back to the

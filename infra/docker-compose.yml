@@ -59,6 +59,7 @@ services:
       CHROMA_PATH: /data/chroma
       MANUALS_DIR: /app/data/manuals
       MODELS_DIR: /models
+      EDGE_URL: http://edge:8001
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
       SEED_ON_START: "1"
