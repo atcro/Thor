@@ -48,7 +48,10 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 FAMILIES: tuple[str, ...] = ("random_forest", "xgboost", "lightgbm")
 HOLDOUT_FRACTION = 0.25
-ALARM_THRESHOLD = 0.5
+# Alarm threshold for warning lead time: a calibrated 30 % chance of failure within the
+# horizon is actionable in maintenance practice (unplanned cost >> planned cost), so lead
+# time is measured from the first crossing of 0.3, not 0.5. Classification metrics keep 0.5.
+ALARM_THRESHOLD = 0.3
 LEAD_TIME_CAP_H = 72.0
 BRIER_CAP = 0.25
 LATENCY_CAP_MS = 50.0
@@ -126,7 +129,9 @@ def industrial_model_score(metrics: dict[str, float], latency_ms: float) -> Indu
     brier = float(metrics.get("brier", BRIER_CAP))
     if not np.isfinite(brier):
         brier = BRIER_CAP
-    lat = float(latency_ms) if latency_ms is not None and np.isfinite(latency_ms) else LATENCY_CAP_MS
+    lat = (
+        float(latency_ms) if latency_ms is not None and np.isfinite(latency_ms) else LATENCY_CAP_MS
+    )
 
     lead_time_score = min(1.0, lead_time_h / LEAD_TIME_CAP_H)
     calibration_score = 1.0 - min(1.0, max(0.0, brier) / BRIER_CAP)
@@ -171,12 +176,16 @@ def split_by_asset(
     return assets[:-n_hold], assets[-n_hold:]
 
 
-def _lead_time_hours(meta: pd.DataFrame, prob: np.ndarray, threshold: float = ALARM_THRESHOLD) -> float:
+def _lead_time_hours(
+    meta: pd.DataFrame, prob: np.ndarray, threshold: float = ALARM_THRESHOLD
+) -> float:
     """Median warning lead time over failing held-out assets.
 
-    For each asset with ``rul_h`` present: failure time = last row ``ts + rul_h`` hours; lead
-    time = hours from the first row with ``prob >= threshold`` to that failure (0 if never).
-    Returns 0.0 when no held-out asset fails.
+    For each asset with ``rul_h`` present: failure time = ``ts + rul_h`` at the LAST row that
+    still carries a ``rul_h`` (after a failure the motor is repaired and ``rul_h`` is NaN
+    again); lead time = hours from the first row before that failure with
+    ``prob >= threshold`` to the failure (0 if never). Returns 0.0 when no held-out asset
+    fails.
     """
     m = meta.assign(prob=prob)
     leads: list[float] = []
@@ -185,9 +194,11 @@ def _lead_time_hours(meta: pd.DataFrame, prob: np.ndarray, threshold: float = AL
         rul = g["rul_h"].astype(float)
         if not rul.notna().any():
             continue
-        last = g.iloc[-1]
-        failure_ts = pd.Timestamp(last["ts"]) + pd.Timedelta(hours=float(rul.iloc[-1]))
-        alarms = g[g["prob"] >= threshold]
+        last_pos = int(np.flatnonzero(rul.notna().to_numpy())[-1])
+        last = g.iloc[last_pos]
+        failure_ts = pd.Timestamp(last["ts"]) + pd.Timedelta(hours=float(rul.iloc[last_pos]))
+        before = g.iloc[: last_pos + 1]
+        alarms = before[before["prob"] >= threshold]
         if alarms.empty:
             leads.append(0.0)
             continue
@@ -396,7 +407,9 @@ def launch_trial(
     if task.task != "classification":
         raise ValueError("launch_trial only supports classification tasks")
     feats = list(spec.features)
-    missing = [c for c in feats + ["asset_id", "ts", "label", "rul_h"] if c not in features_df.columns]
+    missing = [
+        c for c in feats + ["asset_id", "ts", "label", "rul_h"] if c not in features_df.columns
+    ]
     if missing:
         raise ValueError(f"features_df is missing columns: {missing}")
 
@@ -448,9 +461,15 @@ def launch_trial(
     run_id = _log_to_mlflow(
         experiment or DEFAULT_EXPERIMENT,
         candidate_id,
-        {**all_params, "family": family, "n_trials": n_trials, "window_rows": spec.window_rows,
-         "horizon_h": task.horizon_h, "train_assets": ",".join(train_assets),
-         "holdout_assets": ",".join(hold_assets)},
+        {
+            **all_params,
+            "family": family,
+            "n_trials": n_trials,
+            "window_rows": spec.window_rows,
+            "horizon_h": task.horizon_h,
+            "train_assets": ",".join(train_assets),
+            "holdout_assets": ",".join(hold_assets),
+        },
         {**metrics, "latency_ms": latency, "ims_total": ims.total},
         artifact_path,
         {"family": family, "candidate_id": candidate_id},
@@ -473,6 +492,7 @@ def compare_models(candidates: list[CandidateModel]) -> list[str]:
     Input: list of ``CandidateModel``. Output: ``candidate_id`` list best -> worst by
     ``ims.total`` (candidates without an IMS sort last; ties broken by lower latency).
     """
+
     def _key(c: CandidateModel) -> tuple[float, float]:
         total = c.ims.total if c.ims is not None else float("-inf")
         return (-total, c.inference_latency_ms)

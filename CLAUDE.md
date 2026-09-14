@@ -179,8 +179,12 @@ a full Playwright e2e suite.
 ## 9. Data strategy
 
 1. **Primary demo data — synthetic.** A regime-based generator (24 motors, RPM/load/startup
-   regimes, injected drive-end bearing degradation on 1-2 assets) gives full control over the
-   "cinematic" demo moment and stays 100% reproducible via MQTT replay.
+   regimes, injected drive-end bearing degradation on `MTR-042` as the live demo fault plus a
+   handful of completed historical failures the model learns from — see `FAULTY_ASSETS` in
+   `data/simulator/generate.py`) gives full control over the "cinematic" demo moment and stays
+   100% reproducible via MQTT replay. The API seeds the first 80% of the history; the replay
+   streams the rest. Only *completed* failures produce training labels — an in-progress
+   degradation is treated as unknown future, never as a known outcome.
 2. **Credibility check — AI4I 2020 (UCI).** Run the same pipeline against a real public
    benchmark and report honest metrics. This is what proves the methodology isn't cherry-picked
    to the synthetic story.

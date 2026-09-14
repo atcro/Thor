@@ -62,6 +62,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
       SEED_ON_START: "1"
+      SEED_FRACTION: ${SEED_FRACTION:-0.80}
     ports:
       - "8000:8000"
     volumes:
@@ -97,7 +98,8 @@ services:
       dockerfile: streaming/replay/Dockerfile
     environment:
       MQTT_BROKER_URL: mqtt://mqtt:1883
-      REPLAY_SPEED: ${REPLAY_SPEED:-600}
+      REPLAY_SPEED: ${REPLAY_SPEED:-1800}
+      REPLAY_START_FRACTION: ${REPLAY_START_FRACTION:-0.80}
       CONTROL_PLANE_URL: http://api:8000
     depends_on:
       mqtt:

@@ -54,6 +54,10 @@ FORBIDDEN_FEATURES: frozenset[str] = frozenset(
 )
 LEAKAGE_CORR_LIMIT: float = 0.98
 SUSTAINED_SAMPLES: int = 3
+# Alarm threshold for warning lead time (shared with agents.ml_architect.automl): a
+# calibrated 30 % chance of failure within the horizon is actionable because the unplanned
+# cost far exceeds the planned cost. Classification metrics keep the conventional 0.5.
+ALARM_THRESHOLD: float = 0.3
 ISOTONIC_MIN_ROWS: int = 200
 MIN_RECALL_TO_PASS: float = 0.6
 MIN_LEAD_TIME_H_TO_PASS: float = 12.0
@@ -109,7 +113,9 @@ def _sorted_assets(df: pd.DataFrame) -> list[str]:
     return sorted(str(a) for a in df["asset_id"].unique())
 
 
-def _split_assets(assets: list[str], holdout_fraction: float = HOLDOUT_ASSET_FRACTION) -> tuple[list[str], list[str]]:
+def _split_assets(
+    assets: list[str], holdout_fraction: float = HOLDOUT_ASSET_FRACTION
+) -> tuple[list[str], list[str]]:
     """Deterministic asset-level split: the last `holdout_fraction` of sorted ids are held out."""
     if len(assets) < 2:
         return list(assets), []
@@ -128,7 +134,9 @@ def _positive_proba(model: Any, X: pd.DataFrame) -> np.ndarray:
     return proba[:, 1].astype(float)
 
 
-def _classification_metrics(y_true: np.ndarray, p: np.ndarray, threshold: float = 0.5) -> dict[str, float]:
+def _classification_metrics(
+    y_true: np.ndarray, p: np.ndarray, threshold: float = 0.5
+) -> dict[str, float]:
     """recall, precision, f1, auroc, brier for one held-out set. auroc = NaN if one class only."""
     y_pred = (p >= threshold).astype(int)
     out: dict[str, float] = {
@@ -176,7 +184,9 @@ def _lead_times_h(df: pd.DataFrame, spec: FeatureSpec, model: Any, threshold: fl
     return leads
 
 
-def _reliability_bins(y_true: np.ndarray, p: np.ndarray, n_bins: int = 10) -> list[tuple[float, float, int]]:
+def _reliability_bins(
+    y_true: np.ndarray, p: np.ndarray, n_bins: int = 10
+) -> list[tuple[float, float, int]]:
     """(mean_predicted, fraction_positive, count) per non-empty equal-width probability bin."""
     edges = np.linspace(0.0, 1.0, n_bins + 1)
     idx = np.clip(np.digitize(p, edges[1:-1], right=False), 0, n_bins - 1)
@@ -329,7 +339,7 @@ def run_backtest(
                 train_assets=assets,
                 test_assets=assets,
                 train_end=pd.Timestamp(train["ts"].max()).to_pydatetime(),
-                metrics=metrics,
+                metrics=_finite_metrics(metrics),
             )
         )
         return folds
@@ -357,7 +367,7 @@ def run_backtest(
                 train_assets=train_assets,
                 test_assets=list(test_assets),
                 train_end=train_end.to_pydatetime(),
-                metrics=metrics,
+                metrics=_finite_metrics(metrics),
             )
         )
     return folds
@@ -465,7 +475,9 @@ def estimate_rul_interval(
         latest = labelled.groupby("asset_id", sort=True).tail(1)
         p50 = models[0.5].predict(latest[spec.features])
         target = latest.iloc[[int(np.argmin(p50))]]
-    q = sorted(max(0.0, float(models[a].predict(target[spec.features])[0])) for a in (0.1, 0.5, 0.9))
+    q = sorted(
+        max(0.0, float(models[a].predict(target[spec.features])[0])) for a in (0.1, 0.5, 0.9)
+    )
     return RULInterval(p10_h=q[0], p50_h=q[1], p90_h=q[2], method="quantile_gbm")
 
 
@@ -482,6 +494,14 @@ def _load_candidate(c: CandidateModel) -> Any | None:
     except Exception as e:  # noqa: BLE001 - a corrupt artifact must not kill validation
         log.warning("candidate %s artifact failed to load: %s", c.candidate_id, e)
         return None
+
+
+def _finite_metrics(metrics: dict[str, float]) -> dict[str, float]:
+    """Drop NaN/inf entries so BacktestFold.metrics survives a JSON round trip.
+
+    `_mean_metric` treats a missing key as NaN, so averages are unchanged.
+    """
+    return {k: float(v) for k, v in metrics.items() if math.isfinite(float(v))}
 
 
 def _mean_metric(folds: list[BacktestFold], key: str) -> float:
@@ -545,9 +565,9 @@ def validate(candidates: CandidateSet, features_df: pd.DataFrame, run_id: str) -
     joblib.dump(calibrated, cal_path)
     notes.append(f"champion_artifact={cal_path}")
 
-    lead_time = compute_lead_time(cal_rows, spec, calibrated)
+    lead_time = compute_lead_time(cal_rows, spec, calibrated, threshold=ALARM_THRESHOLD)
     if lead_time.n_events == 0:
-        lead_time = compute_lead_time(df, spec, calibrated)
+        lead_time = compute_lead_time(df, spec, calibrated, threshold=ALARM_THRESHOLD)
         notes.append("lead time measured on the full frame: no held-out asset fails")
     else:
         notes.append(f"lead time measured on held-out assets {test_assets}")
@@ -571,7 +591,10 @@ def validate(candidates: CandidateSet, features_df: pd.DataFrame, run_id: str) -
         )
     notes.append(
         "ranking: "
-        + ", ".join(f"{c.candidate_id}={s.total:.3f}" for c, _, _, s in sorted(scored, key=lambda t: -t[3].total))
+        + ", ".join(
+            f"{c.candidate_id}={s.total:.3f}"
+            for c, _, _, s in sorted(scored, key=lambda t: -t[3].total)
+        )
     )
 
     return ValidationReport(

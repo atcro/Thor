@@ -74,6 +74,13 @@ def load_telemetry_parquet(path: Path, engine: Engine) -> int:
         df["ts"] = pd.to_datetime(df["ts"], utc=True)
     keep = [c.name for c in db.telemetry.columns if c.name in df.columns]
     df = df[keep].sort_values(["asset_id", "ts"]).reset_index(drop=True)
+    # Load only the head of the timeline; the MQTT replay streams the rest live so the demo
+    # motor's degradation is watched happening, not pre-loaded. SEED_FRACTION=1 loads all.
+    fraction = float(os.environ.get("SEED_FRACTION", "0.80"))
+    if 0.0 < fraction < 1.0 and "ts" in df.columns and len(df):
+        t0, t1 = df["ts"].min(), df["ts"].max()
+        cutoff = t0 + (t1 - t0) * fraction
+        df = df.loc[df["ts"] <= cutoff].reset_index(drop=True)
     total = 0
     for start in range(0, len(df), CHUNK):
         chunk = df.iloc[start : start + CHUNK]

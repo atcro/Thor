@@ -202,7 +202,7 @@ def main() -> None:
         os.getenv("MQTT_BROKER_URL", "mqtt://localhost:1883")
     )
     parser = argparse.ArgumentParser(description="Replay Thor telemetry over MQTT (or HTTP)")
-    parser.add_argument("--speed", type=float, default=float(os.getenv("REPLAY_SPEED", "600")))
+    parser.add_argument("--speed", type=float, default=float(os.getenv("REPLAY_SPEED", "1800")))
     parser.add_argument("--once", action="store_true", help="play the sequence once, then exit")
     parser.add_argument("--transport", choices=["auto", "mqtt", "http"], default="auto")
     parser.add_argument("--parquet", type=Path, default=DEFAULT_PARQUET)
@@ -213,6 +213,12 @@ def main() -> None:
     )
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH)
     parser.add_argument("--asset", default=None, help="replay only this asset id")
+    parser.add_argument(
+        "--start-fraction",
+        type=float,
+        default=float(os.getenv("REPLAY_START_FRACTION", "0.80")),
+        help="first pass starts this far into the timeline (the API seed loads the head)",
+    )
     args = parser.parse_args()
 
     df = load_telemetry(args.parquet)
@@ -231,8 +237,19 @@ def main() -> None:
     if transport == "auto" and args.speed <= 0:
         transport = "http"
 
+    first_pass = True
     while True:
-        rows = iter_rows(df)
+        play = df
+        if first_pass and 0.0 < args.start_fraction < 1.0 and args.speed > 0:
+            t0, t1 = df["ts"].min(), df["ts"].max()
+            play = df.loc[df["ts"] > t0 + (t1 - t0) * args.start_fraction]
+            log.info(
+                "first pass starts at %s (%.0f%% of timeline)",
+                play["ts"].min(),
+                args.start_fraction * 100,
+            )
+        first_pass = False
+        rows = iter_rows(play)
         try:
             if transport == "http":
                 n = publish_http(

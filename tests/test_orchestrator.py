@@ -141,9 +141,20 @@ def make_dq(asset_id: str = "MTR-042", trainable: bool = True) -> DataQualityCon
         missingness=MissingnessReport(missing_fraction={"vibration_rms": 0.0}),
         regimes=RegimeReport(
             regimes=[
-                Regime(regime_id="R1", label="idle", n_rows=1000, rpm_mean=600, load_mean=10, share=0.2),
-                Regime(regime_id="R2", label="nominal", n_rows=3000, rpm_mean=1480, load_mean=55, share=0.7),
-                Regime(regime_id="R3", label="high", n_rows=320, rpm_mean=1500, load_mean=85, share=0.1),
+                Regime(
+                    regime_id="R1", label="idle", n_rows=1000, rpm_mean=600, load_mean=10, share=0.2
+                ),
+                Regime(
+                    regime_id="R2",
+                    label="nominal",
+                    n_rows=3000,
+                    rpm_mean=1480,
+                    load_mean=55,
+                    share=0.7,
+                ),
+                Regime(
+                    regime_id="R3", label="high", n_rows=320, rpm_mean=1500, load_mean=85, share=0.1
+                ),
             ],
             silhouette=0.6,
         ),
@@ -162,7 +173,12 @@ def make_task() -> TaskSpec:
 
 def make_ims(total: float = 0.8) -> IndustrialModelScore:
     return IndustrialModelScore(
-        recall=0.9, precision=0.7, lead_time_score=0.8, calibration_score=0.7, latency_score=0.9, total=total
+        recall=0.9,
+        precision=0.7,
+        lead_time_score=0.8,
+        calibration_score=0.7,
+        latency_score=0.9,
+        total=total,
     )
 
 
@@ -221,9 +237,18 @@ def make_explanation(asset_id: str = "MTR-042") -> Explanation:
         asset_id=asset_id,
         failure_probability=0.78,
         top_features=[
-            ShapFeature(feature="vib_rms_mean", shap_value=0.31, feature_value=3.2, direction="raises_risk"),
-            ShapFeature(feature="bearing_temp_mean", shap_value=0.18, feature_value=78.0, direction="raises_risk"),
-            ShapFeature(feature="load_mean", shap_value=-0.05, feature_value=55.0, direction="lowers_risk"),
+            ShapFeature(
+                feature="vib_rms_mean", shap_value=0.31, feature_value=3.2, direction="raises_risk"
+            ),
+            ShapFeature(
+                feature="bearing_temp_mean",
+                shap_value=0.18,
+                feature_value=78.0,
+                direction="raises_risk",
+            ),
+            ShapFeature(
+                feature="load_mean", shap_value=-0.05, feature_value=55.0, direction="lowers_risk"
+            ),
         ],
         base_value=0.12,
         model_version="v42",
@@ -234,9 +259,30 @@ def make_cost(asset_id: str = "MTR-042") -> CostComparison:
     return CostComparison(
         asset_id=asset_id,
         options=[
-            CostOption(option="maintain_now", when=NOW, expected_cost=13500.0, p_failure_before=0.0, downtime_h=3.0, breakdown={"planned": 4200.0, "downtime": 9300.0}),
-            CostOption(option="maintain_later", when=NOW + timedelta(hours=72), expected_cost=21000.0, p_failure_before=0.45, downtime_h=3.0, breakdown={"planned": 4200.0}),
-            CostOption(option="run_to_failure", when=None, expected_cost=48000.0, p_failure_before=0.9, downtime_h=14.0, breakdown={"unplanned": 18500.0}),
+            CostOption(
+                option="maintain_now",
+                when=NOW,
+                expected_cost=13500.0,
+                p_failure_before=0.0,
+                downtime_h=3.0,
+                breakdown={"planned": 4200.0, "downtime": 9300.0},
+            ),
+            CostOption(
+                option="maintain_later",
+                when=NOW + timedelta(hours=72),
+                expected_cost=21000.0,
+                p_failure_before=0.45,
+                downtime_h=3.0,
+                breakdown={"planned": 4200.0},
+            ),
+            CostOption(
+                option="run_to_failure",
+                when=None,
+                expected_cost=48000.0,
+                p_failure_before=0.9,
+                downtime_h=14.0,
+                breakdown={"unplanned": 18500.0},
+            ),
         ],
         recommended="maintain_now",
         assumptions={"cost_planned_maintenance": 4200.0, "cost_unplanned_repair": 18500.0},
@@ -245,14 +291,22 @@ def make_cost(asset_id: str = "MTR-042") -> CostComparison:
 
 def make_window() -> MaintenanceWindow:
     return MaintenanceWindow(
-        start=NOW + timedelta(hours=14), end=NOW + timedelta(hours=17),
-        reason="next low-load window before P(fail) exceeds 0.3", p_failure_before_window=0.21,
+        start=NOW + timedelta(hours=14),
+        end=NOW + timedelta(hours=17),
+        reason="next low-load window before P(fail) exceeds 0.3",
+        p_failure_before_window=0.21,
     )
 
 
 def make_passages() -> list[ManualPassage]:
     return [
-        ManualPassage(source="motor-maintenance.md", section="4.2", page=None, text="Drive-end bearing wear raises vibration RMS and kurtosis.", score=0.9)
+        ManualPassage(
+            source="motor-maintenance.md",
+            section="4.2",
+            page=None,
+            text="Drive-end bearing wear raises vibration RMS and kurtosis.",
+            score=0.9,
+        )
     ]
 
 
@@ -294,10 +348,17 @@ def make_contract(bundle: EvidenceBundle, run_id: str, text: str, source: str) -
     )
 
 
-def make_registered(version: str = "v42", stage: ModelStage = ModelStage.candidate) -> RegisteredModel:
+def make_registered(
+    version: str = "v42", stage: ModelStage = ModelStage.candidate
+) -> RegisteredModel:
     return RegisteredModel(
-        name="thor-bearing-classifier", version=version, mlflow_run_id="run123", stage=stage,
-        family="lightgbm", ims_total=0.8, registered_at=datetime.now(UTC),
+        name="thor-bearing-classifier",
+        version=version,
+        mlflow_run_id="run123",
+        stage=stage,
+        family="lightgbm",
+        ims_total=0.8,
+        registered_at=datetime.now(UTC),
     )
 
 
@@ -307,10 +368,14 @@ def make_features_df() -> pd.DataFrame:
         for i in range(10):
             rows.append(
                 {
-                    "asset_id": a, "ts": NOW - timedelta(minutes=10 * (10 - i)),
+                    "asset_id": a,
+                    "ts": NOW - timedelta(minutes=10 * (10 - i)),
                     "vib_rms_mean": 1.0 + (0.3 * i if a == "MTR-042" else 0.0),
-                    "vib_rms_slope": 0.01, "bearing_temp_mean": 62.0, "load_mean": 55.0,
-                    "label": int(a == "MTR-042" and i > 6), "rul_h": float("nan"),
+                    "vib_rms_slope": 0.01,
+                    "bearing_temp_mean": 62.0,
+                    "load_mean": 55.0,
+                    "label": int(a == "MTR-042" and i > 6),
+                    "rul_h": float("nan"),
                 }
             )
     return pd.DataFrame(rows)
@@ -330,56 +395,96 @@ def install_fake_toolbox(monkeypatch: pytest.MonkeyPatch, orchestrator: Any) -> 
     """Monkeypatch every `orchestrator.tool_*` seam with fast fakes; returns a call log."""
     calls: dict[str, Any] = {"promote": [], "deploy_edge": [], "contracts": []}
 
-    monkeypatch.setattr(orchestrator, "tool_profile_dataset", lambda df, asset_id: make_dq(asset_id))
     monkeypatch.setattr(
-        orchestrator, "tool_build_features",
+        orchestrator, "tool_profile_dataset", lambda df, asset_id: make_dq(asset_id)
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "tool_build_features",
         lambda df, regimes, horizon_h, window_rows=12: (make_features_df(), make_spec()),
     )
     monkeypatch.setattr(orchestrator, "tool_infer_task", lambda dq, df, horizon_h: make_task())
     monkeypatch.setattr(
-        orchestrator, "tool_train_candidates",
-        lambda fdf, spec, task, n_trials, seed, artifacts_dir, asset_id: make_candidates(asset_id, artifacts_dir),
-    )
-    monkeypatch.setattr(orchestrator, "tool_validate", lambda cs, fdf, run_id: make_validation(cs.asset_id))
-    monkeypatch.setattr(orchestrator, "tool_load_model", lambda path: FakeModel())
-    monkeypatch.setattr(
-        orchestrator, "tool_explain",
-        lambda model, x, spec, asset_id, version: make_explanation(asset_id),
-    )
-    monkeypatch.setattr(orchestrator, "tool_retrieve_manual_context", lambda exp: make_passages())
-    monkeypatch.setattr(
-        orchestrator, "tool_calculate_failure_cost",
-        lambda p_fail_by, settings, horizon_h, now: make_cost(),
-    )
-    monkeypatch.setattr(orchestrator, "tool_find_maintenance_window", lambda cost, lt, now: make_window())
-    monkeypatch.setattr(
-        orchestrator, "tool_build_evidence_bundle",
-        lambda exp, mc, cost, window, val, dq: EvidenceBundle(
-            explanation=exp, manual_context=mc, cost=cost, window=window, validation=val, data_quality_score=dq
+        orchestrator,
+        "tool_train_candidates",
+        lambda fdf, spec, task, n_trials, seed, artifacts_dir, asset_id: make_candidates(
+            asset_id, artifacts_dir
         ),
     )
     monkeypatch.setattr(
-        orchestrator, "tool_template_explanation",
-        lambda bundle: f"TEMPLATE: p={bundle.explanation.failure_probability:.2f}, recommend {bundle.cost.recommended}",
+        orchestrator, "tool_validate", lambda cs, fdf, run_id: make_validation(cs.asset_id)
+    )
+    monkeypatch.setattr(orchestrator, "tool_load_model", lambda path: FakeModel())
+    monkeypatch.setattr(
+        orchestrator,
+        "tool_explain",
+        lambda model, x, spec, asset_id, version, background=None: make_explanation(asset_id),
+    )
+    monkeypatch.setattr(orchestrator, "tool_retrieve_manual_context", lambda exp: make_passages())
+    monkeypatch.setattr(
+        orchestrator,
+        "tool_calculate_failure_cost",
+        lambda p_fail_by, settings, horizon_h, now: make_cost(),
+    )
+    monkeypatch.setattr(
+        orchestrator, "tool_find_maintenance_window", lambda cost, lt, now: make_window()
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "tool_build_evidence_bundle",
+        lambda exp, mc, cost, window, val, dq: EvidenceBundle(
+            explanation=exp,
+            manual_context=mc,
+            cost=cost,
+            window=window,
+            validation=val,
+            data_quality_score=dq,
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "tool_template_explanation",
+        lambda bundle: (
+            f"TEMPLATE: p={bundle.explanation.failure_probability:.2f}, recommend {bundle.cost.recommended}"
+        ),
     )
 
-    def fake_create_contract(bundle: EvidenceBundle, run_id: str, text: str, source: str, engine: Any) -> DecisionContract:
+    def fake_create_contract(
+        bundle: EvidenceBundle, run_id: str, text: str, source: str, engine: Any
+    ) -> DecisionContract:
         dc = make_contract(bundle, run_id, text, source)
         db.insert_decision_contract(dc, engine=engine)
         calls["contracts"].append(dc.contract_id)
         return dc
 
     monkeypatch.setattr(orchestrator, "tool_create_decision_contract", fake_create_contract)
-    monkeypatch.setattr(orchestrator, "tool_register_model", lambda v, path, engine: make_registered(v.model_version))
     monkeypatch.setattr(
-        orchestrator, "tool_compare_champion",
-        lambda rm, engine: ChampionComparison(challenger=rm, champion=None, delta={"ims_total": 0.8}, recommend_promote=True, rationale="no champion"),
+        orchestrator,
+        "tool_register_model",
+        lambda v, path, engine: make_registered(v.model_version),
     )
     monkeypatch.setattr(
-        orchestrator, "tool_request_promotion",
+        orchestrator,
+        "tool_compare_champion",
+        lambda rm, engine: ChampionComparison(
+            challenger=rm,
+            champion=None,
+            delta={"ims_total": 0.8},
+            recommend_promote=True,
+            rationale="no champion",
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "tool_request_promotion",
         lambda comp, to_stage, engine: PromotionRequest(
-            promotion_id="promo_test_1", model_name=comp.challenger.name, version=comp.challenger.version,
-            from_stage=comp.challenger.stage, to_stage=to_stage, comparison=comp, created_at=datetime.now(UTC),
+            promotion_id="promo_test_1",
+            model_name=comp.challenger.name,
+            version=comp.challenger.version,
+            from_stage=comp.challenger.stage,
+            to_stage=to_stage,
+            comparison=comp,
+            created_at=datetime.now(UTC),
         ),
     )
 
@@ -399,22 +504,32 @@ def install_fake_toolbox(monkeypatch: pytest.MonkeyPatch, orchestrator: Any) -> 
     ) -> EdgeDeployment:
         calls["deploy_edge"].append(str(artifact_path))
         return EdgeDeployment(
-            model_name=model.name, version=model.version, onnx_path=str(models_dir / "m.onnx"),
-            deployed_at=datetime.now(UTC), input_features=features,
+            model_name=model.name,
+            version=model.version,
+            onnx_path=str(models_dir / "m.onnx"),
+            deployed_at=datetime.now(UTC),
+            input_features=features,
         )
 
     monkeypatch.setattr(orchestrator, "tool_promote", fake_promote)
     monkeypatch.setattr(orchestrator, "tool_deploy_edge", fake_deploy)
     monkeypatch.setattr(
-        orchestrator, "tool_run_whatif",
+        orchestrator,
+        "tool_run_whatif",
         lambda model, x, spec, asset_id, scenario: WhatIfResult(
-            asset_id=asset_id, scenario=scenario, baseline_probability=0.78, scenario_probability=0.5, delta=-0.28
+            asset_id=asset_id,
+            scenario=scenario,
+            baseline_probability=0.78,
+            scenario_probability=0.5,
+            delta=-0.28,
         ),
     )
     return calls
 
 
-def wait_for_stage(orchestrator: Any, run_id: str, stages: set[str], engine: Any, timeout: float = 15.0) -> GraphState:
+def wait_for_stage(
+    orchestrator: Any, run_id: str, stages: set[str], engine: Any, timeout: float = 15.0
+) -> GraphState:
     import time
 
     deadline = time.time() + timeout
@@ -424,7 +539,9 @@ def wait_for_stage(orchestrator: Any, run_id: str, stages: set[str], engine: Any
             return gs
         time.sleep(0.05)
     gs = orchestrator.get_run(run_id, engine)
-    raise AssertionError(f"run {run_id} did not reach {stages}; last = {gs.stage if gs else None} / {gs.error if gs else None}")
+    raise AssertionError(
+        f"run {run_id} did not reach {stages}; last = {gs.stage if gs else None} / {gs.error if gs else None}"
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -453,8 +570,12 @@ def test_route_is_deterministic_without_key(engine: Any) -> None:
     gs = GraphState(run_id="r1", asset_id="MTR-042")
     order = []
     for stage in (
-        PipelineStage.queued, PipelineStage.profiling, PipelineStage.training,
-        PipelineStage.validating, PipelineStage.explaining, PipelineStage.awaiting_approval,
+        PipelineStage.queued,
+        PipelineStage.profiling,
+        PipelineStage.training,
+        PipelineStage.validating,
+        PipelineStage.explaining,
+        PipelineStage.awaiting_approval,
     ):
         gs.stage = stage
         order.append(orchestrator.route(gs))
@@ -464,7 +585,9 @@ def test_route_is_deterministic_without_key(engine: Any) -> None:
     assert gs.llm_calls == 0
 
 
-def test_route_ignores_llm_choice_that_skips_validate(engine: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_route_ignores_llm_choice_that_skips_validate(
+    engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from apps.api import orchestrator
 
     monkeypatch.setattr(orchestrator, "_api_key", lambda: "sk-test")
@@ -493,7 +616,9 @@ def test_route_survives_llm_exception(engine: Any, monkeypatch: pytest.MonkeyPat
     assert gs.events[-1].payload["error"].startswith("RuntimeError")
 
 
-def test_draft_explanation_template_without_key(engine: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_draft_explanation_template_without_key(
+    engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from apps.api import orchestrator
 
     monkeypatch.setattr(orchestrator, "tool_template_explanation", lambda b: "template text")
@@ -501,7 +626,9 @@ def test_draft_explanation_template_without_key(engine: Any, monkeypatch: pytest
     assert (text, source) == ("template text", "template")
 
 
-def test_draft_explanation_falls_back_on_llm_failure(engine: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_draft_explanation_falls_back_on_llm_failure(
+    engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from apps.api import orchestrator
 
     monkeypatch.setattr(orchestrator, "_api_key", lambda: "sk-test")
@@ -535,8 +662,12 @@ def test_full_run_pauses_at_gate_and_resumes(engine: Any, monkeypatch: pytest.Mo
         assert t in tools
 
     approval = Approval(
-        approval_id="a1", contract_id=gs.contract.contract_id, decision="approved",
-        approver="jane", note="ok", decided_at=datetime.now(UTC),
+        approval_id="a1",
+        contract_id=gs.contract.contract_id,
+        decision="approved",
+        approver="jane",
+        note="ok",
+        decided_at=datetime.now(UTC),
     )
     out = orchestrator.resume(gs0.run_id, approval, engine=engine)
     assert out.stage == PipelineStage.approved
@@ -572,8 +703,11 @@ def test_rejected_run_does_not_promote(engine: Any, monkeypatch: pytest.MonkeyPa
     gs = wait_for_stage(orchestrator, gs0.run_id, {"awaiting_approval", "failed"}, engine)
     assert gs.stage == PipelineStage.awaiting_approval, gs.error
     approval = Approval(
-        approval_id="a2", contract_id=gs.contract.contract_id, decision="rejected",
-        approver="jane", decided_at=datetime.now(UTC),
+        approval_id="a2",
+        contract_id=gs.contract.contract_id,
+        decision="rejected",
+        approver="jane",
+        decided_at=datetime.now(UTC),
     )
     out = orchestrator.resume(gs0.run_id, approval, engine=engine)
     assert out.stage == PipelineStage.rejected
@@ -584,7 +718,11 @@ def test_node_failure_marks_run_failed(engine: Any, monkeypatch: pytest.MonkeyPa
     from apps.api import orchestrator
 
     install_fake_toolbox(monkeypatch, orchestrator)
-    monkeypatch.setattr(orchestrator, "tool_profile_dataset", lambda df, asset_id: make_dq(asset_id, trainable=False))
+    monkeypatch.setattr(
+        orchestrator,
+        "tool_profile_dataset",
+        lambda df, asset_id: make_dq(asset_id, trainable=False),
+    )
     gs0 = orchestrator.start_run("MTR-042", engine=engine)
     gs = wait_for_stage(orchestrator, gs0.run_id, {"awaiting_approval", "failed"}, engine)
     assert gs.stage == PipelineStage.failed
@@ -621,7 +759,9 @@ def test_copilot_template_mode(engine: Any) -> None:
     assert r.tool_calls and r.tool_calls[0]["name"] == "get_fleet"
     assert "MTR-042" in r.reply and "4 assets" in r.reply
     r = ask("How is MTR-042 doing?")
-    assert r.tool_calls[0]["name"] == "get_asset" and r.tool_calls[0]["args"] == {"asset_id": "MTR-042"}
+    assert r.tool_calls[0]["name"] == "get_asset" and r.tool_calls[0]["args"] == {
+        "asset_id": "MTR-042"
+    }
     assert r.reply.startswith("MTR-042")
     r = ask("What is pending approval?")
     assert r.tool_calls[0]["name"] == "list_pending_approvals"

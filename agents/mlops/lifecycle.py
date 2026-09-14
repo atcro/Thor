@@ -403,8 +403,7 @@ def _check_approval(promotion_id: str, approval: Approval, expected: str) -> Non
         )
     if approval.decision != expected:
         raise PermissionError(
-            f"promotion {promotion_id} requires decision='{expected}', "
-            f"got '{approval.decision}'"
+            f"promotion {promotion_id} requires decision='{expected}', got '{approval.decision}'"
         )
 
 
@@ -503,14 +502,27 @@ def reject_promotion(
 def _unwrap_estimator(model: Any) -> tuple[Any, str]:
     """Return (base tree estimator, calibration note). CalibratedClassifierCV is unwrapped
     to its first fold's base estimator; calibration is NOT exported to ONNX -> "none"."""
-    calibrated = getattr(model, "calibrated_classifiers_", None)
-    if calibrated:
-        return calibrated[0].estimator, "none"
-    base = getattr(model, "estimator", None)
-    if base is not None and hasattr(base, "predict_proba") and not hasattr(model, "estimators_"):
-        # generic wrapper exposing .estimator (e.g. a custom calibration shim)
-        return base, "none"
-    return model, "none"
+    current = model
+    for _ in range(8):
+        calibrated = getattr(current, "calibrated_classifiers_", None)
+        if calibrated:
+            current = calibrated[0].estimator
+            continue
+        # sklearn >= 1.6 wraps a prefit estimator in FrozenEstimator inside the calibrator
+        if type(current).__name__ == "FrozenEstimator" and hasattr(current, "estimator"):
+            current = current.estimator
+            continue
+        base = getattr(current, "estimator", None)
+        if (
+            base is not None
+            and hasattr(base, "predict_proba")
+            and not hasattr(current, "estimators_")
+        ):
+            # generic wrapper exposing .estimator (e.g. a custom calibration shim)
+            current = base
+            continue
+        break
+    return current, "none"
 
 
 def _register_boost_converters() -> None:
@@ -654,7 +666,9 @@ def deploy_edge(
             )
             .values(onnx_path=str(onnx_path))
         )
-    log.info("deployed %s to %s (%s, calibration=%s)", stem, onnx_path, sidecar["family"], calibration)
+    log.info(
+        "deployed %s to %s (%s, calibration=%s)", stem, onnx_path, sidecar["family"], calibration
+    )
     return EdgeDeployment(
         model_name=model.name,
         version=model.version,

@@ -18,3 +18,4 @@ apps/web/dist/
 *.egg-info/
 .DS_Store
 THOR_SESSION_MEMORY.md
+.tmp_*

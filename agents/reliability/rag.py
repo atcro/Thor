@@ -161,7 +161,9 @@ def chunk_markdown(text: str, source: str) -> list[dict[str, Any]]:
         if not body:
             return
         for piece in _split_long(body):
-            chunks.append({"text": f"{section}\n{piece}", "metadata": {"source": source, "section": section}})
+            chunks.append(
+                {"text": f"{section}\n{piece}", "metadata": {"source": source, "section": section}}
+            )
 
     for line in text.splitlines():
         m = _HEADING_RE.match(line)
@@ -305,15 +307,27 @@ def retrieve_manual_context(
     try:
         client = _client(Path(chroma_path))
         col = _open_collection(client, collection)
-        if col is None:
-            log.warning("manual collection %s not found at %s", collection, chroma_path)
-            return []
+        if col is None or col.count() == 0:
+            # Self-heal: build the index from the configured manuals directory once.
+            from apps.api.settings import get_settings
+
+            manuals_dir = Path(get_settings().manuals_dir)
+            log.warning(
+                "manual collection %s missing/empty at %s; building from %s",
+                collection,
+                chroma_path,
+                manuals_dir,
+            )
+            build_index(manuals_dir, Path(chroma_path), collection=collection)
+            col = _open_collection(client, collection)
+            if col is None:
+                return []
         n = col.count()
         if n == 0:
             return []
         res = col.query(
             query_texts=[query],
-            n_results=max(1, min(k, n)),
+            n_results=max(1, min(max(5 * k, 20), n)),  # over-fetch, keep one hit per section
             include=["documents", "metadatas", "distances"],
         )
     except Exception as e:  # noqa: BLE001 - retrieval must never crash the pipeline
@@ -323,8 +337,15 @@ def retrieve_manual_context(
     docs = res.get("documents") or [[]]
     metas = res.get("metadatas") or [[]]
     dists = res.get("distances") or [[]]
+    seen: set[tuple[str, str]] = set()
     for doc, meta, dist in zip(docs[0], metas[0], dists[0]):
         meta = meta or {}
+        key = (str(meta.get("source", "unknown")), str(meta.get("section", "")))
+        if key in seen:
+            continue  # results are distance-ordered, so the first hit per section is the best
+        seen.add(key)
+        if len(passages) >= k:
+            break
         page = meta.get("page")
         passages.append(
             ManualPassage(

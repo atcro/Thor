@@ -132,7 +132,9 @@ def _assert_explanation(exp: Explanation, top_k: int) -> None:
         assert f.direction == ("raises_risk" if f.shap_value > 0 else "lowers_risk")
 
 
-def test_explain_random_forest(rf: RandomForestClassifier, latest_rows: pd.DataFrame, spec: FeatureSpec) -> None:
+def test_explain_random_forest(
+    rf: RandomForestClassifier, latest_rows: pd.DataFrame, spec: FeatureSpec
+) -> None:
     exp = explain.explain(rf, latest_rows, spec, "MTR-008", "v1", top_k=3)
     _assert_explanation(exp, 3)
     assert exp.asset_id == "MTR-008" and exp.model_version == "v1"
@@ -141,18 +143,24 @@ def test_explain_random_forest(rf: RandomForestClassifier, latest_rows: pd.DataF
     assert exp.top_features[0].direction == "raises_risk"
 
 
-def test_explain_unwraps_calibrated_wrapper(rf: RandomForestClassifier, frame: pd.DataFrame, latest_rows: pd.DataFrame, spec: FeatureSpec) -> None:
+def test_explain_unwraps_calibrated_wrapper(
+    rf: RandomForestClassifier, frame: pd.DataFrame, latest_rows: pd.DataFrame, spec: FeatureSpec
+) -> None:
     hold = frame.loc[frame["asset_id"].isin(["MTR-007", "MTR-008"])]
     cal = CalibratedClassifierCV(FrozenEstimator(rf), method="isotonic")
     cal.fit(hold[FEATURES], hold["label"])
     assert explain.unwrap_tree_model(cal) is rf
     exp = explain.explain(cal, latest_rows, spec, "MTR-008", "v2")
     _assert_explanation(exp, 6)
-    assert exp.failure_probability == pytest.approx(cal.predict_proba(latest_rows[FEATURES].tail(1))[0, 1])
+    assert exp.failure_probability == pytest.approx(
+        cal.predict_proba(latest_rows[FEATURES].tail(1))[0, 1]
+    )
 
 
 @pytest.mark.parametrize("family", ["lightgbm", "xgboost"])
-def test_explain_boosted_families(family: str, frame: pd.DataFrame, latest_rows: pd.DataFrame, spec: FeatureSpec) -> None:
+def test_explain_boosted_families(
+    family: str, frame: pd.DataFrame, latest_rows: pd.DataFrame, spec: FeatureSpec
+) -> None:
     if family == "lightgbm":
         m = LGBMClassifier(n_estimators=40, num_leaves=8, random_state=0, verbose=-1)
     else:
@@ -163,7 +171,9 @@ def test_explain_boosted_families(family: str, frame: pd.DataFrame, latest_rows:
     assert exp.failure_probability > 0.5
 
 
-def test_explain_model_agnostic_fallback(rf: RandomForestClassifier, latest_rows: pd.DataFrame, spec: FeatureSpec) -> None:
+def test_explain_model_agnostic_fallback(
+    rf: RandomForestClassifier, latest_rows: pd.DataFrame, spec: FeatureSpec
+) -> None:
     class Opaque:
         """Not a tree model: forces the shap.Explainer fallback path."""
 
@@ -177,15 +187,25 @@ def test_explain_model_agnostic_fallback(rf: RandomForestClassifier, latest_rows
     _assert_explanation(exp, 6)
 
 
-def test_run_whatif_lowering_vibration_lowers_risk(rf: RandomForestClassifier, latest_rows: pd.DataFrame, spec: FeatureSpec) -> None:
-    res = explain.run_whatif(rf, latest_rows, spec, "MTR-008", {"vib_rms_z": 0.0, "bearing_temp_z": 0.0, "vib_kurt_mean": 3.0})
+def test_run_whatif_lowering_vibration_lowers_risk(
+    rf: RandomForestClassifier, latest_rows: pd.DataFrame, spec: FeatureSpec
+) -> None:
+    res = explain.run_whatif(
+        rf,
+        latest_rows,
+        spec,
+        "MTR-008",
+        {"vib_rms_z": 0.0, "bearing_temp_z": 0.0, "vib_kurt_mean": 3.0},
+    )
     assert res.asset_id == "MTR-008"
     assert res.scenario == {"vib_rms_z": 0.0, "bearing_temp_z": 0.0, "vib_kurt_mean": 3.0}
     assert res.delta == pytest.approx(res.scenario_probability - res.baseline_probability)
     assert res.scenario_probability < res.baseline_probability
 
 
-def test_run_whatif_rejects_unknown_feature(rf: RandomForestClassifier, latest_rows: pd.DataFrame, spec: FeatureSpec) -> None:
+def test_run_whatif_rejects_unknown_feature(
+    rf: RandomForestClassifier, latest_rows: pd.DataFrame, spec: FeatureSpec
+) -> None:
     with pytest.raises(ValueError):
         explain.run_whatif(rf, latest_rows, spec, "MTR-008", {"not_a_feature": 1.0})
 
@@ -205,7 +225,11 @@ def chroma_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 def test_manuals_exist_with_required_section() -> None:
     names = {p.name for p in MANUALS_DIR.glob("*.md")}
-    assert {"motor-maintenance.md", "vibration-analysis-guide.md", "plant-maintenance-policy.md"} <= names
+    assert {
+        "motor-maintenance.md",
+        "vibration-analysis-guide.md",
+        "plant-maintenance-policy.md",
+    } <= names
     motor = (MANUALS_DIR / "motor-maintenance.md").read_text(encoding="utf-8")
     assert "### 4.2 Drive-end bearing wear" in motor
     for name in names:
@@ -224,7 +248,9 @@ def test_hashed_embedding_is_forced_and_deterministic() -> None:
 
 
 def test_chunk_markdown_keeps_numbered_section_labels() -> None:
-    chunks = rag.chunk_markdown((MANUALS_DIR / "motor-maintenance.md").read_text(encoding="utf-8"), "motor-maintenance.md")
+    chunks = rag.chunk_markdown(
+        (MANUALS_DIR / "motor-maintenance.md").read_text(encoding="utf-8"), "motor-maintenance.md"
+    )
     sections = {c["metadata"]["section"] for c in chunks}
     assert "4.2 Drive-end bearing wear" in sections
     assert all(len(c["text"]) <= 900 for c in chunks)
@@ -243,8 +269,21 @@ def test_retrieve_manual_context_hits_bearing_section(chroma_path: Path) -> None
     assert passages[0].page is None
 
 
-def test_retrieve_missing_index_returns_empty(tmp_path: Path) -> None:
-    assert rag.retrieve_manual_context("anything", tmp_path / "nowhere") == []
+def test_retrieve_missing_index_returns_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Retrieval self-heals by indexing the configured manuals dir; with no manuals there is
+    # nothing to index and the result must be empty rather than an error.
+    from apps.api.settings import get_settings
+
+    empty = tmp_path / "no-manuals"
+    empty.mkdir()
+    monkeypatch.setenv("MANUALS_DIR", str(empty))
+    get_settings.cache_clear()
+    try:
+        assert rag.retrieve_manual_context("anything", tmp_path / "nowhere") == []
+    finally:
+        get_settings.cache_clear()
 
 
 def test_query_from_explanation_is_deterministic() -> None:
@@ -252,9 +291,18 @@ def test_query_from_explanation_is_deterministic() -> None:
         asset_id="MTR-042",
         failure_probability=0.7,
         top_features=[
-            ShapFeature(feature="vib_rms_z", shap_value=0.3, feature_value=3.1, direction="raises_risk"),
-            ShapFeature(feature="load_mean", shap_value=-0.1, feature_value=40.0, direction="lowers_risk"),
-            ShapFeature(feature="bearing_temp_z", shap_value=0.05, feature_value=1.2, direction="raises_risk"),
+            ShapFeature(
+                feature="vib_rms_z", shap_value=0.3, feature_value=3.1, direction="raises_risk"
+            ),
+            ShapFeature(
+                feature="load_mean", shap_value=-0.1, feature_value=40.0, direction="lowers_risk"
+            ),
+            ShapFeature(
+                feature="bearing_temp_z",
+                shap_value=0.05,
+                feature_value=1.2,
+                direction="raises_risk",
+            ),
         ],
         base_value=0.1,
         model_version="v1",
@@ -283,18 +331,33 @@ def test_hazard_curve_is_monotone_and_anchored() -> None:
 
 def test_calculate_failure_cost_high_risk_recommends_now(settings: Settings) -> None:
     now = datetime(2025, 9, 10, 12, 0, tzinfo=UTC)
-    cmp_ = cost.calculate_failure_cost(0.62, settings, now=now, asset_id="MTR-042", lead_time_median_h=48.0)
+    cmp_ = cost.calculate_failure_cost(
+        0.62, settings, now=now, asset_id="MTR-042", lead_time_median_h=48.0
+    )
     assert cmp_.asset_id == "MTR-042"
     assert [o.option for o in cmp_.options] == ["maintain_now", "maintain_later", "run_to_failure"]
     assert cmp_.recommended == "maintain_now"
     by = {o.option: o for o in cmp_.options}
-    planned = settings.cost_planned_maintenance + settings.downtime_planned_h * settings.cost_downtime_per_hour
+    planned = (
+        settings.cost_planned_maintenance
+        + settings.downtime_planned_h * settings.cost_downtime_per_hour
+    )
     assert by["maintain_now"].expected_cost == pytest.approx(planned)
     assert by["maintain_now"].when == now
     assert by["maintain_later"].when == now + timedelta(hours=72)
     assert by["run_to_failure"].when is None
-    assert by["maintain_now"].p_failure_before <= by["maintain_later"].p_failure_before <= by["run_to_failure"].p_failure_before
-    for key in ("cost_planned_maintenance", "cost_unplanned_repair", "cost_downtime_per_hour", "downtime_planned_h", "downtime_unplanned_h"):
+    assert (
+        by["maintain_now"].p_failure_before
+        <= by["maintain_later"].p_failure_before
+        <= by["run_to_failure"].p_failure_before
+    )
+    for key in (
+        "cost_planned_maintenance",
+        "cost_unplanned_repair",
+        "cost_downtime_per_hour",
+        "downtime_planned_h",
+        "downtime_unplanned_h",
+    ):
         assert cmp_.assumptions[key] == getattr(settings, key)
     assert cmp_.assumptions["p_now"] == pytest.approx(0.62)
 
@@ -314,7 +377,9 @@ def test_calculate_failure_cost_accepts_callable(settings: Settings) -> None:
 
 def test_find_maintenance_window_low_risk_picks_low_load_slot(settings: Settings) -> None:
     now = datetime(2025, 9, 10, 12, 0, tzinfo=UTC)
-    cmp_ = cost.calculate_failure_cost(0.05, settings, now=now, asset_id="MTR-001", lead_time_median_h=48.0)
+    cmp_ = cost.calculate_failure_cost(
+        0.05, settings, now=now, asset_id="MTR-001", lead_time_median_h=48.0
+    )
     lt = LeadTimeReport(median_h=48.0, p90_h=60.0, p10_h=20.0, n_events=2, threshold=0.5)
     win = cost.find_maintenance_window(cmp_, lt, now=now)
     assert win.start == datetime(2025, 9, 11, 2, 0, tzinfo=UTC)
@@ -346,7 +411,9 @@ def _validation_report() -> ValidationReport:
         champion_family="lightgbm",
         champion_mlflow_run_id="run123",
         model_version="v777",
-        leakage=LeakageReport(temporal_leakage=False, feature_leakage=[], asset_overlap=False, passed=True),
+        leakage=LeakageReport(
+            temporal_leakage=False, feature_leakage=[], asset_overlap=False, passed=True
+        ),
         backtest=[
             BacktestFold(
                 fold=0,
@@ -359,7 +426,14 @@ def _validation_report() -> ValidationReport:
         calibration=CalibrationReport(method="isotonic", brier_before=0.12, brier_after=0.08),
         lead_time=LeadTimeReport(median_h=36.0, p90_h=50.0, p10_h=20.0, n_events=2, threshold=0.5),
         rul=None,
-        ims=IndustrialModelScore(recall=0.9, precision=0.7, lead_time_score=0.5, calibration_score=0.68, latency_score=0.9, total=0.75),
+        ims=IndustrialModelScore(
+            recall=0.9,
+            precision=0.7,
+            lead_time_score=0.5,
+            calibration_score=0.68,
+            latency_score=0.9,
+            total=0.75,
+        ),
         passed=True,
         notes=["champion_artifact=/tmp/cand_lgbm_calibrated.joblib"],
     )
@@ -371,15 +445,26 @@ def bundle(settings: Settings, chroma_path: Path):
         asset_id="MTR-042",
         failure_probability=0.62,
         top_features=[
-            ShapFeature(feature="vib_rms_z", shap_value=0.31, feature_value=3.4, direction="raises_risk"),
-            ShapFeature(feature="bearing_temp_z", shap_value=0.12, feature_value=2.1, direction="raises_risk"),
-            ShapFeature(feature="load_mean", shap_value=-0.04, feature_value=52.0, direction="lowers_risk"),
+            ShapFeature(
+                feature="vib_rms_z", shap_value=0.31, feature_value=3.4, direction="raises_risk"
+            ),
+            ShapFeature(
+                feature="bearing_temp_z",
+                shap_value=0.12,
+                feature_value=2.1,
+                direction="raises_risk",
+            ),
+            ShapFeature(
+                feature="load_mean", shap_value=-0.04, feature_value=52.0, direction="lowers_risk"
+            ),
         ],
         base_value=0.08,
         model_version="v777",
     )
     now = datetime(2025, 9, 10, 12, 0, tzinfo=UTC)
-    cmp_ = cost.calculate_failure_cost(exp.failure_probability, settings, now=now, asset_id="MTR-042", lead_time_median_h=36.0)
+    cmp_ = cost.calculate_failure_cost(
+        exp.failure_probability, settings, now=now, asset_id="MTR-042", lead_time_median_h=36.0
+    )
     val = _validation_report()
     win = cost.find_maintenance_window(cmp_, val.lead_time, now=now)
     passages = rag.retrieve_manual_context(rag.query_from_explanation(exp), chroma_path, k=3)
@@ -440,7 +525,12 @@ def test_template_explanation_cites_only_bundle_numbers(bundle) -> None:
 
 def test_template_explanation_without_manual_context(bundle) -> None:
     bare = contract.build_evidence_bundle(
-        bundle.explanation, [], bundle.cost, bundle.window, bundle.validation, bundle.data_quality_score
+        bundle.explanation,
+        [],
+        bundle.cost,
+        bundle.window,
+        bundle.validation,
+        bundle.data_quality_score,
     )
     text = contract.template_explanation(bare)
     assert "section" not in text

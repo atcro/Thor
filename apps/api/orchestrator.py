@@ -231,12 +231,39 @@ def tool_load_model(path: str) -> Any:
 
 
 def tool_explain(
-    model: Any, x_latest: pd.DataFrame, spec: FeatureSpec, asset_id: str, model_version: str
+    model: Any,
+    x_latest: pd.DataFrame,
+    spec: FeatureSpec,
+    asset_id: str,
+    model_version: str,
+    background: pd.DataFrame | None = None,
 ) -> Explanation:
-    """07: `agents.reliability.explain.explain(model, X_latest, spec, asset_id, model_version)`."""
+    """07: `agents.reliability.explain.explain(model, X_latest, spec, asset_id, model_version,
+    background=...)`. `background` = healthy fleet rows + the asset's recent rows so SHAP has
+    real variation to attribute against."""
     from agents.reliability.explain import explain
 
-    return explain(model, x_latest, spec, asset_id, model_version)
+    return explain(model, x_latest, spec, asset_id, model_version, background=background)
+
+
+def _explain_background(
+    features_df: pd.DataFrame, spec: FeatureSpec, asset_id: str, n_healthy: int = 30
+) -> pd.DataFrame:
+    """Stratified SHAP background: up to `n_healthy` label-0 rows from OTHER assets (seeded
+    sample) plus the target asset's last 20 rows. Feature columns only."""
+    cols = list(spec.features)
+    parts: list[pd.DataFrame] = []
+    if "asset_id" in features_df.columns and "label" in features_df.columns:
+        others = features_df[(features_df["asset_id"] != asset_id) & (features_df["label"] == 0)]
+        if len(others):
+            parts.append(others.sample(n=min(n_healthy, len(others)), random_state=0)[cols])
+        own = features_df[features_df["asset_id"] == asset_id]
+        if "ts" in own.columns:
+            own = own.sort_values("ts")
+        parts.append(own.tail(20)[cols])
+    if not parts:
+        return features_df[cols].tail(50)
+    return pd.concat(parts, ignore_index=True).astype(float)
 
 
 def tool_run_whatif(
@@ -329,9 +356,7 @@ def tool_register_model(
     return register_model(validation, artifact_path, engine=engine)
 
 
-def tool_compare_champion(
-    challenger: RegisteredModel, engine: Engine | None
-) -> ChampionComparison:
+def tool_compare_champion(challenger: RegisteredModel, engine: Engine | None) -> ChampionComparison:
     """08: `agents.mlops.lifecycle.compare_champion(challenger, engine=engine)`."""
     from agents.mlops.lifecycle import compare_champion
 
@@ -596,9 +621,7 @@ def _features_for(
     return fdf, spec
 
 
-def _latest_features(
-    features_df: pd.DataFrame, spec: FeatureSpec, asset_id: str
-) -> pd.DataFrame:
+def _latest_features(features_df: pd.DataFrame, spec: FeatureSpec, asset_id: str) -> pd.DataFrame:
     sub = features_df
     if "asset_id" in features_df.columns:
         sub = features_df[features_df["asset_id"] == asset_id]
@@ -719,7 +742,8 @@ def _explain(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
         h.cache["model"] = model
     x_latest = _latest_features(features_df, spec, gs.asset_id)
     h.cache["x_latest"] = x_latest
-    exp = tool_explain(model, x_latest, spec, gs.asset_id, v.model_version)
+    background = _explain_background(features_df, spec, gs.asset_id)
+    exp = tool_explain(model, x_latest, spec, gs.asset_id, v.model_version, background)
     top = exp.top_features[0].feature if exp.top_features else "n/a"
     append_event(
         gs,
@@ -732,7 +756,10 @@ def _explain(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
     try:
         passages = tool_retrieve_manual_context(exp)
         append_event(
-            gs, gs.stage, f"{len(passages)} manual passages retrieved", tool="retrieve_manual_context"
+            gs,
+            gs.stage,
+            f"{len(passages)} manual passages retrieved",
+            tool="retrieve_manual_context",
         )
     except Exception as e:  # retrieval enriches the explanation, never load-bearing
         append_event(
@@ -741,7 +768,9 @@ def _explain(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
     settings = get_settings()
     now = datetime.now(UTC)
     p_now = float(exp.failure_probability)
-    lead = max(float(v.lead_time.median_h), 1.0)
+    # A model that has not demonstrated early warning gets a conservative 12 h hazard scale
+    # rather than a degenerate curve that jumps to 100% at the first planned window.
+    lead = max(float(v.lead_time.median_h), 12.0)
 
     def p_fail_by(hours: float) -> float:
         """Hazard curve: P(fail within h) = 1 - (1 - p_now) ** (1 + h / lead_time_median)."""
@@ -802,7 +831,10 @@ def _finalize(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
     if approval.decision != "approved":
         gs.stage = PipelineStage.rejected
         append_event(
-            gs, gs.stage, f"rejected by {approval.approver}: {approval.note or '-'}", tool="finalize"
+            gs,
+            gs.stage,
+            f"rejected by {approval.approver}: {approval.note or '-'}",
+            tool="finalize",
         )
         return
     gs.stage = PipelineStage.approved
@@ -1241,15 +1273,21 @@ def _result_summary(result: dict[str, Any]) -> str:
         return str(result["error"])
     if "n_assets" in result:
         worst = result["highest_risk"][0] if result["highest_risk"] else None
-        tail = f"; highest risk {worst['asset_id']} (health {worst['health_score']})" if worst else ""
+        tail = (
+            f"; highest risk {worst['asset_id']} (health {worst['health_score']})" if worst else ""
+        )
         return f"{result['n_assets']} assets{tail}"
     if "asset" in result:
         a = result["asset"]
         return f"{a['asset_id']} health {a['health_score']}, p_fail {a['failure_probability']}"
     if "contracts" in result and "promotions" in result:
-        return f"{len(result['contracts'])} contracts, {len(result['promotions'])} promotions pending"
+        return (
+            f"{len(result['contracts'])} contracts, {len(result['promotions'])} promotions pending"
+        )
     if "contract_id" in result:
-        return f"{result['contract_id']} {result.get('recommendation')} status {result.get('status')}"
+        return (
+            f"{result['contract_id']} {result.get('recommendation')} status {result.get('status')}"
+        )
     if "run_id" in result:
         return f"{result['run_id']} stage {result.get('stage')}"
     return json.dumps(result)[:120]

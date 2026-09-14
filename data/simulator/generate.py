@@ -8,11 +8,14 @@ plant site. Every asset cycles through three operating regimes on a shift schedu
 * R3 high load       (rpm ~ 1500, load ~ 85 %)
 
 Healthy sensor values depend on regime (vibration and temperatures rise with load), so a
-load change alone must never look like a fault. Two assets receive an injected drive-end
-bearing degradation that ends in failure at the end of the horizon:
+load change alone must never look like a fault. Seven assets receive an injected drive-end
+bearing degradation between an onset and a failure point (see FAULTY_ASSETS); after the
+failure the bearing is replaced and the motor returns to its healthy baseline:
 
-* MTR-042 (the demo motor)  onset at 55 % of the horizon
+* MTR-042 (the demo motor)  onset at 55 % of the horizon, not yet failed at the end
 * MTR-017 (subtler)         onset at 80 % of the horizon
+* MTR-003/009/013/023       completed historical failures the model learns from
+* MTR-021                   fails live during the replay, on a held-out motor
 
 Ground truth columns: `health` (1 -> 0) and `failure_within_h` (hours to failure, NaN when
 no failure lies ahead). Models may use `failure_within_h` only to build labels, never as a
@@ -82,7 +85,19 @@ ASSET_IDS: list[str] = [f"MTR-{i:03d}" for i in range(1, 25)]
 ASSET_IDS[3] = DEMO_ASSET
 
 #: asset_id -> onset of bearing degradation as a fraction of the horizon.
-FAULTY_ASSETS: dict[str, float] = {DEMO_ASSET: 0.55, "MTR-017": 0.80}
+#: asset_id -> (onset, failure) as fractions of the horizon. Degradation runs from onset to
+#: failure; after the failure index the motor is repaired (healthy baseline again). The API
+#: seeds the first ~80% of the timeline and the replay streams the rest, so faults that
+#: complete before 0.80 are "history" the model learns from, and later ones happen live.
+FAULTY_ASSETS: dict[str, tuple[float, float]] = {
+    DEMO_ASSET: (0.55, 1.0),  # the demo motor: degrades during the replay, caught in time
+    "MTR-017": (0.80, 1.0),  # subtle, late
+    "MTR-003": (0.05, 0.25),  # historical failures (training set)
+    "MTR-009": (0.12, 0.35),
+    "MTR-013": (0.20, 0.42),
+    "MTR-023": (0.08, 0.30),  # historical failure on a held-out motor (last 25% of ids)
+    "MTR-021": (0.60, 0.85),  # fails live, held-out
+}
 
 #: asset_id -> amplitude multiplier of the fault signature (MTR-017 is deliberately subtler).
 FAULT_AMPLITUDE: dict[str, float] = {DEMO_ASSET: 1.0, "MTR-017": 0.6}
@@ -298,11 +313,13 @@ def _simulate_asset(
     failure_within_h = np.full(n, np.nan)
     if asset_id in FAULTY_ASSETS:
         amp = FAULT_AMPLITUDE.get(asset_id, 1.0)
-        onset = int(round(FAULTY_ASSETS[asset_id] * (n - 1)))
+        onset_f, fail_f = FAULTY_ASSETS[asset_id]
+        onset = int(round(onset_f * (n - 1)))
+        fail_idx = int(round(fail_f * (n - 1)))
         idx = np.arange(n)
-        progress = np.clip((idx - onset) / max(n - 1 - onset, 1), 0.0, 1.0)
-        severity = progress**2.0  # smooth, monotone, accelerating
-        active = idx >= onset
+        progress = np.clip((idx - onset) / max(fail_idx - onset, 1), 0.0, 1.0)
+        active = (idx >= onset) & (idx <= fail_idx)
+        severity = np.where(active, progress**2.0, 0.0)  # smooth, monotone, accelerating
         vib = (
             vib + amp * severity * (5.5 + 0.4 * load / 55.0) + rng.normal(0, 1, n) * 0.35 * severity
         )
@@ -310,8 +327,9 @@ def _simulate_asset(
         crest = crest + amp * 2.2 * severity + rng.normal(0, 1, n) * 0.25 * severity
         bearing_target = bearing_target + amp * 30.0 * severity
         current = current + amp * 0.03 * rated_a * severity
-        health = np.clip(1.0 - severity, 0.0, 1.0)
-        hours_left = (n - 1 - idx) * step_min / 60.0
+        # health decays 1 -> 0 at the failure index, then the bearing is replaced (1.0 again)
+        health = np.where(active, np.clip(1.0 - severity, 0.0, 1.0), 1.0)
+        hours_left = (fail_idx - idx) * step_min / 60.0
         failure_within_h = np.where(active, hours_left, np.nan)
 
     motor_temp = _ewm(motor_target, _lag_alpha(step_min, 35.0), init=float(motor_target[0]))
@@ -407,7 +425,7 @@ def main() -> None:
     args = parser.parse_args()
     df, assets = generate_fleet(days=args.days, seed=args.seed, step_min=args.step_min)
     write_outputs(df, assets, args.out)
-    faulty = ", ".join(f"{a}@{int(f * 100)}%" for a, f in FAULTY_ASSETS.items())
+    faulty = ", ".join(f"{a}@{int(o * 100)}-{int(f * 100)}%" for a, (o, f) in FAULTY_ASSETS.items())
     print(
         f"wrote {len(df)} rows x {len(df.columns)} cols for {df['asset_id'].nunique()} assets "
         f"({args.days} days @ {args.step_min} min) to {args.out}; faulty: {faulty}"

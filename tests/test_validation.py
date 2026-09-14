@@ -126,8 +126,10 @@ def test_run_backtest_folds_are_asset_level_and_time_ordered(frame: pd.DataFrame
         assert not (set(f.train_assets) & set(f.test_assets)), "held-out assets leaked into train"
         assert set(f.train_assets) | set(f.test_assets) == all_assets
         assert f.train_end.tzinfo is not None
-        for key in ("recall", "precision", "f1", "auroc", "brier", "lead_time_h"):
+        for key in ("recall", "precision", "f1", "brier", "n_test", "n_pos_test"):
             assert key in f.metrics
+        # auroc / lead_time_h are omitted (not NaN) when undefined so the report is JSON-safe
+        assert all(np.isfinite(v) for v in f.metrics.values())
         assert 0.0 <= f.metrics["brier"] <= 1.0
         seen_test |= set(f.test_assets)
     assert seen_test == all_assets, "every asset is held out exactly once across folds"
@@ -142,8 +144,10 @@ def test_run_backtest_handles_single_class_holdout(frame: pd.DataFrame, spec: Fe
     )
     single = [f for f in folds if f.metrics["n_pos_test"] == 0]
     assert single, "fixture should produce at least one fold with only healthy held-out motors"
-    assert np.isnan(single[0].metrics["auroc"])
-    assert np.isnan(single[0].metrics["lead_time_h"])
+    assert "auroc" not in single[0].metrics
+    assert "lead_time_h" not in single[0].metrics
+    scored = [f for f in folds if f.metrics["n_pos_test"] > 0]
+    assert scored and "auroc" in scored[0].metrics
 
 
 # --------------------------------------------------------------------------------------

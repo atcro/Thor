@@ -39,9 +39,7 @@ _MAX_BACKGROUND_ROWS = 50
 
 def _is_tree_model(obj: Any) -> bool:
     """True for fitted sklearn tree ensembles / trees and xgboost / lightgbm classifiers."""
-    return any(
-        hasattr(obj, attr) for attr in ("estimators_", "tree_", "get_booster", "booster_")
-    )
+    return any(hasattr(obj, attr) for attr in ("estimators_", "tree_", "get_booster", "booster_"))
 
 
 def unwrap_tree_model(model: Any) -> Any:
@@ -137,9 +135,27 @@ def _positive_base_value(expected: Any) -> float:
     return float(arr[-1]) if arr.size else 0.0
 
 
-def _tree_shap(tree_model: Any, x: pd.DataFrame, background: pd.DataFrame) -> tuple[np.ndarray, float]:
+def _additive(values: np.ndarray, base: float, target: float | None, tol: float = 0.05) -> bool:
+    """SHAP additivity check: base + sum(values) must reproduce the prediction (probability
+    space) within `tol`. Catches explainer/output-space mismatches that yield absurd values."""
+    if not np.all(np.isfinite(values)) or not np.isfinite(base):
+        return False
+    if target is None:
+        return bool(np.max(np.abs(values)) < 50.0)
+    return abs(float(base + values.sum()) - float(target)) <= tol
+
+
+def _tree_shap(
+    tree_model: Any,
+    x: pd.DataFrame,
+    background: pd.DataFrame,
+    probability: float | None = None,
+) -> tuple[np.ndarray, float]:
     """TreeExplainer attributions for one row. Tries probability space first (needs a
-    background sample) and falls back to the model's native output space."""
+    background sample) and falls back to the model's native output space. Every result is
+    checked for additivity against `probability`; a non-additive probability-space result
+    (seen with LightGBM) is discarded and a ValueError is raised if no path is consistent, so
+    the caller can fall back to the model-agnostic explainer."""
     import shap
 
     n = len(x.columns)
@@ -152,15 +168,23 @@ def _tree_shap(tree_model: Any, x: pd.DataFrame, background: pd.DataFrame) -> tu
                 feature_perturbation="interventional",
             )
             values = _positive_class_values(explainer.shap_values(x), n)
-            return values, _positive_base_value(explainer.expected_value)
+            base = _positive_base_value(explainer.expected_value)
+            if _additive(values, base, probability):
+                return values, base
+            log.debug("probability-space TreeExplainer not additive; trying native output")
         except Exception as e:  # noqa: BLE001 - e.g. xgboost categorical splits
             log.debug("probability-space TreeExplainer unavailable: %s", e)
     explainer = shap.TreeExplainer(tree_model)
     values = _positive_class_values(explainer.shap_values(x), n)
-    return values, _positive_base_value(explainer.expected_value)
+    base = _positive_base_value(explainer.expected_value)
+    if _additive(values, base, None):  # native margin: only sanity-bound the magnitudes
+        return values, base
+    raise ValueError("TreeExplainer produced non-additive / unbounded attributions")
 
 
-def _model_agnostic_shap(model: Any, x: pd.DataFrame, background: pd.DataFrame) -> tuple[np.ndarray, float]:
+def _model_agnostic_shap(
+    model: Any, x: pd.DataFrame, background: pd.DataFrame
+) -> tuple[np.ndarray, float]:
     """Fallback: shap.Explainer over predict_proba with a small background sample."""
     import shap
 
@@ -184,6 +208,7 @@ def explain(
     asset_id: str,
     model_version: str,
     top_k: int = 6,
+    background: pd.DataFrame | None = None,
 ) -> Explanation:
     """SHAP explanation of the champion's prediction for the latest sample.
 
@@ -198,17 +223,25 @@ def explain(
     feature list with a warning so the pipeline never dies on explainability.
     """
     x = _latest_row(X_latest, spec)
-    background = _background(X_latest, spec)
+    if background is not None and len(background):
+        # Caller-supplied background (e.g. healthy fleet rows + the asset's recent rows):
+        # gives the explainer real variation instead of 50 near-identical failing rows.
+        background = background[spec.features].astype(float).reset_index(drop=True)
+    else:
+        background = _background(X_latest, spec)
     probability = float(np.clip(_positive_proba(model, x)[0], 0.0, 1.0))
+    tree = unwrap_tree_model(model)
 
     values: np.ndarray | None = None
     base_value = probability
     try:
-        values, base_value = _tree_shap(unwrap_tree_model(model), x, background)
+        values, base_value = _tree_shap(tree, x, background, probability)
     except Exception as e:  # noqa: BLE001 - fall through to model-agnostic explainer
         log.warning("TreeExplainer failed for %s (%s); using model-agnostic explainer", asset_id, e)
         try:
-            values, base_value = _model_agnostic_shap(model, x, background)
+            # Explain the tree model's own probability: an isotonic calibration layer is a
+            # step function that flattens perturbations to zero attribution.
+            values, base_value = _model_agnostic_shap(tree, x, background)
         except Exception as e2:  # noqa: BLE001 - last resort: no attributions
             log.error("SHAP unavailable for %s: %s", asset_id, e2)
             values = None

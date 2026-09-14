@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     chroma_path: str = "./.chroma"
     manuals_dir: str = str(REPO_ROOT / "data" / "manuals")
     models_dir: str = "./models"
-    replay_speed: float = 600.0
+    replay_speed: float = 1800.0
     simulator_out: str = str(REPO_ROOT / "data" / "simulator" / "out")
 
     anthropic_api_key: str = Field(default="", repr=False)

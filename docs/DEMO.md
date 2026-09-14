@@ -9,9 +9,17 @@ cp .env.example .env            # add ANTHROPIC_API_KEY for LLM-drafted explanat
 docker compose up --build       # api :8000, web :5173, mlflow :5000, edge :8001, mqtt :1883
 ```
 
-Wait for `api` to log `seeded 24 assets` and the replay container to start publishing. The replay
-runs at 600x (10 minutes of telemetry per second), so MTR-042's bearing degradation is visible
-within about a minute of wall-clock time. Open http://localhost:5173.
+Wait for `api` to finish seeding and the replay container to start publishing. The API seeds the
+first 80% of the 30-day history (four completed bearing failures the model can learn from); the
+replay then streams the remaining six days at 1800x (30 minutes of plant time per second, so
+about 5 minutes of wall-clock). Timeline from the moment the replay starts:
+
+- ~1 min: MTR-021 fails unplanned (no model was watching it yet) — the "old way".
+- ~3 min: MTR-042 enters the 48 h pre-failure window; its health index is visibly falling.
+  Click **Run analysis** here. Training takes ~60-90 s.
+- ~5 min: the replay reaches the end of the history and loops.
+
+`docker compose down -v` resets everything to t=0. Open http://localhost:5173.
 
 ## Shot list
 

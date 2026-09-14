@@ -332,6 +332,13 @@ def build_feature_pipeline(
         if "failure_within_h" in df.columns
         else pd.Series(np.nan, index=df.index, dtype=float)
     )
+    # Only a COMPLETED failure is known at training time. The simulator carries ground truth
+    # for degradations still in progress (failure instant beyond the last row); labelling
+    # those rows would be looking into the future, so they are treated as unknown (no label,
+    # no RUL). An asset counts as failed when its countdown reaches ~0 inside the window.
+    if fail.notna().any():
+        completed = fail.groupby(df["asset_id"]).transform("min") <= 1.0
+        fail = fail.where(completed)
     label_all = (fail <= horizon_h).fillna(False).astype(int).to_numpy()
     rul_all = fail.to_numpy(dtype=float)
 

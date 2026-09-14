@@ -38,9 +38,13 @@ def test_asset_ids_replace_mtr_004_with_demo_asset() -> None:
     assert "MTR-042" in ASSET_IDS
     assert "MTR-004" not in ASSET_IDS
     assert ASSET_IDS[0] == "MTR-001" and ASSET_IDS[-1] == "MTR-024"
-    assert set(FAULTY_ASSETS) == {"MTR-042", "MTR-017"}
-    assert FAULTY_ASSETS["MTR-042"] == pytest.approx(0.55)
-    assert FAULTY_ASSETS["MTR-017"] == pytest.approx(0.80)
+    assert {"MTR-042", "MTR-017"} <= set(FAULTY_ASSETS)
+    assert FAULTY_ASSETS["MTR-042"] == (pytest.approx(0.55), pytest.approx(1.0))
+    assert FAULTY_ASSETS["MTR-017"] == (pytest.approx(0.80), pytest.approx(1.0))
+    for onset, fail in FAULTY_ASSETS.values():
+        assert 0.0 <= onset < fail <= 1.0
+    # at least three failures complete before the seed cutoff (0.45): training history
+    assert sum(1 for _, fail in FAULTY_ASSETS.values() if fail <= 0.45) >= 3
 
 
 def test_assets_catalogue_matches_contract() -> None:
@@ -103,26 +107,34 @@ def test_healthy_assets_have_no_fault(fleet: tuple[pd.DataFrame, list[Asset]]) -
     assert healthy["bearing_temp_c"].max() < 90.0
 
 
-@pytest.mark.parametrize("asset_id", ["MTR-042", "MTR-017"])
+@pytest.mark.parametrize("asset_id", ["MTR-042", "MTR-017", "MTR-003", "MTR-021"])
 def test_bearing_degradation_signature(
     fleet: tuple[pd.DataFrame, list[Asset]], asset_id: str
 ) -> None:
     df, _ = fleet
     d = df[df["asset_id"] == asset_id].reset_index(drop=True)
-    onset = int(round(FAULTY_ASSETS[asset_id] * (len(d) - 1)))
-    pre, post = d.iloc[:onset], d.iloc[onset:]
+    onset_f, fail_f = FAULTY_ASSETS[asset_id]
+    onset = int(round(onset_f * (len(d) - 1)))
+    fail_idx = int(round(fail_f * (len(d) - 1)))
+    pre, active, after = d.iloc[:onset], d.iloc[onset : fail_idx + 1], d.iloc[fail_idx + 1 :]
     # ground truth
     assert (pre["health"] == 1.0).all()
     assert pre["failure_within_h"].isna().all()
-    assert post["failure_within_h"].notna().all()
-    assert post["failure_within_h"].iloc[-1] == 0.0
-    assert (np.diff(post["failure_within_h"].to_numpy()) < 0).all()  # counts down
-    assert (np.diff(post["health"].to_numpy()) <= 0).all()  # monotone decay 1 -> 0
-    assert post["health"].iloc[-1] == 0.0
-    # sensor signature: last 5 % of the horizon is clearly worse than the pre-onset period
-    tail = d.iloc[-len(d) // 20 :]
+    assert active["failure_within_h"].notna().all()
+    assert active["failure_within_h"].iloc[-1] == 0.0
+    assert (np.diff(active["failure_within_h"].to_numpy()) < 0).all()  # counts down
+    assert (np.diff(active["health"].to_numpy()) <= 0).all()  # monotone decay 1 -> 0
+    assert active["health"].iloc[-1] == 0.0
+    # after the failure the bearing is replaced: healthy again
+    assert (after["health"] == 1.0).all()
+    assert after["failure_within_h"].isna().all()
+    # sensor signature: the last ~10 % before failure (>= 4 h, so it spans regimes) is
+    # clearly worse than the pre-onset period
+    tail = active.iloc[-max(len(active) // 10, 24) :]
     assert tail["vibration_rms"].mean() > 2.0 * pre["vibration_rms"].mean()
     assert tail["vibration_kurtosis"].mean() > pre["vibration_kurtosis"].mean() + 1.0
+    if len(after) > 50:
+        assert after["vibration_rms"].mean() < 0.6 * tail["vibration_rms"].mean()
     assert tail["vibration_crest"].mean() > pre["vibration_crest"].mean() + 0.5
     assert tail["bearing_temp_c"].mean() > pre["bearing_temp_c"].mean() + 10.0
 
