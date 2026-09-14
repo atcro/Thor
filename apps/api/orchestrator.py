@@ -1,0 +1,1403 @@
+"""Thor orchestrator (03) -- the only file in the repo that talks to the LLM.
+
+Governed architecture: the LLM plans (one routing call) and explains (one drafting call);
+every number comes from the deterministic toolboxes under `agents/`; a human approves every
+consequential action through the Human Approval Gate (09).
+
+Graph: profile -> train -> validate -> explain -> await_approval -(interrupt)-> finalize.
+`GraphState` is persisted to `pipeline_runs` after every node so the UI can poll progress.
+
+All toolbox calls go through the module-level `tool_*` wrappers below. They import the agent
+modules lazily (the modules may not exist yet) and are the intended monkeypatch points for tests
+and for the integrator.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import threading
+from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Literal, TypedDict
+
+import pandas as pd
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+from sqlalchemy import select
+from sqlalchemy.engine import Engine
+
+from apps.api import db
+from apps.api.graph_state import (
+    append_event,
+    new_run_id,
+    run_summary,
+    state_from_json,
+    state_to_json,
+)
+from apps.api.schemas import (
+    Approval,
+    CandidateSet,
+    ChampionComparison,
+    CopilotRequest,
+    CopilotResponse,
+    CostComparison,
+    DataQualityContract,
+    DecisionContract,
+    EdgeDeployment,
+    EvidenceBundle,
+    Explanation,
+    FeatureSpec,
+    GraphState,
+    LeadTimeReport,
+    MaintenanceWindow,
+    ManualPassage,
+    ModelStage,
+    PipelineStage,
+    PromotionRequest,
+    RegimeReport,
+    RegisteredModel,
+    TaskSpec,
+    ValidationReport,
+    WhatIfResult,
+)
+from apps.api.settings import Settings, get_settings
+
+log = logging.getLogger("thor.orchestrator")
+
+# --------------------------------------------------------------------------------------
+# Node names, deterministic transitions
+# --------------------------------------------------------------------------------------
+
+NODE_NAMES: tuple[str, ...] = (
+    "profile",
+    "train",
+    "validate",
+    "explain",
+    "await_approval",
+    "finalize",
+)
+
+# stage after a node finished -> the only allowed next node
+STAGE_TO_NEXT: dict[PipelineStage, str] = {
+    PipelineStage.queued: "profile",
+    PipelineStage.profiling: "train",
+    PipelineStage.training: "validate",
+    PipelineStage.validating: "explain",
+    PipelineStage.explaining: "await_approval",
+    PipelineStage.awaiting_approval: "finalize",
+    PipelineStage.approved: END,
+    PipelineStage.rejected: END,
+    PipelineStage.failed: END,
+}
+
+TERMINAL_STAGES: frozenset[PipelineStage] = frozenset(
+    {
+        PipelineStage.awaiting_approval,
+        PipelineStage.approved,
+        PipelineStage.rejected,
+        PipelineStage.failed,
+    }
+)
+
+ROUTE_SYSTEM_PROMPT = (
+    "You are the planner of Thor, a governed predictive-maintenance pipeline. "
+    "Given the current pipeline stage, call the tool `choose_next_node` exactly once with the "
+    "next node to run. The only legal order is profile -> train -> validate -> explain -> "
+    "await_approval -> finalize; validate and await_approval can never be skipped."
+)
+
+EXPLANATION_SYSTEM_PROMPT = (
+    "You are drafting a maintenance explanation for a plant engineer. Use ONLY the numbers, "
+    "feature names, cost figures, window, and manual citations present in the JSON. Do not "
+    "introduce any number, percentage, date, or citation not present. 4-6 sentences. Refer to "
+    "manual passages as '<source> section <section>'."
+)
+
+COPILOT_SYSTEM_PROMPT = (
+    "You are Bolt, Thor's copilot for plant engineers. Thor is a predictive-maintenance "
+    "companion to the plant's MES/CMMS. You may only report numbers, ids and facts returned by "
+    "your tools -- never invent or estimate a value. You cannot approve or reject anything: when "
+    "a decision contract or promotion is pending, tell the user to approve or reject it in the "
+    "Thor UI. Be concise and concrete."
+)
+
+CHOOSE_NEXT_NODE_TOOL: dict[str, Any] = {
+    "name": "choose_next_node",
+    "description": "Pick the next pipeline node to execute.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"node": {"type": "string", "enum": list(NODE_NAMES)}},
+        "required": ["node"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
+
+
+# --------------------------------------------------------------------------------------
+# LLM access (the only place ANTHROPIC_API_KEY is read)
+# --------------------------------------------------------------------------------------
+
+
+def _api_key() -> str:
+    """Return the configured Anthropic API key ('' when running in template mode)."""
+    return (get_settings().anthropic_api_key or "").strip()
+
+
+def _llm_client() -> Any:
+    """Build an Anthropic client. Raises if the SDK is missing or the key is blank."""
+    key = _api_key()
+    if not key:
+        raise RuntimeError("ANTHROPIC_API_KEY is blank")
+    import anthropic
+
+    return anthropic.Anthropic(api_key=key, max_retries=1, timeout=60.0)
+
+
+def _text_of(message: Any) -> str:
+    """Concatenate the text blocks of a Messages API response."""
+    parts = [b.text for b in getattr(message, "content", []) if getattr(b, "type", "") == "text"]
+    return "\n".join(p.strip() for p in parts if p and p.strip()).strip()
+
+
+# --------------------------------------------------------------------------------------
+# Toolbox wrappers -- lazy imports; monkeypatch these in tests
+# --------------------------------------------------------------------------------------
+
+
+def tool_profile_dataset(df: pd.DataFrame, asset_id: str) -> DataQualityContract:
+    """04: `agents.data_agent.profiling.profile_dataset(df, asset_id)`."""
+    from agents.data_agent.profiling import profile_dataset
+
+    return profile_dataset(df, asset_id)
+
+
+def tool_build_features(
+    df: pd.DataFrame, regimes: RegimeReport | None, horizon_h: float, window_rows: int = 12
+) -> tuple[pd.DataFrame, FeatureSpec]:
+    """05: `agents.ml_architect.features.build_feature_pipeline(df, regimes, horizon_h, window_rows)`."""
+    from agents.ml_architect.features import build_feature_pipeline
+
+    return build_feature_pipeline(df, regimes, horizon_h=horizon_h, window_rows=window_rows)
+
+
+def tool_infer_task(dq: DataQualityContract, df: pd.DataFrame, horizon_h: float) -> TaskSpec:
+    """05: `agents.ml_architect.automl.infer_task(dq, df, horizon_h)`."""
+    from agents.ml_architect.automl import infer_task
+
+    return infer_task(dq, df, horizon_h=horizon_h)
+
+
+def tool_train_candidates(
+    features_df: pd.DataFrame,
+    spec: FeatureSpec,
+    task: TaskSpec,
+    n_trials: int,
+    seed: int,
+    artifacts_dir: Path,
+    asset_id: str,
+) -> CandidateSet:
+    """05: `agents.ml_architect.automl.train_candidates(...)` -> CandidateSet."""
+    from agents.ml_architect.automl import train_candidates
+
+    return train_candidates(
+        features_df,
+        spec,
+        task,
+        n_trials=n_trials,
+        seed=seed,
+        artifacts_dir=artifacts_dir,
+        asset_id=asset_id,
+    )
+
+
+def tool_validate(
+    candidates: CandidateSet, features_df: pd.DataFrame, run_id: str
+) -> ValidationReport:
+    """06: `agents.validation.checks.validate(candidates, features_df, run_id)`."""
+    from agents.validation.checks import validate
+
+    return validate(candidates, features_df, run_id)
+
+
+def tool_load_model(path: str) -> Any:
+    """Load a fitted model artifact (joblib pickle exposing `.predict_proba`)."""
+    import joblib
+
+    return joblib.load(path)
+
+
+def tool_explain(
+    model: Any, x_latest: pd.DataFrame, spec: FeatureSpec, asset_id: str, model_version: str
+) -> Explanation:
+    """07: `agents.reliability.explain.explain(model, X_latest, spec, asset_id, model_version)`."""
+    from agents.reliability.explain import explain
+
+    return explain(model, x_latest, spec, asset_id, model_version)
+
+
+def tool_run_whatif(
+    model: Any,
+    x_latest: pd.DataFrame,
+    spec: FeatureSpec,
+    asset_id: str,
+    scenario: dict[str, float],
+) -> WhatIfResult:
+    """07: `agents.reliability.explain.run_whatif(model, X_latest, spec, asset_id, scenario)`."""
+    from agents.reliability.explain import run_whatif
+
+    return run_whatif(model, x_latest, spec, asset_id, scenario)
+
+
+def tool_retrieve_manual_context(exp: Explanation) -> list[ManualPassage]:
+    """07: `rag.retrieve_manual_context(rag.query_from_explanation(exp), chroma_path)`."""
+    from agents.reliability import rag
+
+    settings = get_settings()
+    query = rag.query_from_explanation(exp)
+    return rag.retrieve_manual_context(query, Path(settings.chroma_path))
+
+
+def tool_calculate_failure_cost(
+    p_fail_by: Callable[[float], float] | float,
+    settings: Settings,
+    horizon_h: float,
+    now: datetime,
+) -> CostComparison:
+    """07: `agents.reliability.cost.calculate_failure_cost(p_fail_by, settings, horizon_h, now)`."""
+    from agents.reliability.cost import calculate_failure_cost
+
+    return calculate_failure_cost(p_fail_by, settings, horizon_h=horizon_h, now=now)
+
+
+def tool_find_maintenance_window(
+    cost: CostComparison, lead_time: LeadTimeReport, now: datetime
+) -> MaintenanceWindow:
+    """07: `agents.reliability.cost.find_maintenance_window(cost, lead_time, now)`."""
+    from agents.reliability.cost import find_maintenance_window
+
+    return find_maintenance_window(cost, lead_time, now=now)
+
+
+def tool_build_evidence_bundle(
+    explanation: Explanation,
+    manual_context: list[ManualPassage],
+    cost: CostComparison,
+    window: MaintenanceWindow,
+    validation: ValidationReport,
+    data_quality_score: float,
+) -> EvidenceBundle:
+    """07: `agents.reliability.contract.build_evidence_bundle(...)`."""
+    from agents.reliability.contract import build_evidence_bundle
+
+    return build_evidence_bundle(
+        explanation, manual_context, cost, window, validation, data_quality_score
+    )
+
+
+def tool_template_explanation(bundle: EvidenceBundle) -> str:
+    """07: `agents.reliability.contract.template_explanation(bundle)` -- deterministic prose."""
+    from agents.reliability.contract import template_explanation
+
+    return template_explanation(bundle)
+
+
+def tool_create_decision_contract(
+    bundle: EvidenceBundle,
+    run_id: str,
+    explanation_text: str,
+    explanation_source: Literal["llm", "template"],
+    engine: Engine | None,
+) -> DecisionContract:
+    """07: `agents.reliability.contract.create_decision_contract(...)` (inserts the row)."""
+    from agents.reliability.contract import create_decision_contract
+
+    return create_decision_contract(
+        bundle, run_id, explanation_text, explanation_source, engine=engine
+    )
+
+
+def tool_register_model(
+    validation: ValidationReport, artifact_path: Path, engine: Engine | None
+) -> RegisteredModel:
+    """08: `agents.mlops.lifecycle.register_model(validation, artifact_path, engine=engine)`."""
+    from agents.mlops.lifecycle import register_model
+
+    return register_model(validation, artifact_path, engine=engine)
+
+
+def tool_compare_champion(
+    challenger: RegisteredModel, engine: Engine | None
+) -> ChampionComparison:
+    """08: `agents.mlops.lifecycle.compare_champion(challenger, engine=engine)`."""
+    from agents.mlops.lifecycle import compare_champion
+
+    return compare_champion(challenger, engine=engine)
+
+
+def tool_request_promotion(
+    comparison: ChampionComparison, to_stage: ModelStage, engine: Engine | None
+) -> PromotionRequest:
+    """08: `agents.mlops.lifecycle.request_promotion(comparison, to_stage, engine=engine)`."""
+    from agents.mlops.lifecycle import request_promotion
+
+    return request_promotion(comparison, to_stage, engine=engine)
+
+
+def tool_promote(promotion_id: str, approval: Approval, engine: Engine | None) -> RegisteredModel:
+    """08: `agents.mlops.lifecycle.promote(promotion_id, approval, engine=engine)`."""
+    from agents.mlops.lifecycle import promote
+
+    return promote(promotion_id, approval, engine=engine)
+
+
+def tool_deploy_edge(
+    model: RegisteredModel,
+    artifact_path: Path,
+    features: list[str],
+    models_dir: Path,
+    window_rows: int,
+) -> EdgeDeployment:
+    """08: `agents.mlops.lifecycle.deploy_edge(model, artifact_path, features, models_dir, window_rows)`."""
+    from agents.mlops.lifecycle import deploy_edge
+
+    return deploy_edge(model, artifact_path, features, models_dir, window_rows=window_rows)
+
+
+# --------------------------------------------------------------------------------------
+# Run registry (in-process): run_id -> thread, status, heavy-object cache
+# --------------------------------------------------------------------------------------
+
+
+class RunHandle:
+    """Per-run bookkeeping that does not belong in the persisted GraphState."""
+
+    def __init__(
+        self,
+        run_id: str,
+        asset_id: str,
+        horizon_h: float = 48.0,
+        n_trials: int = 6,
+        engine: Engine | None = None,
+    ) -> None:
+        self.run_id = run_id
+        self.asset_id = asset_id
+        self.horizon_h = horizon_h
+        self.n_trials = n_trials
+        self.engine = engine
+        self.thread: threading.Thread | None = None
+        self.status: str = "queued"
+        self.cache: dict[str, Any] = {}
+
+
+_RUNS: dict[str, RunHandle] = {}
+_RUNS_LOCK = threading.Lock()
+_GRAPH: Any = None
+_GRAPH_LOCK = threading.Lock()
+
+
+def get_run_handle(run_id: str) -> RunHandle | None:
+    """Return the in-process handle for a run (None if this process never saw it)."""
+    with _RUNS_LOCK:
+        return _RUNS.get(run_id)
+
+
+def _handle_for(run_id: str, asset_id: str = "", engine: Engine | None = None) -> RunHandle:
+    with _RUNS_LOCK:
+        h = _RUNS.get(run_id)
+        if h is None:
+            h = RunHandle(run_id, asset_id, engine=engine)
+            _RUNS[run_id] = h
+        if engine is not None and h.engine is None:
+            h.engine = engine
+        return h
+
+
+def _config(run_id: str) -> dict[str, Any]:
+    return {"configurable": {"thread_id": run_id}}
+
+
+def _persist(gs: GraphState, engine: Engine | None) -> None:
+    db.save_run(gs.run_id, gs.asset_id, gs.stage.value, state_to_json(gs), engine=engine)
+
+
+# --------------------------------------------------------------------------------------
+# route() -- LLM planning call #1
+# --------------------------------------------------------------------------------------
+
+
+def _llm_choose_next_node(state: GraphState, allowed: list[str]) -> str | None:
+    """Ask Claude (one tool-choice call) which node to run next. Returns the raw choice."""
+    client = _llm_client()
+    summary = {
+        "run_id": state.run_id,
+        "asset_id": state.asset_id,
+        "current_stage": state.stage.value,
+        "completed": [e.tool for e in state.events if e.tool in NODE_NAMES],
+        "allowed_next": allowed,
+        "has_data_quality": state.data_quality is not None,
+        "has_candidates": state.candidates is not None,
+        "has_validation": state.validation is not None,
+        "has_contract": state.contract is not None,
+    }
+    resp = client.messages.create(
+        model=get_settings().anthropic_model,
+        max_tokens=256,
+        system=ROUTE_SYSTEM_PROMPT,
+        tools=[CHOOSE_NEXT_NODE_TOOL],
+        tool_choice={"type": "auto", "disable_parallel_tool_use": True},
+        messages=[
+            {
+                "role": "user",
+                "content": "Pipeline state:\n" + json.dumps(summary) + "\nCall choose_next_node.",
+            }
+        ],
+    )
+    for block in resp.content:
+        if getattr(block, "type", "") == "tool_use" and block.name == "choose_next_node":
+            raw = block.input if isinstance(block.input, dict) else json.loads(str(block.input))
+            return str(raw.get("node", "")) or None
+    return None
+
+
+def _llm_route_done(state: GraphState) -> bool:
+    return any(e.tool == "route_llm" for e in state.events)
+
+
+def route(state: GraphState) -> str:
+    """Return the next node name (or END) for `state`.
+
+    Deterministic transitions: profile -> train -> validate -> explain -> await_approval ->
+    finalize -> END. With an API key configured, ONE Claude tool-choice call per run is made at
+    the first routing decision; its choice is accepted only if it equals the single legal
+    transition (it can never skip validate or await_approval), otherwise it is ignored. The
+    call is recorded as a `route_llm` event and counted in `state.llm_calls` (mutated in place).
+    """
+    nxt = STAGE_TO_NEXT.get(state.stage, END)
+    if nxt == END or not _api_key() or _llm_route_done(state):
+        return nxt
+    choice: str | None = None
+    error: str | None = None
+    try:
+        choice = _llm_choose_next_node(state, [nxt])
+    except Exception as e:  # never let an LLM failure fail the run
+        error = f"{type(e).__name__}: {e}"
+        log.warning("route(): LLM call failed, using deterministic order: %s", error)
+    state.llm_calls += 1
+    accepted = choice == nxt
+    append_event(
+        state,
+        state.stage,
+        f"planner chose '{choice}' -> {'accepted' if accepted else 'ignored'}; next = {nxt}",
+        tool="route_llm",
+        payload={"llm_choice": choice, "next": nxt, "accepted": accepted, "error": error},
+    )
+    return nxt
+
+
+# --------------------------------------------------------------------------------------
+# draft_explanation() -- LLM call #2
+# --------------------------------------------------------------------------------------
+
+
+def _llm_draft(bundle: EvidenceBundle) -> str:
+    """One Messages call with the evidence bundle JSON; returns the drafted text."""
+    client = _llm_client()
+    resp = client.messages.create(
+        model=get_settings().anthropic_model,
+        max_tokens=1024,
+        system=EXPLANATION_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": bundle.model_dump_json(indent=2)}],
+    )
+    if getattr(resp, "stop_reason", "") == "refusal":
+        return ""
+    return _text_of(resp)
+
+
+def draft_explanation(bundle: EvidenceBundle) -> tuple[str, Literal["llm", "template"]]:
+    """Draft the engineer-facing explanation for an `EvidenceBundle`.
+
+    Input: the bundle produced by 07. Output: (text, source). Uses ONE Claude call when a key
+    is configured; on any exception, a blank key, or a blank/refused reply it falls back to
+    `agents.reliability.contract.template_explanation(bundle)` with source "template".
+    """
+    if _api_key():
+        try:
+            text = (_llm_draft(bundle) or "").strip()
+            if text:
+                return text, "llm"
+            log.warning("draft_explanation(): blank LLM reply, using template")
+        except Exception as e:
+            log.warning("draft_explanation(): LLM failed (%s), using template", e)
+    return tool_template_explanation(bundle), "template"
+
+
+# --------------------------------------------------------------------------------------
+# Node implementations
+# --------------------------------------------------------------------------------------
+
+
+class RunState(TypedDict, total=False):
+    """LangGraph channel schema: the serialized GraphState plus the routed next node."""
+
+    state: dict[str, Any]
+    next: str
+
+
+def _champion_artifact(gs: GraphState) -> str | None:
+    """Champion artifact path: `notes[i] == 'champion_artifact=<path>'`, else candidate path."""
+    v = gs.validation
+    if v is None:
+        return None
+    for note in v.notes:
+        if note.startswith("champion_artifact="):
+            return note.split("=", 1)[1].strip()
+    if gs.candidates is not None:
+        for c in gs.candidates.candidates:
+            if c.candidate_id == v.champion_id and c.artifact_path:
+                return c.artifact_path
+    return None
+
+
+def _promotion_id_of(gs: GraphState) -> str | None:
+    for e in reversed(gs.events):
+        if e.tool == "request_promotion" and e.payload and e.payload.get("promotion_id"):
+            return str(e.payload["promotion_id"])
+    return None
+
+
+def _telemetry(h: RunHandle, engine: Engine | None) -> pd.DataFrame:
+    df = h.cache.get("df")
+    if df is None:
+        df = db.read_telemetry(engine=engine)
+        h.cache["df"] = df
+    return df
+
+
+def _features_for(
+    h: RunHandle, gs: GraphState, engine: Engine | None
+) -> tuple[pd.DataFrame, FeatureSpec]:
+    """Return (features_df, spec) from the run cache, recomputing after a restart."""
+    fdf = h.cache.get("features_df")
+    spec = h.cache.get("spec")
+    if fdf is not None and spec is not None:
+        return fdf, spec
+    regimes = gs.data_quality.regimes if gs.data_quality else None
+    fdf, spec = tool_build_features(_telemetry(h, engine), regimes, h.horizon_h)
+    if gs.candidates is not None:
+        spec = gs.candidates.features
+    h.cache["features_df"], h.cache["spec"] = fdf, spec
+    return fdf, spec
+
+
+def _latest_features(
+    features_df: pd.DataFrame, spec: FeatureSpec, asset_id: str
+) -> pd.DataFrame:
+    sub = features_df
+    if "asset_id" in features_df.columns:
+        sub = features_df[features_df["asset_id"] == asset_id]
+    if sub.empty:
+        sub = features_df
+    if "ts" in sub.columns:
+        sub = sub.sort_values("ts")
+    return sub.tail(1)[spec.features].reset_index(drop=True).copy()
+
+
+def _profile(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
+    df = _telemetry(h, engine)
+    if df.empty:
+        raise RuntimeError("no telemetry rows in the database")
+    dq = tool_profile_dataset(df, gs.asset_id)
+    gs.data_quality = dq
+    append_event(
+        gs,
+        gs.stage,
+        f"data quality {dq.quality_score:.1f}/100, {dq.n_rows} rows, {dq.n_assets} assets, "
+        f"{len(dq.regimes.regimes)} regimes, trainable={dq.trainable}",
+        tool="profile_dataset",
+        payload={"quality_score": dq.quality_score, "trainable": dq.trainable},
+    )
+    if not dq.trainable:
+        raise RuntimeError(
+            f"Data Quality Contract blocks training (score={dq.quality_score:.1f}, "
+            f"n_rows={dq.n_rows}, n_assets={dq.n_assets})"
+        )
+
+
+def _train(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
+    if gs.data_quality is None:
+        raise RuntimeError("train called without a Data Quality Contract")
+    df = _telemetry(h, engine)
+    features_df, spec = tool_build_features(df, gs.data_quality.regimes, h.horizon_h)
+    h.cache["features_df"], h.cache["spec"] = features_df, spec
+    append_event(
+        gs,
+        gs.stage,
+        f"{len(spec.features)} features over {len(features_df)} rows",
+        tool="build_feature_pipeline",
+        payload={"features": spec.features},
+    )
+    task = tool_infer_task(gs.data_quality, df, h.horizon_h)
+    append_event(gs, gs.stage, f"task: {task.task} ({task.rationale})", tool="infer_task")
+    artifacts_dir = Path(get_settings().models_dir) / "artifacts" / gs.run_id
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    cs = tool_train_candidates(features_df, spec, task, h.n_trials, 0, artifacts_dir, gs.asset_id)
+    gs.candidates = cs
+    h.cache["spec"] = cs.features
+    ranked = ", ".join(cs.ranked) if cs.ranked else "unranked"
+    append_event(
+        gs,
+        gs.stage,
+        f"{len(cs.candidates)} candidates trained; ranking: {ranked}",
+        tool="train_candidates",
+        payload={"ranked": cs.ranked},
+    )
+
+
+def _validate(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
+    if gs.candidates is None:
+        raise RuntimeError("validate called without candidates")
+    features_df, _ = _features_for(h, gs, engine)
+    v = tool_validate(gs.candidates, features_df, gs.run_id)
+    gs.validation = v
+    append_event(
+        gs,
+        gs.stage,
+        f"champion {v.champion_family} {v.model_version} (IMS {v.ims.total:.3f}); "
+        f"leakage passed={v.leakage.passed}; lead time median {v.lead_time.median_h:.1f}h; "
+        f"validation passed={v.passed}",
+        tool="validate",
+        payload={"champion_id": v.champion_id, "passed": v.passed, "ims_total": v.ims.total},
+    )
+    if not v.passed:
+        append_event(
+            gs, gs.stage, "validation thresholds NOT met -- human review required", tool="validate"
+        )
+    # Register the champion so ModelOps has something to approve (best effort, P1).
+    artifact = _champion_artifact(gs)
+    try:
+        if artifact is None:
+            raise RuntimeError("no champion artifact path")
+        rm = tool_register_model(v, Path(artifact), engine)
+        comparison = tool_compare_champion(rm, engine)
+        pr = tool_request_promotion(comparison, ModelStage.production, engine)
+        h.cache["promotion_id"] = pr.promotion_id
+        append_event(
+            gs,
+            gs.stage,
+            f"registered {rm.name} {rm.version} (stage {rm.stage.value}); "
+            f"promotion {pr.promotion_id} pending",
+            tool="request_promotion",
+            payload={"promotion_id": pr.promotion_id, "version": rm.version, "name": rm.name},
+        )
+    except Exception as e:
+        log.warning("model registration skipped: %s", e)
+        append_event(gs, gs.stage, f"model registration skipped: {e}", tool="register_model")
+
+
+def _explain(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
+    if gs.validation is None or gs.data_quality is None:
+        raise RuntimeError("explain called without validation / data quality")
+    v = gs.validation
+    features_df, spec = _features_for(h, gs, engine)
+    model = h.cache.get("model")
+    if model is None:
+        artifact = _champion_artifact(gs)
+        if artifact is None:
+            raise RuntimeError("no champion artifact to explain")
+        model = tool_load_model(artifact)
+        h.cache["model"] = model
+    x_latest = _latest_features(features_df, spec, gs.asset_id)
+    h.cache["x_latest"] = x_latest
+    exp = tool_explain(model, x_latest, spec, gs.asset_id, v.model_version)
+    top = exp.top_features[0].feature if exp.top_features else "n/a"
+    append_event(
+        gs,
+        gs.stage,
+        f"failure probability {exp.failure_probability:.3f}; top feature {top}",
+        tool="explain",
+        payload={"failure_probability": exp.failure_probability},
+    )
+    passages: list[ManualPassage] = []
+    try:
+        passages = tool_retrieve_manual_context(exp)
+        append_event(
+            gs, gs.stage, f"{len(passages)} manual passages retrieved", tool="retrieve_manual_context"
+        )
+    except Exception as e:  # retrieval enriches the explanation, never load-bearing
+        append_event(
+            gs, gs.stage, f"manual retrieval unavailable: {e}", tool="retrieve_manual_context"
+        )
+    settings = get_settings()
+    now = datetime.now(UTC)
+    p_now = float(exp.failure_probability)
+    lead = max(float(v.lead_time.median_h), 1.0)
+
+    def p_fail_by(hours: float) -> float:
+        """Hazard curve: P(fail within h) = 1 - (1 - p_now) ** (1 + h / lead_time_median)."""
+        val = 1.0 - (1.0 - p_now) ** (1.0 + max(hours, 0.0) / lead)
+        return float(min(1.0, max(0.0, val)))
+
+    cost = tool_calculate_failure_cost(p_fail_by, settings, 168.0, now)
+    window = tool_find_maintenance_window(cost, v.lead_time, now)
+    append_event(
+        gs,
+        gs.stage,
+        f"recommended {cost.recommended}; window {window.start.isoformat()} -> "
+        f"{window.end.isoformat()}",
+        tool="calculate_failure_cost",
+        payload={"recommended": cost.recommended},
+    )
+    bundle = tool_build_evidence_bundle(
+        exp, passages, cost, window, v, gs.data_quality.quality_score
+    )
+    gs.evidence = bundle
+    text, source = draft_explanation(bundle)
+    if _api_key():
+        gs.llm_calls += 1
+    append_event(gs, gs.stage, f"explanation drafted ({source})", tool="draft_explanation")
+    contract = tool_create_decision_contract(bundle, gs.run_id, text, source, engine)
+    gs.contract = contract
+    append_event(
+        gs,
+        gs.stage,
+        f"decision contract {contract.contract_id} created",
+        tool="create_decision_contract",
+        payload={"contract_id": contract.contract_id},
+    )
+
+
+def await_approval(state: GraphState) -> GraphState:
+    """Human Approval Gate (09): persist stage=awaiting_approval and return the state.
+
+    The graph interrupts before `finalize`; `resume()` continues once a decision is recorded.
+    """
+    state.stage = PipelineStage.awaiting_approval
+    append_event(
+        state,
+        state.stage,
+        "awaiting human approval of decision contract "
+        + (state.contract.contract_id if state.contract else "(none)"),
+        tool="await_approval",
+    )
+    h = get_run_handle(state.run_id)
+    _persist(state, h.engine if h else None)
+    return state
+
+
+def _finalize(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
+    approval = gs.approval
+    if approval is None:
+        raise PermissionError("finalize requires a recorded human decision (record_decision)")
+    if approval.decision != "approved":
+        gs.stage = PipelineStage.rejected
+        append_event(
+            gs, gs.stage, f"rejected by {approval.approver}: {approval.note or '-'}", tool="finalize"
+        )
+        return
+    gs.stage = PipelineStage.approved
+    append_event(
+        gs, gs.stage, f"approved by {approval.approver}: {approval.note or '-'}", tool="finalize"
+    )
+    promotion_id = h.cache.get("promotion_id") or _promotion_id_of(gs)
+    if not promotion_id:
+        append_event(
+            gs, gs.stage, "no promotion request linked to this run; deploy skipped", tool="promote"
+        )
+        return
+    try:
+        promo_approval = approval.model_copy(update={"promotion_id": promotion_id})
+        rm = tool_promote(promotion_id, promo_approval, engine)
+        append_event(
+            gs, gs.stage, f"promoted {rm.name} {rm.version} -> {rm.stage.value}", tool="promote"
+        )
+        artifact = _champion_artifact(gs)
+        features = gs.candidates.features.features if gs.candidates else []
+        window_rows = gs.candidates.features.window_rows if gs.candidates else 12
+        if artifact:
+            dep = tool_deploy_edge(
+                rm, Path(artifact), features, Path(get_settings().models_dir), window_rows
+            )
+            append_event(
+                gs,
+                gs.stage,
+                f"edge deployment written: {dep.onnx_path}",
+                tool="deploy_edge",
+                payload={"onnx_path": dep.onnx_path},
+            )
+    except Exception as e:  # promotion/edge are P1; the approval itself stands
+        log.warning("promote/deploy_edge skipped: %s", e)
+        append_event(gs, gs.stage, f"promote/deploy skipped: {e}", tool="promote")
+
+
+NodeFn = Callable[[GraphState, RunHandle, Engine | None], None]
+
+
+def _make_node(name: str, stage: PipelineStage, fn: NodeFn) -> Callable[[RunState], RunState]:
+    """Wrap a node body: set stage, persist, run, catch -> failed, route, persist."""
+
+    def node(s: RunState) -> RunState:
+        gs = state_from_json(s["state"])
+        h = _handle_for(gs.run_id, gs.asset_id)
+        engine = h.engine
+        gs.stage = stage
+        append_event(gs, stage, f"{name} started", tool=name)
+        _persist(gs, engine)
+        try:
+            fn(gs, h, engine)
+        except Exception as e:  # any node failure ends the run as `failed`
+            log.exception("node %s failed for run %s", name, gs.run_id)
+            gs.stage = PipelineStage.failed
+            gs.error = f"{name}: {e}"
+            append_event(gs, gs.stage, gs.error, tool=name)
+            _persist(gs, engine)
+            return {"state": state_to_json(gs), "next": END}
+        nxt = route(gs)
+        _persist(gs, engine)
+        return {"state": state_to_json(gs), "next": nxt}
+
+    return node
+
+
+def _await_node(s: RunState) -> RunState:
+    gs = state_from_json(s["state"])
+    _handle_for(gs.run_id, gs.asset_id)
+    gs = await_approval(gs)
+    return {"state": state_to_json(gs), "next": route(gs)}
+
+
+_profile_node = _make_node("profile", PipelineStage.profiling, _profile)
+_train_node = _make_node("train", PipelineStage.training, _train)
+_validate_node = _make_node("validate", PipelineStage.validating, _validate)
+_explain_node = _make_node("explain", PipelineStage.explaining, _explain)
+_finalize_node = _make_node("finalize", PipelineStage.awaiting_approval, _finalize)
+
+
+def _pick_next(s: RunState) -> str:
+    return s.get("next") or END
+
+
+def build_graph() -> Any:
+    """Compile the LangGraph: profile -> train -> validate -> explain -> await_approval -> finalize.
+
+    Every edge is conditional on `route()`. A `MemorySaver` checkpointer plus
+    `interrupt_before=["finalize"]` pauses the graph at the Human Approval Gate.
+    """
+    g: StateGraph = StateGraph(RunState)
+    g.add_node("profile", _profile_node)
+    g.add_node("train", _train_node)
+    g.add_node("validate", _validate_node)
+    g.add_node("explain", _explain_node)
+    g.add_node("await_approval", _await_node)
+    g.add_node("finalize", _finalize_node)
+    g.add_edge(START, "profile")
+    path_map = {n: n for n in NODE_NAMES}
+    path_map[END] = END
+    for n in NODE_NAMES:
+        g.add_conditional_edges(n, _pick_next, path_map)
+    return g.compile(checkpointer=MemorySaver(), interrupt_before=["finalize"])
+
+
+def _graph() -> Any:
+    global _GRAPH
+    with _GRAPH_LOCK:
+        if _GRAPH is None:
+            _GRAPH = build_graph()
+        return _GRAPH
+
+
+# --------------------------------------------------------------------------------------
+# Public run control
+# --------------------------------------------------------------------------------------
+
+
+def _execute(run_id: str) -> None:
+    h = _handle_for(run_id)
+    h.status = "running"
+    try:
+        raw = db.load_run(run_id, engine=h.engine)
+        if raw is None:
+            raise RuntimeError(f"run {run_id} not persisted")
+        _graph().invoke({"state": raw, "next": "profile"}, _config(run_id))
+        h.status = "paused"
+    except Exception as e:
+        log.exception("run %s crashed", run_id)
+        h.status = "failed"
+        try:
+            raw = db.load_run(run_id, engine=h.engine)
+            gs = state_from_json(raw) if raw else GraphState(run_id=run_id, asset_id=h.asset_id)
+            if gs.stage not in TERMINAL_STAGES:
+                gs.stage = PipelineStage.failed
+                gs.error = f"orchestrator: {e}"
+                append_event(gs, gs.stage, gs.error, tool="orchestrator")
+                _persist(gs, h.engine)
+        except Exception:
+            log.exception("could not persist failure for run %s", run_id)
+
+
+def start_run(
+    asset_id: str, horizon_h: float = 48.0, n_trials: int = 6, engine: Engine | None = None
+) -> GraphState:
+    """Create a run for `asset_id`, persist stage=queued and execute the graph in a daemon thread.
+
+    Returns immediately with the queued GraphState (training takes ~1 minute of CPU).
+    """
+    run_id = new_run_id()
+    gs = GraphState(run_id=run_id, asset_id=asset_id)
+    append_event(
+        gs,
+        gs.stage,
+        f"run queued (horizon {horizon_h}h, {n_trials} trials/family)",
+        tool="start_run",
+    )
+    _persist(gs, engine)
+    with _RUNS_LOCK:
+        h = RunHandle(run_id, asset_id, horizon_h, n_trials, engine)
+        _RUNS[run_id] = h
+    t = threading.Thread(target=_execute, args=(run_id,), name=f"thor-run-{run_id}", daemon=True)
+    h.thread = t
+    t.start()
+    return gs
+
+
+def resume(run_id: str, approval: Approval, engine: Engine | None = None) -> GraphState:
+    """Continue a run paused at the approval gate once `record_decision()` stored `approval`.
+
+    Runs `finalize`: approved -> promote + deploy_edge (best effort) and stage=approved;
+    rejected -> stage=rejected. Raises KeyError for unknown runs and ValueError if the run is
+    not awaiting approval.
+    """
+    raw = db.load_run(run_id, engine=engine)
+    if raw is None:
+        raise KeyError(run_id)
+    gs = state_from_json(raw)
+    if gs.stage != PipelineStage.awaiting_approval:
+        raise ValueError(f"run {run_id} is in stage {gs.stage.value}, not awaiting_approval")
+    gs.approval = approval
+    append_event(
+        gs,
+        gs.stage,
+        f"decision recorded: {approval.decision} by {approval.approver}",
+        tool="record_decision",
+        payload={"approval_id": approval.approval_id},
+    )
+    _persist(gs, engine)
+    h = _handle_for(run_id, gs.asset_id, engine)
+    h.status = "resuming"
+    graph = _graph()
+    cfg = _config(run_id)
+    try:
+        snap = graph.get_state(cfg)
+        if snap.next and "finalize" in snap.next:
+            graph.update_state(cfg, {"state": state_to_json(gs), "next": "finalize"})
+            out = graph.invoke(None, cfg)
+            h.status = "done"
+            return state_from_json(out["state"])
+    except Exception as e:  # checkpoint lost (process restart) -> run finalize directly
+        log.warning("graph resume failed for %s (%s); running finalize directly", run_id, e)
+    out = _finalize_node({"state": state_to_json(gs), "next": "finalize"})
+    h.status = "done"
+    return state_from_json(out["state"])
+
+
+def get_run(run_id: str, engine: Engine | None = None) -> GraphState | None:
+    """Load a persisted run as GraphState (None if unknown)."""
+    raw = db.load_run(run_id, engine=engine)
+    return state_from_json(raw) if raw else None
+
+
+def whatif(run_id: str, scenario: dict[str, float], engine: Engine | None = None) -> WhatIfResult:
+    """Re-score the run's champion with feature overrides (P2 sandbox).
+
+    Needs the run's cached model + latest feature row (rebuilt from the artifact if the process
+    restarted). Raises KeyError for unknown runs, RuntimeError when no champion exists yet.
+    """
+    gs = get_run(run_id, engine)
+    if gs is None:
+        raise KeyError(run_id)
+    if gs.validation is None:
+        raise RuntimeError("run has no validated champion yet")
+    h = _handle_for(run_id, gs.asset_id, engine)
+    model = h.cache.get("model")
+    if model is None:
+        artifact = _champion_artifact(gs)
+        if artifact is None:
+            raise RuntimeError("no champion artifact for this run")
+        model = tool_load_model(artifact)
+        h.cache["model"] = model
+    x_latest = h.cache.get("x_latest")
+    if x_latest is None:
+        features_df, spec = _features_for(h, gs, engine)
+        x_latest = _latest_features(features_df, spec, gs.asset_id)
+        h.cache["x_latest"] = x_latest
+    spec = h.cache.get("spec") or (gs.candidates.features if gs.candidates else None)
+    if spec is None:
+        raise RuntimeError("no feature spec for this run")
+    return tool_run_whatif(model, x_latest, spec, gs.asset_id, scenario)
+
+
+# --------------------------------------------------------------------------------------
+# Copilot (Bolt) -- read-only deterministic tools + optional LLM tool loop
+# --------------------------------------------------------------------------------------
+
+ASSET_ID_RE = re.compile(r"\bMTR-\d{3}\b", re.IGNORECASE)
+CONTRACT_ID_RE = re.compile(r"\bdc_[A-Za-z0-9_-]+\b")
+
+
+def _fleet_rows(engine: Engine | None) -> list[dict[str, Any]]:
+    from apps.api.routes.fleet import compute_fleet
+
+    rows = []
+    for fa in compute_fleet(engine):
+        rows.append(
+            {
+                "asset_id": fa.asset.asset_id,
+                "name": fa.asset.name,
+                "site": fa.asset.site,
+                "line": fa.asset.line,
+                "criticality": fa.asset.criticality,
+                "health_score": round(fa.health_score, 1),
+                "failure_probability": fa.failure_probability,
+                "regime": fa.regime,
+                "open_contract_id": fa.open_contract_id,
+                "model_stage": fa.stage.value if fa.stage else None,
+            }
+        )
+    rows.sort(key=lambda r: r["health_score"])
+    return rows
+
+
+def copilot_get_fleet(engine: Engine | None = None) -> dict[str, Any]:
+    """Tool: fleet overview sorted by risk (lowest health first)."""
+    rows = _fleet_rows(engine)
+    return {"n_assets": len(rows), "assets": rows, "highest_risk": rows[:3]}
+
+
+def copilot_get_asset(asset_id: str, engine: Engine | None = None) -> dict[str, Any]:
+    """Tool: one asset's fleet row, latest telemetry, contracts and runs."""
+    asset_id = asset_id.upper()
+    row = next((r for r in _fleet_rows(engine) if r["asset_id"] == asset_id), None)
+    if row is None:
+        return {"error": f"unknown asset {asset_id}"}
+    latest = db.read_telemetry(asset_id=asset_id, limit=1, engine=engine)
+    latest_row = None
+    if not latest.empty:
+        rec = latest.iloc[-1].to_dict()
+        latest_row = {
+            k: (v.isoformat() if isinstance(v, pd.Timestamp) else v) for k, v in rec.items()
+        }
+    contracts = [
+        {
+            "contract_id": c.contract_id,
+            "recommendation": c.recommendation,
+            "failure_probability": c.failure_probability,
+            "expected_cost": c.expected_cost,
+            "status": db.contract_status(c.contract_id, engine=engine),
+        }
+        for c in db.list_decision_contracts(asset_id=asset_id, engine=engine)[:5]
+    ]
+    runs = [run_summary(r["state"]) for r in db.list_runs(asset_id=asset_id, engine=engine)[:5]]
+    return {"asset": row, "latest_telemetry": latest_row, "contracts": contracts, "runs": runs}
+
+
+def copilot_get_contract(contract_id: str, engine: Engine | None = None) -> dict[str, Any]:
+    """Tool: a decision contract (full payload) plus its derived status."""
+    dc = db.get_decision_contract(contract_id, engine=engine)
+    if dc is None:
+        return {"error": f"unknown contract {contract_id}"}
+    out = db.dump_model(dc)
+    out["status"] = db.contract_status(contract_id, engine=engine)
+    return out
+
+
+def copilot_get_run(run_id: str, engine: Engine | None = None) -> dict[str, Any]:
+    """Tool: run summary plus the last five events."""
+    gs = get_run(run_id, engine)
+    if gs is None:
+        return {"error": f"unknown run {run_id}"}
+    out = run_summary(gs)
+    out["events"] = [
+        {"ts": e.ts.isoformat(), "stage": e.stage.value, "message": e.message, "tool": e.tool}
+        for e in gs.events[-5:]
+    ]
+    return out
+
+
+def copilot_list_pending_approvals(engine: Engine | None = None) -> dict[str, Any]:
+    """Tool: pending decision contracts and pending promotion requests."""
+    contracts = [
+        {
+            "contract_id": c.contract_id,
+            "asset_id": c.asset_id,
+            "recommendation": c.recommendation,
+            "failure_probability": c.failure_probability,
+            "expected_cost": c.expected_cost,
+            "window_start": c.window_start.isoformat() if c.window_start else None,
+        }
+        for c in db.list_decision_contracts(engine=engine)
+        if db.contract_status(c.contract_id, engine=engine) == "pending"
+    ]
+    engine_ = engine or db.get_engine()
+    with engine_.connect() as conn:
+        rows = (
+            conn.execute(
+                select(db.promotion_requests).where(db.promotion_requests.c.status == "pending")
+            )
+            .mappings()
+            .all()
+        )
+    promotions = [
+        {
+            "promotion_id": r["promotion_id"],
+            "model_name": r["model_name"],
+            "version": r["version"],
+            "from_stage": r["from_stage"],
+            "to_stage": r["to_stage"],
+        }
+        for r in rows
+    ]
+    return {"contracts": contracts, "promotions": promotions}
+
+
+COPILOT_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "get_fleet",
+        "description": (
+            "Fleet overview: every asset with health score, failure probability, regime and "
+            "open contract, sorted by risk."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "get_asset",
+        "description": "Details for one asset id (e.g. MTR-042): latest telemetry, contracts, runs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"asset_id": {"type": "string"}},
+            "required": ["asset_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_contract",
+        "description": "A decision contract by id: recommendation, costs, window, evidence, status.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"contract_id": {"type": "string"}},
+            "required": ["contract_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_run",
+        "description": "A pipeline run by id: stage, error, recent events.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"run_id": {"type": "string"}},
+            "required": ["run_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_pending_approvals",
+        "description": "Decision contracts and model promotions still waiting for a human decision.",
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+]
+
+
+def _run_copilot_tool(name: str, args: dict[str, Any], engine: Engine | None) -> dict[str, Any]:
+    if name == "get_fleet":
+        return copilot_get_fleet(engine)
+    if name == "get_asset":
+        return copilot_get_asset(str(args.get("asset_id", "")), engine)
+    if name == "get_contract":
+        return copilot_get_contract(str(args.get("contract_id", "")), engine)
+    if name == "get_run":
+        return copilot_get_run(str(args.get("run_id", "")), engine)
+    if name == "list_pending_approvals":
+        return copilot_list_pending_approvals(engine)
+    return {"error": f"unknown tool {name}"}
+
+
+def _result_summary(result: dict[str, Any]) -> str:
+    if "error" in result:
+        return str(result["error"])
+    if "n_assets" in result:
+        worst = result["highest_risk"][0] if result["highest_risk"] else None
+        tail = f"; highest risk {worst['asset_id']} (health {worst['health_score']})" if worst else ""
+        return f"{result['n_assets']} assets{tail}"
+    if "asset" in result:
+        a = result["asset"]
+        return f"{a['asset_id']} health {a['health_score']}, p_fail {a['failure_probability']}"
+    if "contracts" in result and "promotions" in result:
+        return f"{len(result['contracts'])} contracts, {len(result['promotions'])} promotions pending"
+    if "contract_id" in result:
+        return f"{result['contract_id']} {result.get('recommendation')} status {result.get('status')}"
+    if "run_id" in result:
+        return f"{result['run_id']} stage {result.get('stage')}"
+    return json.dumps(result)[:120]
+
+
+def _template_fleet_text(fleet: dict[str, Any]) -> str:
+    if not fleet["assets"]:
+        return "The fleet has no assets yet -- seed the simulator output first."
+    lines = [f"Fleet: {fleet['n_assets']} assets. Highest risk right now:"]
+    for r in fleet["highest_risk"]:
+        p = ""
+        if r["failure_probability"] is not None:
+            p = f", failure probability {r['failure_probability']:.2f}"
+        oc = f", open contract {r['open_contract_id']}" if r["open_contract_id"] else ""
+        lines.append(f"- {r['asset_id']} ({r['name']}): health {r['health_score']}{p}{oc}")
+    return "\n".join(lines)
+
+
+def _template_asset_text(res: dict[str, Any]) -> str:
+    if "error" in res:
+        return str(res["error"])
+    a = res["asset"]
+    p = ""
+    if a["failure_probability"] is not None:
+        p = f", failure probability {a['failure_probability']:.2f}"
+    text = (
+        f"{a['asset_id']} ({a['name']}, {a['site']}/{a['line']}): health {a['health_score']}{p}, "
+        f"regime {a['regime'] or 'unknown'}."
+    )
+    if res["contracts"]:
+        c = res["contracts"][0]
+        text += (
+            f" Latest decision contract {c['contract_id']}: {c['recommendation']} "
+            f"(p_fail {c['failure_probability']:.2f}, expected cost {c['expected_cost']:.0f}), "
+            f"status {c['status']}."
+        )
+    if res["runs"]:
+        r = res["runs"][0]
+        text += f" Latest run {r['run_id']} is {r['stage']}."
+    return text
+
+
+def _template_pending_text(res: dict[str, Any]) -> str:
+    if not res["contracts"] and not res["promotions"]:
+        return "Nothing is waiting for approval right now."
+    lines = ["Pending human decisions (approve or reject them in the Thor UI -- I cannot):"]
+    for c in res["contracts"]:
+        lines.append(
+            f"- contract {c['contract_id']} on {c['asset_id']}: {c['recommendation']} "
+            f"(p_fail {c['failure_probability']:.2f}, expected cost {c['expected_cost']:.0f})"
+        )
+    for p in res["promotions"]:
+        lines.append(
+            f"- promotion {p['promotion_id']}: {p['model_name']} {p['version']} "
+            f"{p['from_stage']} -> {p['to_stage']}"
+        )
+    return "\n".join(lines)
+
+
+HELP_TEXT = (
+    "I am Bolt, Thor's copilot. Ask me about the fleet ('which motors are at risk?'), an asset "
+    "('how is MTR-042?'), a decision contract or run id, or what is pending approval. I only "
+    "report numbers produced by Thor's deterministic tools, and approvals happen in the UI."
+)
+
+
+def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResponse:
+    last = next((m.content for m in reversed(req.messages) if m.role == "user"), "")
+    text = last.lower()
+    calls: list[dict[str, Any]] = []
+
+    def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
+        res = _run_copilot_tool(name, args, engine)
+        calls.append({"name": name, "args": args, "result_summary": _result_summary(res)})
+        return res
+
+    m_asset = ASSET_ID_RE.search(last)
+    m_contract = CONTRACT_ID_RE.search(last)
+    fleet_words = ("fleet", "risk", "health", "status", "worst", "motors", "assets")
+    if m_contract:
+        res = call("get_contract", {"contract_id": m_contract.group(0)})
+        if "error" in res:
+            reply = str(res["error"])
+        else:
+            reply = (
+                f"Contract {res['contract_id']} for {res['asset_id']}: {res['recommendation']}, "
+                f"failure probability {res['failure_probability']:.2f}, expected cost "
+                f"{res['expected_cost']:.0f}, status {res['status']}. {res['explanation_text']}"
+            )
+    elif "pending" in text or "approv" in text or "reject" in text:
+        reply = _template_pending_text(call("list_pending_approvals", {}))
+    elif m_asset or (req.asset_id and ("asset" in text or "motor" in text or "this" in text)):
+        aid = m_asset.group(0).upper() if m_asset else str(req.asset_id)
+        reply = _template_asset_text(call("get_asset", {"asset_id": aid}))
+    elif any(k in text for k in fleet_words):
+        reply = _template_fleet_text(call("get_fleet", {}))
+    else:
+        reply = HELP_TEXT
+    return CopilotResponse(reply=reply, tool_calls=calls, source="template")
+
+
+def _copilot_llm(req: CopilotRequest, engine: Engine | None) -> CopilotResponse:
+    client = _llm_client()
+    messages: list[dict[str, Any]] = []
+    for m in req.messages:
+        role = "assistant" if m.role == "assistant" else "user"
+        if messages and messages[-1]["role"] == role and isinstance(messages[-1]["content"], str):
+            messages[-1]["content"] += "\n" + m.content
+        else:
+            messages.append({"role": role, "content": m.content})
+    if not messages or messages[0]["role"] != "user":
+        messages.insert(0, {"role": "user", "content": "(context)"})
+    system = COPILOT_SYSTEM_PROMPT
+    if req.asset_id:
+        system += f" The user is currently looking at asset {req.asset_id}."
+    calls: list[dict[str, Any]] = []
+    reply = ""
+    model = get_settings().anthropic_model
+    for _round in range(4):
+        resp = client.messages.create(
+            model=model, max_tokens=1024, system=system, tools=COPILOT_TOOLS, messages=messages
+        )
+        tool_uses = [b for b in resp.content if getattr(b, "type", "") == "tool_use"]
+        reply = _text_of(resp) or reply
+        if resp.stop_reason != "tool_use" or not tool_uses:
+            break
+        messages.append({"role": "assistant", "content": resp.content})
+        results: list[dict[str, Any]] = []
+        for tu in tool_uses:
+            args = tu.input if isinstance(tu.input, dict) else json.loads(str(tu.input))
+            res = _run_copilot_tool(tu.name, args, engine)
+            calls.append({"name": tu.name, "args": args, "result_summary": _result_summary(res)})
+            results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tu.id,
+                    "content": json.dumps(res, default=str),
+                }
+            )
+        messages.append({"role": "user", "content": results})
+    else:
+        # tool budget exhausted: one last call without tools to get the final text
+        resp = client.messages.create(
+            model=model, max_tokens=1024, system=system, messages=messages
+        )
+        reply = _text_of(resp) or reply
+    if not reply:
+        reply = "I could not produce an answer from the tool results; please try rephrasing."
+    return CopilotResponse(reply=reply, tool_calls=calls, source="llm")
+
+
+def copilot_reply(req: CopilotRequest, engine: Engine | None = None) -> CopilotResponse:
+    """Answer a copilot chat request.
+
+    With an API key: a Claude tool loop (max 4 tool rounds) over the read-only tools get_fleet,
+    get_asset, get_contract, get_run, list_pending_approvals. Without a key, or when the LLM
+    fails: keyword-routed template answers over the same tools (source "template").
+    """
+    if _api_key():
+        try:
+            return _copilot_llm(req, engine)
+        except Exception as e:
+            log.warning("copilot LLM failed (%s); using template mode", e)
+    return _copilot_template(req, engine)
