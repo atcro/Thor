@@ -1,0 +1,780 @@
+<title>Thor Architecture</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --paper:#f3eee3;
+    --surface:#fbf8f2;
+    --ink:#211c17;
+    --muted:#6b6154;
+    --line:#cdc2ac;
+    --ember:#b34a19;
+    --steel:#33566f;
+    --font-display:'Fraunces', Georgia, serif;
+    --font-body:'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono:'IBM Plex Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#17130f;
+      --surface:#1f1912;
+      --ink:#ede6d8;
+      --muted:#a89b85;
+      --line:#423a2d;
+      --ember:#e3793b;
+      --steel:#84acc7;
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#17130f;
+    --surface:#1f1912;
+    --ink:#ede6d8;
+    --muted:#a89b85;
+    --line:#423a2d;
+    --ember:#e3793b;
+    --steel:#84acc7;
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:var(--font-body);
+    font-size:16px;
+    line-height:1.6;
+    margin:0;
+    padding-inline:clamp(18px,5vw,56px);
+    padding-block:56px 72px;
+  }
+  .wrap{max-width:920px;margin-inline:auto;}
+
+  .eyebrow{
+    font-family:var(--font-mono);
+    font-size:0.78rem;
+    letter-spacing:0.14em;
+    text-transform:uppercase;
+    color:var(--ember);
+    margin:0 0 10px;
+  }
+  h1{
+    font-family:var(--font-display);
+    font-optical-sizing:auto;
+    font-weight:600;
+    font-size:clamp(2.6rem,7vw,3.8rem);
+    line-height:0.98;
+    margin:0 0 14px;
+    text-wrap:balance;
+    letter-spacing:-0.01em;
+  }
+  .tagline{
+    font-size:1.08rem;
+    color:var(--muted);
+    max-width:56ch;
+    margin:0 0 40px;
+    text-wrap:balance;
+  }
+
+  .intro p{
+    max-width:66ch;
+    font-size:1.02rem;
+  }
+  .intro{margin-bottom:52px;}
+
+  h2.section-title{
+    font-family:var(--font-display);
+    font-weight:600;
+    font-size:1.5rem;
+    margin:0 0 6px;
+  }
+  .section-sub{
+    font-family:var(--font-mono);
+    font-size:0.82rem;
+    color:var(--muted);
+    margin:0 0 24px;
+  }
+
+  /* --- Thor / Bolt at a glance ------------------------------------------------- */
+  .glance{
+    display:grid;
+    grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);
+    gap:0;
+    border:1px solid var(--line);
+    border-radius:4px;
+    background:var(--surface);
+    margin:0 0 60px;
+    overflow:hidden;
+  }
+  .glance > div{padding:24px 26px;}
+  .glance > div + div{border-left:1px solid var(--line);}
+  .glance .label{
+    font-family:var(--font-mono);
+    font-size:0.72rem;
+    letter-spacing:0.12em;
+    text-transform:uppercase;
+    margin:0 0 8px;
+  }
+  .glance .thor .label{color:var(--ember);}
+  .glance .bolt .label{color:var(--steel);}
+  .glance h3{
+    font-family:var(--font-display);
+    font-weight:600;
+    font-size:1.35rem;
+    margin:0 0 10px;
+    line-height:1.15;
+  }
+  .glance p{margin:0 0 10px;font-size:0.97rem;}
+  .glance p:last-child{margin-bottom:0;}
+  .glance .rel{
+    font-family:var(--font-mono);
+    font-size:0.78rem;
+    color:var(--muted);
+    border-top:1px dashed var(--line);
+    padding-top:10px;
+    margin-top:14px;
+  }
+  .glance .rel b{color:var(--ink);font-weight:500;}
+  .glance code{font-family:var(--font-mono);font-size:0.82rem;color:var(--steel);}
+
+  .stack-wrap{overflow-x:auto;margin-bottom:56px;}
+  table.stack{width:100%;border-collapse:collapse;font-size:0.92rem;}
+  table.stack th{
+    font-family:var(--font-mono);
+    font-size:0.7rem;
+    text-transform:uppercase;
+    letter-spacing:0.07em;
+    color:var(--muted);
+    text-align:left;
+    padding:0 14px 8px 0;
+    border-bottom:1px solid var(--line);
+    white-space:nowrap;
+  }
+  table.stack td{
+    padding:11px 14px 11px 0;
+    border-bottom:1px solid var(--line);
+    vertical-align:top;
+  }
+  table.stack td:first-child{white-space:nowrap;font-weight:500;}
+  table.stack code{font-family:var(--font-mono);font-size:0.82rem;color:var(--steel);}
+  table.stack tr.emphasis td{background:color-mix(in srgb, var(--ember) 7%, transparent);}
+
+  figure{margin:0 0 60px;}
+  .diagram-frame{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:clamp(10px,3vw,26px);
+  }
+  svg.thor-diagram{width:100%;height:auto;display:block;color:var(--muted);}
+  .thor-diagram .node rect{fill:var(--surface);stroke:var(--line);stroke-width:1.4;}
+  .thor-diagram .node.gate rect{stroke:var(--ember);stroke-width:2;}
+  .thor-diagram .node.key rect{stroke:var(--steel);stroke-width:1.6;}
+  .thor-diagram .node text.name{
+    fill:var(--ink);
+    font-family:var(--font-body);
+    font-size:12.5px;
+    font-weight:500;
+    text-anchor:middle;
+  }
+  .thor-diagram .node text.tag{
+    fill:var(--muted);
+    font-family:var(--font-mono);
+    font-size:9.5px;
+  }
+  .thor-diagram .node text.sub{
+    fill:var(--steel);
+    font-family:var(--font-mono);
+    font-size:8px;
+    text-anchor:middle;
+  }
+  .thor-diagram .side-label{
+    fill:var(--muted);
+    font-family:var(--font-mono);
+    font-size:9.5px;
+  }
+  .thor-diagram .flow{stroke:var(--muted);color:var(--muted);fill:none;stroke-width:1.3;}
+  .thor-diagram .flow.accent{stroke:var(--ember);color:var(--ember);stroke-width:1.5;}
+  .thor-diagram .flow.dashed{stroke-dasharray:3 3;}
+  .thor-diagram .bus{stroke:var(--line);fill:none;stroke-width:1.2;}
+  figcaption{
+    font-family:var(--font-mono);
+    font-size:0.8rem;
+    color:var(--muted);
+    margin-top:14px;
+    line-height:1.6;
+  }
+
+  .panels{display:flex;flex-direction:column;gap:0;margin-bottom:60px;}
+  .panel{
+    border-top:1px solid var(--line);
+    padding-block:26px;
+    display:grid;
+    grid-template-columns:64px 1fr;
+    gap:18px;
+  }
+  .panel:last-child{border-bottom:1px solid var(--line);}
+  .panel .tagnum{
+    font-family:var(--font-mono);
+    font-size:0.78rem;
+    color:var(--ember);
+    border:1px solid var(--line);
+    border-radius:3px;
+    width:40px;
+    height:40px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:var(--surface);
+  }
+  .panel h3{
+    font-family:var(--font-display);
+    font-weight:600;
+    font-size:1.22rem;
+    margin:0 0 4px;
+  }
+  .panel .role{
+    color:var(--muted);
+    font-size:0.95rem;
+    max-width:64ch;
+    margin:0 0 16px;
+  }
+  .fnlist{list-style:none;margin:0 0 16px;padding:0;display:flex;flex-direction:column;gap:8px;}
+  .fnlist li{font-size:0.92rem;display:grid;grid-template-columns:minmax(150px,auto) 1fr;gap:12px;column-gap:14px;}
+  .fnlist code{
+    font-family:var(--font-mono);
+    font-size:0.82rem;
+    color:var(--steel);
+    white-space:nowrap;
+  }
+  .fnlist span{color:var(--ink);}
+  .io{
+    font-family:var(--font-mono);
+    font-size:0.78rem;
+    color:var(--muted);
+    border-top:1px dashed var(--line);
+    padding-top:10px;
+    display:flex;
+    flex-direction:column;
+    gap:5px;
+  }
+  .io b{color:var(--ink);font-weight:500;letter-spacing:0.02em;}
+  .io code{color:var(--steel);}
+  .io .warn{color:var(--ember);}
+
+  .trace{list-style:none;margin:0 0 56px;padding:0;counter-reset:step;}
+  .trace li{
+    position:relative;
+    padding:16px 0 16px 46px;
+    border-top:1px solid var(--line);
+    font-size:0.95rem;
+  }
+  .trace li:first-child{border-top:none;}
+  .trace li::before{
+    counter-increment:step;
+    content:counter(step);
+    position:absolute;
+    left:0;
+    top:16px;
+    width:28px;
+    height:28px;
+    border:1px solid var(--line);
+    border-radius:50%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-family:var(--font-mono);
+    font-size:0.72rem;
+    color:var(--ember);
+    background:var(--surface);
+  }
+  .trace code{font-family:var(--font-mono);font-size:0.85rem;color:var(--steel);}
+  .trace b{color:var(--ink);}
+
+  footer{
+    margin-top:8px;
+    padding-top:24px;
+    border-top:1px solid var(--line);
+    font-family:var(--font-mono);
+    font-size:0.82rem;
+    color:var(--muted);
+  }
+
+  @media (max-width:640px){
+    .glance{grid-template-columns:1fr;}
+    .glance > div + div{border-left:none;border-top:1px solid var(--line);}
+  }
+  @media (max-width:560px){
+    .panel{grid-template-columns:40px 1fr;}
+    .fnlist li{grid-template-columns:1fr;gap:2px;}
+    table.stack{font-size:0.85rem;}
+  }
+</style>
+
+<div class="wrap">
+
+  <p class="eyebrow">Architecture Cheat Sheet · Draft 2</p>
+  <h1>Thor</h1>
+  <p class="tagline">Every function, file, API, and artifact in the reliability pipeline — traced end to end, so the chain is legible even to the people who built it.</p>
+
+  <div class="intro">
+    <p>Thor reads top to bottom because the system runs top to bottom: sensor data enters at the bottom of the stack and a governed decision surfaces at the top, on a screen an engineer is actually looking at. Historical or live telemetry is replayed through MQTT into a single Control Plane, which hands each request to one LangGraph orchestrator holding five deterministic toolboxes — Data, ML Architect, Validation, Reliability, and MLOps. There is exactly one agent in this system, in the AI-reasoning sense: the Orchestrator. Everything it calls is plain code with no model inside it.</p>
+    <p>Data gets profiled and regime-checked before anything trains on it; the ML Architect picks a task and searches three tree-based model families; Validation attacks the result for leakage, calibration, and warning lead time before anointing a champion; Reliability assembles evidence — SHAP values plus cited manual passages — that the Orchestrator turns into an explanation and a cost comparison; MLOps watches the whole thing for drift long after the demo ends. Every toolbox can <em>propose</em> an action, but none can execute one. That's the Human Approval Gate: the one place a plan becomes a person's decision. Thor doesn't replace the MES a plant already runs — the Decision Contract that comes out of the gate is the handoff artifact, built to feed one, not become one.</p>
+  </div>
+
+  <h2 class="section-title">Thor and Bolt, at a glance</h2>
+  <p class="section-sub">// the whole system versus the conversational component inside it</p>
+
+  <div class="glance">
+    <div class="thor">
+      <p class="label">Thor · the system</p>
+      <h3>An agentic AutoML + MLOps platform for predictive maintenance</h3>
+      <p>Seven Docker Compose services and one governed pipeline. Telemetry arrives over <strong>MQTT</strong> (Mosquitto) into a <strong>FastAPI</strong> control plane and a <strong>TimescaleDB</strong> hypertable; a <strong>LangGraph</strong> orchestrator — the only component that calls <strong>Claude</strong>, and only to route and to phrase — drives five deterministic toolboxes: regime-aware profiling, an <strong>Optuna</strong> search over Random Forest / <strong>XGBoost</strong> / <strong>LightGBM</strong> ranked by the Industrial Model Score and tracked in <strong>MLflow</strong>, asset-level validation with calibration and lead time, <strong>SHAP</strong> explanation with a cost comparison, and an MLOps lifecycle that promotes the champion to <strong>ONNX Runtime</strong> at the edge.</p>
+      <p>Its product is the <strong>Decision Contract</strong>: an immutable, hash-linked record of prediction, evidence, and recommended maintenance window that stops at the Human Approval Gate and, once an engineer approves, hands off to the plant's existing MES/CMMS.</p>
+      <p class="rel"><b>Owns:</b> every number, every model, every action. <b>Never:</b> lets the LLM compute a metric, a cost, or a citation.</p>
+    </div>
+    <div class="bolt">
+      <p class="label">Bolt · a component of Thor</p>
+      <h3>The conversational surface over the RAG pipeline</h3>
+      <p>Bolt is the copilot persona in the Copilot screen. It sits on top of the Reliability toolbox's retrieval layer — a <strong>Chroma</strong> index built locally from the plant's maintenance manuals (MiniLM embeddings via ONNX Runtime, no external embedding API) whose cited passages already ground every Decision Contract — and exposes that evidence in chat: why this motor is at risk, which SHAP drivers say so, which manual section matches, what is waiting for approval.</p>
+      <p>It reaches the data only through a fixed set of read-only tools on the same FastAPI control plane (<code>get_fleet</code>, <code>get_asset</code>, <code>get_contract</code>, <code>get_run</code>, <code>list_pending_approvals</code>), and its prompt confines it to numbers those tools returned. Without an API key it still answers, from templates over the same tools.</p>
+      <p class="rel"><b>Owns:</b> the explanation in conversation. <b>Never:</b> approves, promotes, trains, or invents a citation — the retrieval decides what may be quoted.</p>
+    </div>
+  </div>
+
+  <h2 class="section-title">Tech stack — Draft 2</h2>
+  <p class="section-sub">// what's actually running, and where each piece touches the filesystem or a network boundary</p>
+
+  <div class="stack-wrap">
+    <table class="stack">
+      <tr><th>Layer</th><th>Choice</th><th>Where it lives / what it touches</th></tr>
+      <tr class="emphasis">
+        <td>LLM</td>
+        <td>Anthropic Claude · Messages API, tool-calling</td>
+        <td>Only inside <code>apps/api/orchestrator.py</code> — decides which tool to call next, and drafts the final explanation from evidence already computed elsewhere. Reads <code>ANTHROPIC_API_KEY</code> from the environment. No other file in the codebase touches this key.</td>
+      </tr>
+      <tr><td>ML</td><td>scikit-learn, XGBoost, LightGBM</td><td><code>agents/ml_architect/</code> — no CNN or autoencoder, dropped by design</td></tr>
+      <tr><td>AutoML search</td><td>Optuna</td><td>Tree models only, inside <code>launch_trial()</code></td></tr>
+      <tr><td>Explainability</td><td>SHAP</td><td><code>agents/reliability/explain.py</code></td></tr>
+      <tr class="emphasis">
+        <td>RAG / retrieval</td>
+        <td>Chroma (embedded) + sentence-transformers</td>
+        <td><code>agents/reliability/rag.py</code> — local embedding model, no external embedding API; index persisted to a Docker volume, built once from <code>data/manuals/*</code> at startup</td>
+      </tr>
+      <tr><td>Agent orchestration</td><td>LangGraph</td><td>One process (<code>apps/api</code>), one agent, five toolboxes</td></tr>
+      <tr><td>API</td><td>FastAPI + Pydantic</td><td><code>apps/api/</code> — the single control-plane service</td></tr>
+      <tr><td>Frontend</td><td>React + TypeScript</td><td><code>apps/web/</code> — five screens</td></tr>
+      <tr><td>Streaming</td><td>Mosquitto (MQTT) + a replay script</td><td><code>streaming/</code> — time-accelerated historical replay, not random live data</td></tr>
+      <tr><td>Storage</td><td>PostgreSQL + TimescaleDB</td><td>telemetry hypertable, assets, decision contracts, approvals, registry metadata</td></tr>
+      <tr><td>MLOps</td><td>MLflow</td><td>experiment tracking + registry; artifacts on a mounted Docker volume, not MinIO</td></tr>
+      <tr><td>Drift detection</td><td>Hand-rolled PSI</td><td><code>agents/mlops/drift.py</code> — ~30 lines, not the Evidently library</td></tr>
+      <tr><td>Edge</td><td>ONNX Runtime + a small FastAPI service</td><td><code>edge/</code> — subscribes to MQTT directly, independent of the control plane</td></tr>
+      <tr><td>Packaging</td><td>Docker Compose</td><td><code>infra/docker-compose.yml</code> — not Kubernetes</td></tr>
+      <tr><td>CI</td><td>GitHub Actions</td><td>lint + unit tests on push</td></tr>
+      <tr><td>Tests</td><td>pytest + 1-2 Playwright smoke tests</td><td>not a full e2e suite</td></tr>
+    </table>
+  </div>
+
+  <h2 class="section-title">System map</h2>
+  <p class="section-sub">// numbers correspond to the panels below · steel-bordered boxes are where the Claude API key and the filesystem actually get touched</p>
+
+  <figure>
+    <div class="diagram-frame">
+      <svg class="thor-diagram" viewBox="0 0 880 700" role="img" aria-label="Top to bottom: React frontend and the Bolt copilot call the FastAPI control plane (apps/api), which invokes a LangGraph orchestrator (apps/api/orchestrator.py, the only file reading ANTHROPIC_API_KEY) dispatching five deterministic toolboxes: Data, ML Architect, Validation, Reliability, MLOps. They share TimescaleDB and MLflow. Reliability and MLOps send recommendations to a Human Approval Gate, which alone can trigger the edge inference container or log a decision contract. An MQTT replay engine streams telemetry into the control plane and directly into the edge container.">
+        <defs>
+          <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L8,4 L0,8 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <!-- Row 01: Frontend + Copilot -->
+        <g class="node">
+          <rect x="200" y="20" width="220" height="54" rx="5"/>
+          <text class="tag" x="208" y="34">01</text>
+          <text class="name" x="310" y="46">React Frontend</text>
+          <text class="sub" x="310" y="62">apps/web/</text>
+        </g>
+        <g class="node">
+          <rect x="460" y="20" width="220" height="54" rx="5"/>
+          <text class="tag" x="468" y="34">01</text>
+          <text class="name" x="570" y="46">Copilot · Bolt</text>
+          <text class="sub" x="570" y="62">apps/web/ · /copilot/chat</text>
+        </g>
+
+        <!-- MQTT source -->
+        <g class="node">
+          <rect x="20" y="120" width="150" height="54" rx="5"/>
+          <text class="tag" x="28" y="134">10</text>
+          <text class="name" x="95" y="146">MQTT Replay</text>
+          <text class="sub" x="95" y="162">streaming/replay/</text>
+        </g>
+
+        <!-- Row 02: Control Plane -->
+        <g class="node key">
+          <rect x="310" y="120" width="260" height="54" rx="5"/>
+          <text class="tag" x="318" y="134">02</text>
+          <text class="name" x="440" y="144">FastAPI Control Plane</text>
+          <text class="sub" x="440" y="161">apps/api/routes/ · REST + WS</text>
+        </g>
+
+        <!-- Row 03: Orchestrator -->
+        <g class="node key">
+          <rect x="300" y="210" width="280" height="54" rx="5"/>
+          <text class="tag" x="308" y="224">03</text>
+          <text class="name" x="440" y="234">LangGraph Orchestrator</text>
+          <text class="sub" x="440" y="251">orchestrator.py · ANTHROPIC_API_KEY</text>
+        </g>
+
+        <!-- Row 04-08: five agents -->
+        <g class="node">
+          <rect x="40" y="300" width="150" height="64" rx="5"/>
+          <text class="tag" x="48" y="314">04</text>
+          <text class="name" x="115" y="332">Data Reliability</text>
+          <text class="sub" x="115" y="348">data_agent/</text>
+        </g>
+        <g class="node">
+          <rect x="204" y="300" width="150" height="64" rx="5"/>
+          <text class="tag" x="212" y="314">05</text>
+          <text class="name" x="279" y="332">ML Architect</text>
+          <text class="sub" x="279" y="348">ml_architect/</text>
+        </g>
+        <g class="node">
+          <rect x="368" y="300" width="150" height="64" rx="5"/>
+          <text class="tag" x="376" y="314">06</text>
+          <text class="name" x="443" y="332">Validation</text>
+          <text class="sub" x="443" y="348">validation/</text>
+        </g>
+        <g class="node">
+          <rect x="532" y="300" width="150" height="64" rx="5"/>
+          <text class="tag" x="540" y="314">07</text>
+          <text class="name" x="607" y="332">Reliability</text>
+          <text class="sub" x="607" y="348">reliability/ · RAG</text>
+        </g>
+        <g class="node">
+          <rect x="696" y="300" width="150" height="64" rx="5"/>
+          <text class="tag" x="704" y="314">08</text>
+          <text class="name" x="771" y="332">MLOps</text>
+          <text class="sub" x="771" y="348">mlops/</text>
+        </g>
+
+        <!-- Row: shared stores -->
+        <g class="node">
+          <rect x="220" y="410" width="200" height="54" rx="5"/>
+          <text class="tag" x="228" y="424">10</text>
+          <text class="name" x="320" y="436">TimescaleDB</text>
+          <text class="sub" x="320" y="452">telemetry · contracts</text>
+        </g>
+        <g class="node">
+          <rect x="460" y="410" width="200" height="54" rx="5"/>
+          <text class="tag" x="468" y="424">10</text>
+          <text class="name" x="560" y="436">MLflow</text>
+          <text class="sub" x="560" y="452">runs · registry</text>
+        </g>
+
+        <!-- Row 09: approval gate -->
+        <g class="node gate">
+          <rect x="290" y="500" width="300" height="54" rx="5"/>
+          <text class="tag" x="298" y="514">09</text>
+          <text class="name" x="440" y="526">Human Approval Gate</text>
+          <text class="sub" x="440" y="542">POST /approvals/{id}/decision</text>
+        </g>
+
+        <!-- Row: outputs -->
+        <g class="node">
+          <rect x="200" y="590" width="220" height="64" rx="5"/>
+          <text class="tag" x="208" y="604">10</text>
+          <text class="name" x="310" y="622">Edge Inference</text>
+          <text class="sub" x="310" y="638">edge/ · onnxruntime</text>
+        </g>
+        <g class="node">
+          <rect x="460" y="590" width="220" height="64" rx="5"/>
+          <text class="tag" x="468" y="604">—</text>
+          <text class="name" x="570" y="622">Decision Contract</text>
+          <text class="sub" x="570" y="638">decision_contract row</text>
+        </g>
+
+        <!-- flows: clients to control plane -->
+        <line class="flow" x1="310" y1="74" x2="310" y2="120" marker-end="url(#arrow)"/>
+        <line class="flow" x1="570" y1="74" x2="570" y2="120" marker-end="url(#arrow)"/>
+        <text class="side-label" x="316" y="100">REST / WS</text>
+        <text class="side-label" x="576" y="100">tool calls</text>
+
+        <!-- control plane to orchestrator -->
+        <line class="flow" x1="440" y1="174" x2="440" y2="210" marker-end="url(#arrow)"/>
+        <text class="side-label" x="446" y="196">invoke graph</text>
+
+        <!-- orchestrator fan-out -->
+        <line class="flow" x1="440" y1="264" x2="115" y2="300" marker-end="url(#arrow)"/>
+        <line class="flow" x1="440" y1="264" x2="279" y2="300" marker-end="url(#arrow)"/>
+        <line class="flow" x1="440" y1="264" x2="443" y2="300" marker-end="url(#arrow)"/>
+        <line class="flow" x1="440" y1="264" x2="607" y2="300" marker-end="url(#arrow)"/>
+        <line class="flow" x1="440" y1="264" x2="771" y2="300" marker-end="url(#arrow)"/>
+        <text class="side-label" x="446" y="284">dispatch</text>
+
+        <!-- agents to shared-store bus -->
+        <line class="bus" x1="115" y1="364" x2="115" y2="390"/>
+        <line class="bus" x1="279" y1="364" x2="279" y2="390"/>
+        <line class="bus" x1="443" y1="364" x2="443" y2="390"/>
+        <line class="bus" x1="607" y1="364" x2="607" y2="390"/>
+        <line class="bus" x1="771" y1="364" x2="771" y2="390"/>
+        <line class="bus" x1="115" y1="390" x2="771" y2="390"/>
+        <line class="bus" x1="320" y1="390" x2="320" y2="410"/>
+        <line class="bus" x1="560" y1="390" x2="560" y2="410"/>
+
+        <!-- reliability + mlops to approval gate -->
+        <path class="flow accent" d="M 607,364 L 607,480 L 400,500" marker-end="url(#arrow)"/>
+        <path class="flow accent" d="M 771,364 L 771,480 L 500,500" marker-end="url(#arrow)"/>
+        <text class="side-label" x="410" y="475">recommends</text>
+        <text class="side-label" x="690" y="475">promote?</text>
+
+        <!-- approval gate to outputs -->
+        <line class="flow accent" x1="380" y1="554" x2="310" y2="590" marker-end="url(#arrow)"/>
+        <line class="flow accent" x1="500" y1="554" x2="570" y2="590" marker-end="url(#arrow)"/>
+        <text class="side-label" x="215" y="576">approved: deploy</text>
+        <text class="side-label" x="520" y="576">approved: log</text>
+
+        <!-- mqtt to control plane -->
+        <line class="flow" x1="170" y1="147" x2="310" y2="147" marker-end="url(#arrow)"/>
+
+        <!-- mqtt direct to edge (dashed, bypasses everything) -->
+        <path class="flow dashed" d="M 60,174 C 60,420 60,622 200,622" marker-end="url(#arrow)"/>
+        <text class="side-label" x="8" y="400">direct</text>
+        <text class="side-label" x="8" y="412">stream</text>
+      </svg>
+    </div>
+    <figcaption>Solid arrow = one-way flow · dashed = direct stream (bypasses the control plane) · plain line = shared read/write access, no single direction. Ember lines mark the governance path: nothing past the Human Approval Gate runs without a click. Steel-bordered boxes (02, 03) are the only two files in the whole system that see a network credential — everything else is local compute.</figcaption>
+  </figure>
+
+  <h2 class="section-title">One request, start to finish</h2>
+  <p class="section-sub">// a concrete trace — MTR-042's bearing starts degrading, replayed telemetry to an approved work order</p>
+
+  <ol class="trace">
+    <li><code>streaming/replay/replay.py</code> publishes a row for <b>MTR-042</b> to MQTT topic <code>telemetry/MTR-042</code> — vibration RMS ticking up, timestamp <code>2026-09-24T14:31:58Z</code>.</li>
+    <li><b>02</b> FastAPI's MQTT subscriber (<code>apps/api/routes/telemetry.py</code>) writes the row into the <code>telemetry</code> hypertable in TimescaleDB.</li>
+    <li>The Fleet screen (<b>01</b>) polls <code>GET /fleet</code>; MTR-042's health score drops 94 → 81. The engineer opens Asset 360, which calls <code>POST /pipeline/run</code> for that asset.</li>
+    <li><b>03</b> Orchestrator starts a typed <code>GraphState</code> (<code>run_id=r_9f21</code>) and makes its first Claude call: <em>"given this state, call <code>04.profile_dataset</code>."</em></li>
+    <li><b>04</b> reads the last several hours of telemetry for MTR-042, returns a Data Quality Contract — quality 96.4/100, regime <code>R3</code> (high load).</li>
+    <li><b>05</b> infers the task (classification), engineers vibration + process features, and runs Optuna over Random Forest / XGBoost / LightGBM — three runs logged to MLflow under experiment <code>mtr-042-bearing</code>.</li>
+    <li><b>06</b> backtests all three on held-out machines, computes calibration and warning lead time, and picks XGBoost (<code>mlflow run 8a1c…</code>) as champion, <code>model_version=v17</code>.</li>
+    <li><b>07</b> assembles evidence: <code>explain()</code> returns the top SHAP features; <code>retrieve_manual_context()</code> does a Chroma similarity search and returns the two closest passages from <code>data/manuals/motor-maintenance.md</code> §4.2; <code>calculate_failure_cost()</code> compares maintain-tonight ($8,400) vs. Friday ($5,900) vs. run-to-failure ($46,700).</li>
+    <li><b>03</b>'s second and only other Claude call turns that evidence bundle into the actual explanation sentence. <code>create_decision_contract()</code> inserts one immutable row, <code>dc_MTR-042_20260924143210</code>, status <code>pending</code>.</li>
+    <li><b>09</b> — the ModelOps/Asset 360 screen renders the contract with its full evidence trail; the engineer clicks <b>Approve</b>. <code>POST /approvals/{id}/decision</code> inserts a new row in the <code>approvals</code> table, foreign-keyed to the contract. <span class="warn">The contract itself is never edited</span> — approval is a linked row, not a mutation.</li>
+    <li>Approval fans out: <b>08</b>'s <code>deploy_edge()</code> exports <code>v17</code> to <code>models/mtr042_v17.onnx</code>, mounted into <b>10</b>'s edge container; the contract's recommended action becomes the logged work-order text handed off toward the plant's MES/CMMS.</li>
+  </ol>
+
+  <h2 class="section-title">Function reference</h2>
+  <p class="section-sub">// same order the request actually travels · FILES / EXPOSES / READS / WRITES / DEPENDS ON for each</p>
+
+  <div class="panels">
+
+    <div class="panel">
+      <div class="tagnum">01</div>
+      <div>
+        <h3>Frontend &amp; Copilot — client surfaces</h3>
+        <p class="role">What a judge actually watches. Five React screens plus one chat surface, all hitting the same API — nothing below this line is visible unless it shows up here.</p>
+        <ul class="fnlist">
+          <li><code>Fleet</code><span>Aggregate health across every asset, sorted by risk.</span></li>
+          <li><code>Asset 360</code><span>Single-asset deep dive: live trace, health score, current fault.</span></li>
+          <li><code>AutoML Studio</code><span>Shows DATA → TASK → FEATURES → MODELS → VALIDATE → DEPLOY with evidence at each stage.</span></li>
+          <li><code>ModelOps</code><span>Champion vs. challenger comparison; approve / deploy buttons.</span></li>
+          <li><code>Copilot · Bolt</code><span>Chat over the RAG-grounded evidence, through read-only tools on the same API.</span></li>
+        </ul>
+        <div class="io">
+          <div><b>FILES</b> — <code>apps/web/src/screens/{Fleet,Asset360,Studio,ModelOps,Copilot}.tsx</code></div>
+          <div><b>READS</b> — <code>GET /fleet</code>, <code>GET /assets/{id}</code>, <code>GET /pipeline/{run_id}</code>, <code>GET /models</code> from <b>02</b></div>
+          <div><b>WRITES</b> — <code>POST /approvals/{id}/decision</code>, <code>POST /copilot/chat</code> to <b>02</b></div>
+          <div><b>DEPENDS ON</b> — <code>VITE_API_BASE_URL</code></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="tagnum">02</div>
+      <div>
+        <h3>FastAPI Control Plane</h3>
+        <p class="role">The one door everything walks through — serves the frontend, streams live updates, exposes the approve/reject endpoint, and is what Bolt's tool calls hit too.</p>
+        <ul class="fnlist">
+          <li><code>ingest_telemetry()</code><span>Writes incoming MQTT rows into TimescaleDB.</span></li>
+          <li><code>get_fleet_state()</code><span>Direct reads for dashboard views that don't need agent reasoning.</span></li>
+          <li><code>invoke_pipeline()</code><span>Hands a request to the LangGraph Orchestrator.</span></li>
+          <li><code>record_approval()</code><span>Writes a human's approve/reject decision.</span></li>
+        </ul>
+        <div class="io">
+          <div><b>FILES</b> — <code>apps/api/main.py</code>, <code>apps/api/routes/{telemetry,fleet,pipeline,approvals,models,copilot}.py</code></div>
+          <div><b>EXPOSES</b> — <code>POST /ingest</code> · <code>GET /fleet</code> · <code>GET /assets/{id}</code> · <code>POST /pipeline/run</code> · <code>GET /pipeline/{run_id}</code> · <code>WS /ws/runs/{run_id}</code> · <code>GET /models</code> · <code>POST /approvals/{id}/decision</code> · <code>POST /copilot/chat</code></div>
+          <div><b>READS</b> — telemetry stream from <b>10</b> (MQTT)</div>
+          <div><b>WRITES</b> — raw rows → <b>10</b> <code>telemetry</code> hypertable; invokes → <b>03</b></div>
+          <div><b>DEPENDS ON</b> — <code>DATABASE_URL</code>, <code>MQTT_BROKER_URL</code> — <span class="warn">not</span> the Claude key; that's one layer down</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="tagnum">03</div>
+      <div>
+        <h3>LangGraph Orchestrator — the actual "agent"</h3>
+        <p class="role">One stateful graph, five toolboxes, holding state across the whole pipeline. It's the only file in the entire codebase that calls an LLM — everything it calls is deterministic code.</p>
+        <ul class="fnlist">
+          <li><code>route()</code><span>Decides which toolbox function runs next based on pipeline state.</span></li>
+          <li><code>await_approval()</code><span>Pauses the graph at the Human Approval Gate node.</span></li>
+          <li><code>resume()</code><span>Continues once a human decision is recorded.</span></li>
+        </ul>
+        <div class="io">
+          <div><b>FILES</b> — <code>apps/api/orchestrator.py</code>, <code>apps/api/graph_state.py</code></div>
+          <div><b>EXPOSES</b> — nothing public; called only via <code>invoke_pipeline()</code> from <b>02</b></div>
+          <div><b>READS</b> — typed <code>GraphState</code>; tool schemas exported by <b>04</b>–<b>08</b></div>
+          <div><b>WRITES</b> — updated <code>GraphState</code>; two Claude calls per run (routing, then final explanation)</div>
+          <div><b>DEPENDS ON</b> — <code>ANTHROPIC_API_KEY</code> — the only place this key is read, anywhere</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="tagnum">04</div>
+      <div>
+        <h3>Data Reliability Agent</h3>
+        <p class="role">Turns raw telemetry into a scored "can we trust this" report before anything trains on it.</p>
+        <ul class="fnlist">
+          <li><code>profile_dataset()</code><span>Schema, sampling rate, asset/row counts, a data-quality score.</span></li>
+          <li><code>detect_missingness()</code><span>Missing windows, sensor flatlines.</span></li>
+          <li><code>detect_regime()</code><span>Clusters operating states (RPM/load/startup) so a load change isn't mistaken for a fault.</span></li>
+          <li><code>validate_schema()</code><span>Units, timestamps, duplicates.</span></li>
+        </ul>
+        <div class="io">
+          <div><b>FILES</b> — <code>agents/data_agent/profiling.py</code></div>
+          <div><b>READS</b> — <code>telemetry</code> rows for the asset/window from <b>10</b></div>
+          <div><b>WRITES</b> — <code>data_quality_contract</code> row → <b>05</b></div>
+          <div><b>DEPENDS ON</b> — nothing external; pandas/numpy only</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="tagnum">05</div>
+      <div>
+        <h3>ML Architect Agent — the AutoML brain</h3>
+        <p class="role">Decides what kind of model this data supports, engineers signal-appropriate features, and runs the search.</p>
+        <ul class="fnlist">
+          <li><code>infer_task()</code><span>Classification vs. remaining-useful-life regression.</span></li>
+          <li><code>build_feature_pipeline()</code><span>RMS, kurtosis, crest factor, temperature slopes and deltas for vibration; rolling stats for process telemetry — regime-normalized.</span></li>
+          <li><code>launch_trial()</code><span>Optuna search over Random Forest / XGBoost / LightGBM.</span></li>
+          <li><code>compare_models()</code><span>Ranks candidates by the Industrial Model Score (recall + lead-time + precision + calibration + latency), not raw accuracy.</span></li>
+        </ul>
+        <div class="io">
+          <div><b>FILES</b> — <code>agents/ml_architect/{automl,features}.py</code></div>
+          <div><b>READS</b> — Data Quality Contract (<b>04</b>) + raw telemetry (<b>10</b>)</div>
+          <div><b>WRITES</b> — model artifacts + metrics → MLflow run (<b>10</b>); candidate list → <b>06</b></div>
+          <div><b>DEPENDS ON</b> — nothing external; local compute only</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="tagnum">06</div>
+      <div>
+        <h3>Validation Agent — the trust gate</h3>
+        <p class="role">Attacks its own model before it's allowed to matter. The checkpoint that separates a working system from a hackathon toy.</p>
+        <ul class="fnlist">
+          <li><code>detect_leakage()</code><span>Temporal, feature, and train/test asset leakage.</span></li>
+          <li><code>run_backtest()</code><span>Time-ordered, asset-level split — validated on machines the model has never seen.</span></li>
+          <li><code>calibrate_probabilities()</code><span>Is "80% confident" actually right 80% of the time.</span></li>
+          <li><code>compute_lead_time()</code><span>Median and P90 warning time before the actual failure.</span></li>
+          <li><code>estimate_rul_interval()</code><span>Quantile regression for a P10–P90 range, not a single number.</span></li>
+        </ul>
+        <div class="io">
+          <div><b>FILES</b> — <code>agents/validation/checks.py</code></div>
+          <div><b>READS</b> — candidate models + MLflow run IDs from <b>05</b></div>
+          <div><b>WRITES</b> — <code>validation_report</code> row + champion pointer → <b>07</b>, <b>08</b></div>
+          <div><b>DEPENDS ON</b> — nothing external</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="tagnum">07</div>
+      <div>
+        <h3>Reliability Agent — predictive → prescriptive</h3>
+        <p class="role">Assembles the evidence that turns a validated prediction into "here's what to do about it, and why" — the sentence itself is drafted by the Orchestrator (<b>03</b>) from this evidence, not by this toolbox. This is also the RAG pipeline that Bolt talks over.</p>
+        <ul class="fnlist">
+          <li><code>explain()</code><span>SHAP feature importances, as structured data — not prose.</span></li>
+          <li><code>retrieve_manual_context()</code><span>Chroma similarity search over ingested manuals — top matching passages, not a hallucinated citation.</span></li>
+          <li><code>calculate_failure_cost()</code><span>Expected cost = P(failure) × consequence + planned-maintenance cost.</span></li>
+          <li><code>find_maintenance_window()</code><span>Compares maintain-now / maintain-later / run-to-failure.</span></li>
+          <li><code>run_whatif()</code><span>Reliability sandbox — re-scores inference under a hypothetical operating condition.</span></li>
+          <li><code>create_decision_contract()</code><span>Immutable insert: model version, evidence, confidence, recommendation.</span></li>
+        </ul>
+        <div class="io">
+          <div><b>FILES</b> — <code>agents/reliability/{explain,rag,cost,contract}.py</code>, corpus at <code>data/manuals/*</code></div>
+          <div><b>READS</b> — champion model (<b>06</b>), live inference (<b>10</b>), vector index (<b>10</b>)</div>
+          <div><b>WRITES</b> — evidence bundle → <b>03</b> (drafts prose) → <code>decision_contract</code> row → <b>09</b></div>
+          <div><b>DEPENDS ON</b> — local sentence-transformers model; <span class="warn">no</span> external embedding API, <span class="warn">no</span> direct Claude call here</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="tagnum">08</div>
+      <div>
+        <h3>MLOps Agent — keeps the system honest over time</h3>
+        <p class="role">Nothing gets promoted without a real comparison and a human's click. Model lifecycle management, not just training.</p>
+        <ul class="fnlist">
+          <li><code>register_model()</code><span>MLflow registry entry: params, metrics, git SHA, dataset version.</span></li>
+          <li><code>compare_champion()</code><span>Challenger vs. current production model, side by side.</span></li>
+          <li><code>promote()</code><span>State transition (candidate → validated → shadow → production) — tracked as a database state, not live traffic-splitting.</span></li>
+          <li><code>detect_drift()</code><span>Population-stability-index check on incoming feature distributions vs. training.</span></li>
+          <li><code>deploy_edge()</code><span>Exports the champion to ONNX, pushes it to the edge container.</span></li>
+        </ul>
+        <div class="io">
+          <div><b>FILES</b> — <code>agents/mlops/{lifecycle,drift}.py</code></div>
+          <div><b>READS</b> — Validation Report (<b>06</b>); rolling telemetry window (<b>10</b>) for drift</div>
+          <div><b>WRITES</b> — MLflow registry stage → <b>10</b>; promotion request → <b>09</b>; on drift, re-invokes <b>05</b></div>
+          <div><b>DEPENDS ON</b> — <code>MLFLOW_TRACKING_URI</code></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="tagnum">09</div>
+      <div>
+        <h3>Human Approval Gate</h3>
+        <p class="role">The actual governance boundary. Every consequential action stops here until an engineer clicks approve — "LLM plans, deterministic code computes, engineer decides," made literal in the architecture instead of just stated in the pitch.</p>
+        <ul class="fnlist">
+          <li><code>present_evidence()</code><span>Shows the recommendation with its full evidence trail before asking for a decision.</span></li>
+          <li><code>record_decision()</code><span>Inserts a new <code>approvals</code> row referencing the contract — the contract itself is never edited.</span></li>
+        </ul>
+        <div class="io">
+          <div><b>FILES</b> — <code>apps/api/routes/approvals.py</code>; rendered by <b>01</b>'s Asset 360 / ModelOps screens</div>
+          <div><b>EXPOSES</b> — <code>POST /approvals/{id}/decision</code></div>
+          <div><b>READS</b> — <code>decision_contract</code> / <code>promotion_request</code> rows awaiting a decision</div>
+          <div><b>WRITES</b> — new <code>approvals</code> row (decision, approver, timestamp)</div>
+          <div><b>DEPENDS ON</b> — nothing beyond the database</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="tagnum">10</div>
+      <div>
+        <h3>Data, Streaming &amp; Edge Layer</h3>
+        <p class="role">The plumbing everything above sits on — deliberately unglamorous. Nothing here shows up in a demo video, so nothing here is over-built.</p>
+        <ul class="fnlist">
+          <li><code>Mosquitto + replay</code><span>Publishes a historical sequence at accelerated time — looks live, stays 100% reproducible.</span></li>
+          <li><code>TimescaleDB</code><span>Telemetry hypertable, asset registry, decision contracts, approvals.</span></li>
+          <li><code>MLflow</code><span>Experiment tracking + model registry, artifacts on a mounted Docker volume.</span></li>
+          <li><code>Chroma index</code><span>Vector store for the manual corpus, persisted to its own Docker volume.</span></li>
+          <li><code>Edge Inference</code><span>ONNX Runtime + a small FastAPI service, subscribed directly to MQTT.</span></li>
+        </ul>
+        <div class="io">
+          <div><b>FILES</b> — <code>streaming/{mqtt,replay}/</code>, <code>data/{simulator,benchmark,manuals}/</code>, <code>edge/main.py</code>, <code>infra/docker-compose.yml</code></div>
+          <div><b>EXPOSES</b> — MQTT topics <code>telemetry/{asset_id}</code>, <code>predictions/{asset_id}</code></div>
+          <div><b>READS</b> — <code>data/simulator/</code> output for replay; AI4I 2020 CSV for the benchmark script</div>
+          <div><b>WRITES</b> — telemetry rows; the mounted <code>.onnx</code> file after an approved promotion</div>
+          <div><b>DEPENDS ON</b> — <code>MQTT_BROKER_URL</code></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    Companion to the MES, not a replacement for one — the Decision Contract is the handoff artifact. Source for this page lives at <code>docs/architecture.html</code>; the build spec is <code>Spec.md</code>, measured results are in <code>docs/BUILD_STATUS.md</code>.
+  </footer>
+
+</div>

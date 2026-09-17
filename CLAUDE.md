@@ -97,7 +97,20 @@ flowchart TD
     MQTT -.direct stream.-> EDGE
 ```
 
-Full prose + IN/OUT for every function: see the artifact link at the top of this file.
+**Thor vs. Bolt, in one breath.** *Thor* is the whole system above: seven Compose services and
+one governed pipeline — MQTT telemetry into a FastAPI control plane and TimescaleDB, a
+LangGraph orchestrator (the only Claude caller, and only to route and to phrase) driving five
+deterministic toolboxes (regime-aware profiling, Optuna over RF/XGBoost/LightGBM ranked by the
+Industrial Model Score and tracked in MLflow, asset-level validation with calibration and lead
+time, SHAP + cost comparison, an MLOps lifecycle that promotes the champion to ONNX Runtime at
+the edge), producing an immutable Decision Contract that stops at the Human Approval Gate.
+*Bolt* is one component inside it: the copilot persona in the Copilot screen, a conversational
+surface over the Reliability toolbox's RAG layer (Chroma index of the plant manuals, local
+embeddings) that reaches data only through read-only tools on the same control plane and can
+explain but never approve, promote, train, or invent a citation.
+
+Full prose + IN/OUT for every function: see the artifact link at the top of this file
+(source: `docs/architecture.html`).
 
 ## 5. Repository layout
 
