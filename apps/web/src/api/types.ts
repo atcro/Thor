@@ -478,6 +478,8 @@ export interface SystemHealth {
   mqtt: boolean;
   mlflow: boolean;
   edge: boolean;
+  /** "llm" when ANTHROPIC_API_KEY is configured on the API, else "template". */
+  llm?: { mode: "llm" | "template"; model: string };
   n_telemetry_rows: number;
   last_ingest_ts: ISODate | null;
 }

@@ -181,11 +181,15 @@ def system_health() -> dict[str, Any]:
     uri = settings.mlflow_tracking_uri
     mlflow_ok = _http_ok(uri.rstrip("/") + "/health") if uri.startswith("http") else Path(uri).exists()
     edge_url = os.environ.get("EDGE_URL", "http://localhost:8001")
+    from apps.api.orchestrator import llm_status  # lazy: orchestrator imports this module
+
+    status = llm_status()
     return {
         "db": "ok" if db_ok else "error",
         "mqtt": _tcp_open(settings.mqtt_host, settings.mqtt_port),
         "mlflow": mlflow_ok,
         "edge": _http_ok(edge_url.rstrip("/") + "/health"),
+        "llm": {"mode": status["mode"], "model": status["model"]},
         "n_telemetry_rows": n_rows,
         "last_ingest_ts": last_ts,
     }

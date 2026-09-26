@@ -49,6 +49,7 @@ def test_health(client: TestClient) -> None:
     body = r.json()
     assert body["db"] == "ok" and body["n_telemetry_rows"] == 120
     assert body["last_ingest_ts"] is not None
+    assert body["llm"]["mode"] == "template" and body["llm"]["model"]
 
 
 def test_fleet_and_asset(client: TestClient) -> None:

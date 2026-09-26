@@ -8,6 +8,9 @@ mlruns
 mlartifacts
 models
 .chroma
+.env
+.env.*
+!.env.example
 thor.db
 __pycache__
 .pytest_cache

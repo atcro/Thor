@@ -70,6 +70,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup/shutdown: init_db -> seed -> RAG (thread) -> MQTT; stop MQTT on exit."""
     engine = db.init_db()
     try:
+        from apps.api.orchestrator import llm_status
+
+        status = llm_status()
+        log.info("LLM mode: %s (model %s)", status["mode"], status["model"])
+        if status["warning"]:
+            log.warning(status["warning"])
+    except Exception as e:
+        log.warning("LLM status check failed: %s", e)
+    try:
         counts = seed.seed_if_needed(engine)
         log.info("seed: %s", counts)
     except Exception as e:

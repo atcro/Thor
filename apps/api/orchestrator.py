@@ -163,6 +163,53 @@ def _text_of(message: Any) -> str:
     return "\n".join(p.strip() for p in parts if p and p.strip()).strip()
 
 
+def llm_status() -> dict[str, Any]:
+    """Report whether the LLM paths are active, without exposing the key.
+
+    Returns {"mode": "llm" | "template", "model": <configured model id>,
+    "key_configured": bool, "warning": str | None}. `warning` flags a key that does not look
+    like an Anthropic key (expected prefix `sk-ant-`), which usually means a paste error.
+    Safe to log and to return from /system/health.
+    """
+    key = _api_key()
+    warning: str | None = None
+    if key and not key.startswith("sk-ant-"):
+        warning = "ANTHROPIC_API_KEY is set but does not start with 'sk-ant-'; check the value"
+    return {
+        "mode": "llm" if key else "template",
+        "model": get_settings().anthropic_model,
+        "key_configured": bool(key),
+        "warning": warning,
+    }
+
+
+def llm_ping() -> dict[str, Any]:
+    """One minimal Messages API call to prove the configured key and model work.
+
+    Never called by the pipeline -- this is an operator smoke test:
+    `python -c "from apps.api.orchestrator import llm_ping; print(llm_ping())"`.
+    Returns {"ok": True, "model", "reply", "request_id"} or {"ok": False, "error"}.
+    """
+    status = llm_status()
+    if not status["key_configured"]:
+        return {"ok": False, "error": "ANTHROPIC_API_KEY is blank (template mode)"}
+    try:
+        client = _llm_client()
+        resp = client.messages.create(
+            model=status["model"],
+            max_tokens=32,
+            messages=[{"role": "user", "content": "Reply with the single word: ready"}],
+        )
+    except Exception as e:  # noqa: BLE001 - surface every failure class to the operator
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {
+        "ok": True,
+        "model": status["model"],
+        "reply": _text_of(resp),
+        "request_id": getattr(resp, "_request_id", None),
+    }
+
+
 # --------------------------------------------------------------------------------------
 # Toolbox wrappers -- lazy imports; monkeypatch these in tests
 # --------------------------------------------------------------------------------------

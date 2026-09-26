@@ -74,6 +74,15 @@ function SystemPanel() {
                   <span className={`mono small ${ok ? "" : "muted"}`}>{ok ? "up" : "down"}</span>
                 </div>
               ))}
+              <div className="row">
+                <span className="row">
+                  <Dot on={h.llm?.mode === "llm"} />
+                  LLM
+                </span>
+                <span className={`mono small ${h.llm?.mode === "llm" ? "" : "muted"}`}>
+                  {h.llm ? (h.llm.mode === "llm" ? h.llm.model : "template mode") : "unknown"}
+                </span>
+              </div>
               <div className="row" style={{ borderTop: "1px solid var(--line)", paddingTop: 8 }}>
                 <span className="muted">telemetry rows</span>
                 <span className="mono">{fmtInt(h.n_telemetry_rows)}</span>
