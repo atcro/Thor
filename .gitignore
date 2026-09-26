@@ -27,4 +27,4 @@ data/external/*
 !data/external/README.md
 
 # Bolt eval outputs (results, traces)
-evals/bolt/out/
+evals/bolt/out*/

@@ -56,7 +56,7 @@ don't invent new claims.
 
 | Area | Choice | Note |
 |---|---|---|
-| LLM | Anthropic Claude (Messages API, tool-calling) | Read **only** in `apps/api/orchestrator.py` — two calls per run: route, then draft the explanation |
+| LLM | OpenAI (chat completions, function calling) or Anthropic Claude (Messages API, tool use) — selected by `LLM_PROVIDER` / whichever key is set | Read **only** in `apps/api/orchestrator.py` — two calls per run: route, then draft the explanation; plus the Bolt tool loop |
 | ML | scikit-learn, XGBoost, LightGBM | No CNN/autoencoder — dropped by design, not by omission |
 | AutoML search | Optuna | Tree models only |
 | Explainability | SHAP | Feeds `explain()` in the Reliability Agent |
@@ -171,7 +171,7 @@ Approval Gate node, `resume()` continues once a decision is recorded.
   has never seen).
 - **NEVER** let the LLM compute a metric, a cost, or a SHAP value. It explains numbers that
   deterministic Python already produced — it does not produce them itself.
-- **NEVER** read `ANTHROPIC_API_KEY` outside `apps/api/orchestrator.py`. One file calls the LLM;
+- **NEVER** read `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` outside `apps/api/orchestrator.py`. One file calls the LLM;
   every other module is deterministic local compute. This is what makes the governance claim
   checkable rather than rhetorical.
 - **NEVER** let the LLM invent a manual citation. `retrieve_manual_context()` returns retrieved

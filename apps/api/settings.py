@@ -1,12 +1,14 @@
 """Process-wide configuration, read once from the environment (and .env if present).
 
-Only apps/api/orchestrator.py may read anthropic_api_key -- see CLAUDE.md section 7.
+Only apps/api/orchestrator.py may read anthropic_api_key / openai_api_key -- see CLAUDE.md
+section 7.
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -30,8 +32,13 @@ class Settings(BaseSettings):
     replay_speed: float = 1800.0
     simulator_out: str = str(REPO_ROOT / "data" / "simulator" / "out")
 
+    # LLM provider. "auto" picks openai when OPENAI_API_KEY is set, else anthropic when
+    # ANTHROPIC_API_KEY is set, else template mode. Keys are read only in orchestrator.py.
+    llm_provider: Literal["auto", "anthropic", "openai"] = "auto"
     anthropic_api_key: str = Field(default="", repr=False)
     anthropic_model: str = "claude-sonnet-5"
+    openai_api_key: str = Field(default="", repr=False)
+    openai_model: str = "gpt-5"
 
     # Plant-cost assumptions for the prescriptive layer. Configurable, never presented as fact.
     cost_planned_maintenance: float = 4200.0

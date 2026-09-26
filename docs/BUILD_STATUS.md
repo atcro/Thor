@@ -133,12 +133,21 @@ of refused. After fixes: **51 / 51**. `--mode llm` runs the same set once the ke
 100/100, P(48 h) about 0.5 inside the window, maintain-now on recorded runs, regime shares,
 version-id shape, ~30 s edge pickup) plus a quotable-numbers table with ranges.
 
-**Verification at end of session:** `ruff check .` clean; `pytest` **161 passed**;
+**Verification at end of session:** `ruff check .` clean; `pytest` **167 passed**;
 `npm --prefix apps/web run build` and tests pass; Bolt eval 51/51 (template, hashed embedding).
 
 **Still not verified:** LLM mode. No key has ever been configured, so the drafted explanation,
 the Bolt tool loop, the chained three-part answer and the voice are all unexercised. First
 steps when it arrives: `docs/API_KEY.md`, then `python evals/bolt/run_bolt_eval.py --mode llm`.
+
+**Provider port (evening).** The team's key is an OpenAI Platform key, so the three LLM
+paths (route, draft, Bolt tool loop) and `llm_ping()` now run on either provider behind
+`LLM_PROVIDER` (`auto` prefers OpenAI when its key is set). OpenAI uses chat completions with
+function calling (`max_completion_tokens`, tool results as `role: tool` messages); the Anthropic
+path is unchanged. `/system/health` reports `provider`; the key-guard test covers both keys.
+Verified with scripted fake clients for ping, route (choice recorded, legal transition wins),
+draft (refusal -> template) and the copilot loop (tool executed, result fed back). No live call
+has been made yet: at the end of the session `.env` still had an empty `OPENAI_API_KEY`.
 
 **Housekeeping:** `streaming/__init__.py` had been dragged to the repo root (empty file);
 restored. Raw datasets live in `data/external/` (ignored). `evals/bolt/out/` is ignored.

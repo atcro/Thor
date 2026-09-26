@@ -25,6 +25,11 @@ os.environ.setdefault("MLFLOW_TRACKING_URI", (_TMP_ROOT / "mlruns").resolve().as
 os.environ.setdefault("MODELS_DIR", (_TMP_ROOT / "models").as_posix())
 os.environ.setdefault("DATABASE_URL", f"sqlite:///{(_TMP_ROOT / 'thor-test.db').as_posix()}")
 os.environ.setdefault("MLFLOW_DISABLE_AGENT_HINT", "1")
+# Never let a real provider key from .env reach a test: tests that exercise LLM paths set a
+# fake key themselves and patch the client. (Forced, not setdefault, on purpose.)
+os.environ["ANTHROPIC_API_KEY"] = ""
+os.environ["OPENAI_API_KEY"] = ""
+os.environ["LLM_PROVIDER"] = "auto"
 
 try:  # settings is lru_cached; make sure the temp env above is what it sees
     from apps.api.settings import get_settings

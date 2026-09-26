@@ -84,7 +84,8 @@ or invent a citation.
 
 ## Tech stack
 
-Python, FastAPI, LangGraph, Anthropic Claude (Messages API, tool use), scikit-learn, XGBoost,
+Python, FastAPI, LangGraph, an LLM behind one provider switch (OpenAI or Anthropic, tool
+calling), scikit-learn, XGBoost,
 LightGBM, Optuna, SHAP, MLflow, Chroma with local embeddings, PostgreSQL with TimescaleDB,
 Mosquitto (MQTT), ONNX Runtime, React + TypeScript, Docker Compose, GitHub Actions.
 

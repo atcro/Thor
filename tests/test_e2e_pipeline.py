@@ -36,6 +36,8 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     monkeypatch.setenv("MLFLOW_TRACKING_URI", (tmp_path / "mlruns").as_uri())
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setenv("OPENAI_API_KEY", "")  # a real key in .env must never reach a test
+    monkeypatch.setenv("LLM_PROVIDER", "auto")
     monkeypatch.setenv("THOR_RAG_EMBEDDING", "hashed")
     monkeypatch.setenv("THOR_SKIP_BACKGROUND", "1")
     monkeypatch.delenv("SEED_ON_START", raising=False)

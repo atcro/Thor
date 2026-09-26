@@ -4,6 +4,14 @@ Thor runs without a key today (template mode). This is the 10-minute runbook for
 the LLM paths on and proving they work. Only `apps/api/orchestrator.py` reads the key; two
 calls per pipeline run (route, then draft the explanation) plus the Bolt copilot tool loop.
 
+> **Provider note (2026-09-25).** Thor accepts either provider. `LLM_PROVIDER=auto` picks OpenAI
+> when `OPENAI_API_KEY` is set, else Anthropic when `ANTHROPIC_API_KEY` is set, else template
+> mode; pin with `anthropic` or `openai`. All three LLM paths (route, draft, Bolt tool loop) and
+> `llm_ping()` run on whichever provider is active. The steps below name the Anthropic
+> variables; substitute `OPENAI_API_KEY` / `OPENAI_MODEL` (key prefix `sk-`, needs model
+> inference permission -- a read-only key cannot generate) and read `provider` in the status
+> output.
+
 ## 0. Rules
 
 - Never commit the key. `.env` and `.env.*` are git- and docker-ignored; `.env.example` is the
@@ -19,6 +27,9 @@ cp .env.example .env            # skip if .env already exists
 # edit .env:
 #   ANTHROPIC_API_KEY=sk-ant-api03-...
 #   ANTHROPIC_MODEL=claude-sonnet-5   # or claude-opus-5 for stronger prose
+#   -- or, for OpenAI --
+#   OPENAI_API_KEY=sk-...
+#   OPENAI_MODEL=gpt-5
 ```
 
 Do not `export` the key in a shell you share or record; the `.env` file is enough for both the

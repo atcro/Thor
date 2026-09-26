@@ -81,7 +81,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from apps.api.orchestrator import llm_status
 
         status = llm_status()
-        log.info("LLM mode: %s (model %s)", status["mode"], status["model"])
+        log.info(
+            "LLM mode: %s (provider %s, model %s)",
+            status["mode"],
+            status["provider"],
+            status["model"],
+        )
         if status["warning"]:
             log.warning(status["warning"])
     except Exception as e:

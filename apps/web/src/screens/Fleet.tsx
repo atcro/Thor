@@ -79,8 +79,17 @@ function SystemPanel() {
                   <Dot on={h.llm?.mode === "llm"} />
                   LLM
                 </span>
-                <span className={`mono small ${h.llm?.mode === "llm" ? "" : "muted"}`}>
-                  {h.llm ? (h.llm.mode === "llm" ? h.llm.model : "template mode") : "unknown"}
+                <span
+                  className={`mono small ${h.llm?.mode === "llm" ? "" : "muted"}`}
+                  title={h.llm?.warning ?? undefined}
+                >
+                  {h.llm
+                    ? h.llm.mode === "llm"
+                      ? `${h.llm.provider ?? ""} ${h.llm.model}`.trim()
+                      : h.llm.provider && h.llm.provider !== "none"
+                        ? `template mode (${h.llm.provider} key set, client pending)`
+                        : "template mode"
+                    : "unknown"}
                 </span>
               </div>
               <div className="row" style={{ borderTop: "1px solid var(--line)", paddingTop: 8 }}>

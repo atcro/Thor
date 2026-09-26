@@ -140,7 +140,8 @@ COPILOT_SYSTEM_PROMPT = (
     "precedent. State confidence honestly and in the contract's terms ('the contract puts it "
     "at 0.50 within 48 h', never 'it will fail'). Say plainly what is unknown or what returned "
     "nothing instead of filling the gap. Use the plant's vocabulary (drive-end bearing, regime, "
-    "alarm window, lead time), not generic phrases like 'anomaly detected'. Mention that "
+    "alarm window, lead time), not generic phrases like 'anomaly detected'; name SHAP drivers by "
+    "their plain names from top_features_plain, not by feature codes. Mention that "
     "approval happens in the Thor UI only when the user asks you to act, not on every turn. No "
     "exclamation marks, no apologies, no 'great question', no first-person feelings. Short "
     "sentences; numbers on their own line or in a short list when there are more than two."
@@ -164,9 +165,44 @@ CHOOSE_NEXT_NODE_TOOL: dict[str, Any] = {
 # --------------------------------------------------------------------------------------
 
 
+def _openai_key() -> str:
+    """Return the configured OpenAI API key ('' when absent). Read nowhere else."""
+    return (get_settings().openai_api_key or "").strip()
+
+
+def _provider() -> Literal["anthropic", "openai", "none"]:
+    """Resolve the active LLM provider from settings.llm_provider and which keys are set."""
+    s = get_settings()
+    anthropic_key = (s.anthropic_api_key or "").strip()
+    openai_key = _openai_key()
+    if s.llm_provider == "anthropic":
+        return "anthropic" if anthropic_key else "none"
+    if s.llm_provider == "openai":
+        return "openai" if openai_key else "none"
+    if openai_key:
+        return "openai"
+    return "anthropic" if anthropic_key else "none"
+
+
 def _api_key() -> str:
-    """Return the configured Anthropic API key ('' when running in template mode)."""
+    """Return the Anthropic key when Anthropic is the active provider, else ''.
+
+    Every LLM path in this module (route, draft, copilot, ping) currently speaks the Anthropic
+    Messages API, so this is the single switch that turns those paths on. An OpenAI key alone
+    leaves them in template mode until an OpenAI client is implemented here.
+    """
+    if _provider() != "anthropic":
+        return ""
     return (get_settings().anthropic_api_key or "").strip()
+
+
+def _llm_enabled() -> bool:
+    """True when a usable provider key is configured (anthropic or openai).
+
+    Checks `_api_key()` first so a test (or operator) that patches it still enables the
+    Anthropic path; otherwise falls back to provider resolution for OpenAI.
+    """
+    return bool(_api_key()) or _provider() == "openai"
 
 
 def _llm_client() -> Any:
@@ -179,6 +215,48 @@ def _llm_client() -> Any:
     return anthropic.Anthropic(api_key=key, max_retries=1, timeout=60.0)
 
 
+def _openai_client() -> Any:
+    """Build an OpenAI client. Raises if the SDK is missing or the key is blank."""
+    key = _openai_key()
+    if not key:
+        raise RuntimeError("OPENAI_API_KEY is blank")
+    import openai
+
+    # max_retries=3: the SDK honours retry-after on 429s, which low-tier accounts hit on a
+    # chained Bolt answer (3-4 requests, ~10k tokens) before the per-minute window rolls.
+    return openai.OpenAI(api_key=key, max_retries=3, timeout=90.0)
+
+
+def _openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Translate this module's tool specs (Anthropic shape) to OpenAI function-calling shape."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t.get("description", ""),
+                "parameters": t["input_schema"],
+            },
+        }
+        for t in tools
+    ]
+
+
+def _openai_tool_calls(message: Any) -> list[tuple[str, str, dict[str, Any]]]:
+    """(call_id, name, parsed args) for every tool call on an OpenAI chat message."""
+    out: list[tuple[str, str, dict[str, Any]]] = []
+    for tc in getattr(message, "tool_calls", None) or []:
+        fn = getattr(tc, "function", None)
+        if fn is None:
+            continue
+        try:
+            args = json.loads(fn.arguments or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        out.append((tc.id, fn.name, args if isinstance(args, dict) else {}))
+    return out
+
+
 def _text_of(message: Any) -> str:
     """Concatenate the text blocks of a Messages API response."""
     parts = [b.text for b in getattr(message, "content", []) if getattr(b, "type", "") == "text"]
@@ -188,18 +266,32 @@ def _text_of(message: Any) -> str:
 def llm_status() -> dict[str, Any]:
     """Report whether the LLM paths are active, without exposing the key.
 
-    Returns {"mode": "llm" | "template", "model": <configured model id>,
-    "key_configured": bool, "warning": str | None}. `warning` flags a key that does not look
-    like an Anthropic key (expected prefix `sk-ant-`), which usually means a paste error.
-    Safe to log and to return from /system/health.
+    Returns {"mode": "llm" | "template", "provider": "anthropic" | "openai" | "none",
+    "model": <configured model id>, "key_configured": bool, "warning": str | None}. `warning`
+    flags a key with an unexpected prefix (paste error) or a provider whose client is not
+    implemented yet. Safe to log and to return from /system/health.
     """
-    key = _api_key()
+    s = get_settings()
+    provider = _provider()
     warning: str | None = None
-    if key and not key.startswith("sk-ant-"):
-        warning = "ANTHROPIC_API_KEY is set but does not start with 'sk-ant-'; check the value"
+    if provider == "openai":
+        key = _openai_key()
+        model = s.openai_model
+        if not key.startswith("sk-"):
+            warning = "OPENAI_API_KEY is set but does not start with 'sk-'; check the value"
+        mode = "llm"
+    elif provider == "anthropic":
+        key = _api_key()
+        model = s.anthropic_model
+        if not key.startswith("sk-ant-"):
+            warning = "ANTHROPIC_API_KEY is set but does not start with 'sk-ant-'; check the value"
+        mode = "llm"
+    else:
+        key, model, mode = "", s.anthropic_model, "template"
     return {
-        "mode": "llm" if key else "template",
-        "model": get_settings().anthropic_model,
+        "mode": mode,
+        "provider": provider,
+        "model": model,
         "key_configured": bool(key),
         "warning": warning,
     }
@@ -214,21 +306,36 @@ def llm_ping() -> dict[str, Any]:
     """
     status = llm_status()
     if not status["key_configured"]:
-        return {"ok": False, "error": "ANTHROPIC_API_KEY is blank (template mode)"}
+        return {
+            "ok": False,
+            "error": "ANTHROPIC_API_KEY and OPENAI_API_KEY are both blank (template mode)",
+        }
+    prompt = "Reply with the single word: ready"
     try:
-        client = _llm_client()
-        resp = client.messages.create(
-            model=status["model"],
-            max_tokens=32,
-            messages=[{"role": "user", "content": "Reply with the single word: ready"}],
-        )
+        if status["provider"] == "openai":
+            resp = _openai_client().chat.completions.create(
+                model=status["model"],
+                max_completion_tokens=64,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            reply = (resp.choices[0].message.content or "").strip()
+            request_id = getattr(resp, "_request_id", None) or getattr(resp, "id", None)
+        else:
+            resp = _llm_client().messages.create(
+                model=status["model"],
+                max_tokens=32,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            reply = _text_of(resp)
+            request_id = getattr(resp, "_request_id", None)
     except Exception as e:  # noqa: BLE001 - surface every failure class to the operator
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     return {
         "ok": True,
+        "provider": status["provider"],
         "model": status["model"],
-        "reply": _text_of(resp),
-        "request_id": getattr(resp, "_request_id", None),
+        "reply": reply,
+        "request_id": request_id,
     }
 
 
@@ -527,8 +634,7 @@ def _persist(gs: GraphState, engine: Engine | None) -> None:
 
 
 def _llm_choose_next_node(state: GraphState, allowed: list[str]) -> str | None:
-    """Ask Claude (one tool-choice call) which node to run next. Returns the raw choice."""
-    client = _llm_client()
+    """Ask the LLM (one tool-choice call) which node to run next. Returns the raw choice."""
     summary = {
         "run_id": state.run_id,
         "asset_id": state.asset_id,
@@ -540,18 +646,30 @@ def _llm_choose_next_node(state: GraphState, allowed: list[str]) -> str | None:
         "has_validation": state.validation is not None,
         "has_contract": state.contract is not None,
     }
-    resp = client.messages.create(
+    user_msg = "Pipeline state:\n" + json.dumps(summary) + "\nCall choose_next_node."
+    if _provider() == "openai":
+        resp = _openai_client().chat.completions.create(
+            model=get_settings().openai_model,
+            max_completion_tokens=256,
+            messages=[
+                {"role": "system", "content": ROUTE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            tools=_openai_tools([CHOOSE_NEXT_NODE_TOOL]),
+            tool_choice="auto",
+            parallel_tool_calls=False,
+        )
+        for _cid, name, args in _openai_tool_calls(resp.choices[0].message):
+            if name == "choose_next_node":
+                return str(args.get("node", "")) or None
+        return None
+    resp = _llm_client().messages.create(
         model=get_settings().anthropic_model,
         max_tokens=256,
         system=ROUTE_SYSTEM_PROMPT,
         tools=[CHOOSE_NEXT_NODE_TOOL],
         tool_choice={"type": "auto", "disable_parallel_tool_use": True},
-        messages=[
-            {
-                "role": "user",
-                "content": "Pipeline state:\n" + json.dumps(summary) + "\nCall choose_next_node.",
-            }
-        ],
+        messages=[{"role": "user", "content": user_msg}],
     )
     for block in resp.content:
         if getattr(block, "type", "") == "tool_use" and block.name == "choose_next_node":
@@ -574,7 +692,7 @@ def route(state: GraphState) -> str:
     call is recorded as a `route_llm` event and counted in `state.llm_calls` (mutated in place).
     """
     nxt = STAGE_TO_NEXT.get(state.stage, END)
-    if nxt == END or not _api_key() or _llm_route_done(state):
+    if nxt == END or not _llm_enabled() or _llm_route_done(state):
         return nxt
     choice: str | None = None
     error: str | None = None
@@ -601,13 +719,26 @@ def route(state: GraphState) -> str:
 
 
 def _llm_draft(bundle: EvidenceBundle) -> str:
-    """One Messages call with the evidence bundle JSON; returns the drafted text."""
-    client = _llm_client()
-    resp = client.messages.create(
+    """One LLM call with the evidence bundle JSON; returns the drafted text ('' on refusal)."""
+    payload = bundle.model_dump_json(indent=2)
+    if _provider() == "openai":
+        resp = _openai_client().chat.completions.create(
+            model=get_settings().openai_model,
+            max_completion_tokens=1024,
+            messages=[
+                {"role": "system", "content": EXPLANATION_SYSTEM_PROMPT},
+                {"role": "user", "content": payload},
+            ],
+        )
+        msg = resp.choices[0].message
+        if getattr(msg, "refusal", None):
+            return ""
+        return (msg.content or "").strip()
+    resp = _llm_client().messages.create(
         model=get_settings().anthropic_model,
         max_tokens=1024,
         system=EXPLANATION_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": bundle.model_dump_json(indent=2)}],
+        messages=[{"role": "user", "content": payload}],
     )
     if getattr(resp, "stop_reason", "") == "refusal":
         return ""
@@ -617,11 +748,11 @@ def _llm_draft(bundle: EvidenceBundle) -> str:
 def draft_explanation(bundle: EvidenceBundle) -> tuple[str, Literal["llm", "template"]]:
     """Draft the engineer-facing explanation for an `EvidenceBundle`.
 
-    Input: the bundle produced by 07. Output: (text, source). Uses ONE Claude call when a key
+    Input: the bundle produced by 07. Output: (text, source). Uses ONE LLM call when a provider key
     is configured; on any exception, a blank key, or a blank/refused reply it falls back to
     `agents.reliability.contract.template_explanation(bundle)` with source "template".
     """
-    if _api_key():
+    if _llm_enabled():
         try:
             text = (_llm_draft(bundle) or "").strip()
             if text:
@@ -861,7 +992,7 @@ def _explain(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
     )
     gs.evidence = bundle
     text, source = draft_explanation(bundle)
-    if _api_key():
+    if _llm_enabled():
         gs.llm_calls += 1
     append_event(gs, gs.stage, f"explanation drafted ({source})", tool="draft_explanation")
     contract = tool_create_decision_contract(bundle, gs.run_id, text, source, engine)
@@ -1224,6 +1355,20 @@ def copilot_get_contract(contract_id: str, engine: Engine | None = None) -> dict
         return {"error": f"unknown contract {contract_id}"}
     out = db.dump_model(dc)
     out["status"] = db.contract_status(contract_id, engine=engine)
+    try:
+        from agents.reliability.explain import FEATURE_PHRASES
+
+        out["top_features_plain"] = [
+            {
+                "driver": FEATURE_PHRASES.get(f["feature"], f["feature"].replace("_", " ")),
+                "feature": f["feature"],
+                "direction": f["direction"],
+                "shap_value": f["shap_value"],
+            }
+            for f in out.get("top_features", [])
+        ]
+    except Exception:  # noqa: BLE001 - plain names are a courtesy, never required
+        pass
     return out
 
 
@@ -1892,7 +2037,73 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
     return CopilotResponse(reply=reply, tool_calls=calls, source="template")
 
 
+def _copilot_system(req: CopilotRequest) -> str:
+    system = COPILOT_SYSTEM_PROMPT
+    if req.asset_id:
+        system += f" The user is currently looking at asset {req.asset_id}."
+    return system
+
+
+def _copilot_llm_openai(req: CopilotRequest, engine: Engine | None) -> CopilotResponse:
+    """OpenAI chat-completions tool loop (max 4 tool rounds) over the same read-only tools."""
+    client = _openai_client()
+    model = get_settings().openai_model
+    messages: list[dict[str, Any]] = [{"role": "system", "content": _copilot_system(req)}]
+    for m in req.messages:
+        role = "assistant" if m.role == "assistant" else "user"
+        messages.append({"role": role, "content": m.content})
+    if len(messages) == 1 or messages[-1]["role"] != "user":
+        messages.append({"role": "user", "content": "(context)"})
+    tools = _openai_tools(COPILOT_TOOLS)
+    calls: list[dict[str, Any]] = []
+    reply = ""
+    for _round in range(4):
+        resp = client.chat.completions.create(
+            model=model,
+            max_completion_tokens=1024,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",
+        )
+        msg = resp.choices[0].message
+        reply = (msg.content or "").strip() or reply
+        tool_calls = _openai_tool_calls(msg)
+        if not tool_calls:
+            break
+        messages.append(
+            {
+                "role": "assistant",
+                "content": msg.content or "",
+                "tool_calls": [
+                    {
+                        "id": cid,
+                        "type": "function",
+                        "function": {"name": name, "arguments": json.dumps(args)},
+                    }
+                    for cid, name, args in tool_calls
+                ],
+            }
+        )
+        for cid, name, args in tool_calls:
+            res = _run_copilot_tool(name, args, engine)
+            calls.append({"name": name, "args": args, "result_summary": _result_summary(res)})
+            messages.append(
+                {"role": "tool", "tool_call_id": cid, "content": json.dumps(res, default=str)}
+            )
+    else:
+        # tool budget exhausted: one last call without tools to get the final text
+        resp = client.chat.completions.create(
+            model=model, max_completion_tokens=1024, messages=messages
+        )
+        reply = (resp.choices[0].message.content or "").strip() or reply
+    if not reply:
+        reply = "I could not produce an answer from the tool results; please try rephrasing."
+    return CopilotResponse(reply=reply, tool_calls=calls, source="llm")
+
+
 def _copilot_llm(req: CopilotRequest, engine: Engine | None) -> CopilotResponse:
+    if _provider() == "openai":
+        return _copilot_llm_openai(req, engine)
     client = _llm_client()
     messages: list[dict[str, Any]] = []
     for m in req.messages:
@@ -1903,9 +2114,7 @@ def _copilot_llm(req: CopilotRequest, engine: Engine | None) -> CopilotResponse:
             messages.append({"role": role, "content": m.content})
     if not messages or messages[0]["role"] != "user":
         messages.insert(0, {"role": "user", "content": "(context)"})
-    system = COPILOT_SYSTEM_PROMPT
-    if req.asset_id:
-        system += f" The user is currently looking at asset {req.asset_id}."
+    system = _copilot_system(req)
     calls: list[dict[str, Any]] = []
     reply = ""
     model = get_settings().anthropic_model
@@ -1950,7 +2159,7 @@ def copilot_reply(req: CopilotRequest, engine: Engine | None = None) -> CopilotR
     search_field_history, field_history_stats. Without a key, or when the LLM fails:
     keyword-routed template answers over the same tools (source "template").
     """
-    if _api_key():
+    if _llm_enabled():
         try:
             return _copilot_llm(req, engine)
         except Exception as e:

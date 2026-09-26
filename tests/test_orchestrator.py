@@ -74,6 +74,8 @@ def configure_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MODELS_DIR", str(tmp_path / "models"))
     monkeypatch.setenv("MLFLOW_TRACKING_URI", str(tmp_path / "mlruns"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setenv("OPENAI_API_KEY", "")  # a real key in .env must never reach a test
+    monkeypatch.setenv("LLM_PROVIDER", "auto")
     monkeypatch.setenv("THOR_SKIP_BACKGROUND", "1")
     monkeypatch.delenv("SEED_ON_START", raising=False)
     get_settings.cache_clear()
@@ -558,8 +560,8 @@ def test_only_orchestrator_reads_api_key() -> None:
         if p.name in ("orchestrator.py", "settings.py"):
             continue
         text = p.read_text(encoding="utf-8", errors="ignore")
-        reads_attr = re.search(r"\.anthropic_api_key\b", text)
-        reads_env = re.search(r"(environ|getenv)\s*[\[(]\s*['\"]ANTHROPIC_API_KEY", text)
+        reads_attr = re.search(r"\.(anthropic|openai)_api_key\b", text)
+        reads_env = re.search(r"(environ|getenv)\s*[\[(]\s*['\"](ANTHROPIC|OPENAI)_API_KEY", text)
         if reads_attr or reads_env:
             offenders.append(str(p))
     assert offenders == []

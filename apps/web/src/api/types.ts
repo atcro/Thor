@@ -478,8 +478,13 @@ export interface SystemHealth {
   mqtt: boolean;
   mlflow: boolean;
   edge: boolean;
-  /** "llm" when ANTHROPIC_API_KEY is configured on the API, else "template". */
-  llm?: { mode: "llm" | "template"; model: string };
+  /** "llm" when a usable provider key is configured on the API, else "template". */
+  llm?: {
+    mode: "llm" | "template";
+    provider?: "anthropic" | "openai" | "none";
+    model: string;
+    warning?: string | null;
+  };
   n_telemetry_rows: number;
   last_ingest_ts: ISODate | null;
 }

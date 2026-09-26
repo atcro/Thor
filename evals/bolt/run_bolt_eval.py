@@ -1,7 +1,7 @@
 """Run the Bolt copilot eval (evals/bolt/cases.jsonl) and grade it programmatically.
 
     python evals/bolt/run_bolt_eval.py                 # template mode, offline embedding
-    python evals/bolt/run_bolt_eval.py --mode llm      # needs ANTHROPIC_API_KEY in .env
+    python evals/bolt/run_bolt_eval.py --mode llm      # needs OPENAI_API_KEY or ANTHROPIC_API_KEY in .env
     python evals/bolt/run_bolt_eval.py --embedding default   # MiniLM instead of hashed
 
 What it does: points Thor at a throwaway SQLite database and Chroma directory, seeds the small
@@ -60,14 +60,25 @@ def configure(mode: str, embedding: str, workdir: Path) -> None:
         ROOT / "data" / "field_history" / "fmucd_rotating_upm.csv"
     )
     if mode == "template":
+        # Blank BOTH keys: with a provider key in .env, "template" would otherwise call the
+        # model (and bill for it) while grading against template phrasing.
         os.environ["ANTHROPIC_API_KEY"] = ""
+        os.environ["OPENAI_API_KEY"] = ""
+        os.environ["LLM_PROVIDER"] = "auto"
     from apps.api import db
     from apps.api.settings import get_settings
 
     get_settings.cache_clear()
     db.get_engine.cache_clear()
-    if mode == "llm" and not get_settings().anthropic_api_key.strip():
-        sys.exit("--mode llm needs ANTHROPIC_API_KEY (put it in .env); see docs/API_KEY.md")
+    if mode == "llm":
+        from apps.api.orchestrator import llm_status
+
+        status = llm_status()
+        if status["mode"] != "llm":
+            sys.exit(
+                "--mode llm needs OPENAI_API_KEY or ANTHROPIC_API_KEY in .env; see docs/API_KEY.md"
+            )
+        print(f"LLM provider {status['provider']}, model {status['model']}")
 
 
 def seed() -> str:
@@ -100,19 +111,28 @@ def grade(
 ) -> tuple[dict[str, float], dict[str, str]]:
     exp = case["expect"]
     notes: dict[str, str] = {}
-    want = exp["tools"]
-    tm = exp.get("tools_mode", "exact")
-    if tm == "exact":
-        route = tool_names == want
-    elif tm == "prefix":
-        route = tool_names[: len(want)] == want
-    else:  # first_in
-        route = bool(tool_names) and tool_names[0] in want
+    if mode == "llm":
+        # Substance, not wording: the core tools were used (any order, extras allowed) and
+        # the reply carries the right ids / numbers / citations / refusal.
+        want = exp.get("tools_llm", exp["tools"])
+        route = set(want) <= set(tool_names)
+        tm = "subset"
+        musts, must_nots = exp.get("must_llm", exp["must"]), []
+    else:
+        want = exp["tools"]
+        tm = exp.get("tools_mode", "exact")
+        if tm == "exact":
+            route = tool_names == want
+        elif tm == "prefix":
+            route = tool_names[: len(want)] == want
+        else:  # first_in
+            route = bool(tool_names) and tool_names[0] in want
+        musts, must_nots = exp["must"], exp["must_not"]
     if not route:
         notes["route"] = f"tools {tool_names} != expected {want} ({tm})"
     flags = re.IGNORECASE | re.MULTILINE
-    missing = [m for m in exp["must"] if not re.search(m, reply, flags)]
-    present = [m for m in exp["must_not"] if re.search(m, reply, flags)]
+    missing = [m for m in musts if not re.search(m, reply, flags)]
+    present = [m for m in must_nots if re.search(m, reply, flags)]
     content = not missing and not present
     if missing:
         notes["content"] = "missing " + ", ".join(repr(m) for m in missing)
@@ -139,6 +159,10 @@ def main() -> int:
     ap.add_argument("--out", default=str(Path(__file__).with_name("out")))
     ap.add_argument("--min-pass", type=float, default=0.0)
     ap.add_argument("--only", default="", help="substring filter on case id")
+    ap.add_argument("--pause", type=float, default=0.0, help="seconds to wait between cases")
+    ap.add_argument(
+        "--retries", type=int, default=2, help="LLM mode: re-run a case that fell back to template"
+    )
     args = ap.parse_args()
 
     workdir = Path(tempfile.mkdtemp(prefix="bolt-eval-"))
@@ -156,7 +180,7 @@ def main() -> int:
     out_dir = Path(args.out) / args.mode
     (out_dir / "traces").mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "results.jsonl"
-    model_name = orchestrator.get_settings().anthropic_model if args.mode == "llm" else "template"
+    model_name = orchestrator.llm_status()["model"] if args.mode == "llm" else "template"
     rows: list[dict[str, Any]] = []
     for c in cases:
         prompt = c["prompt"].replace("{CONTRACT_ID}", contract_id)
@@ -164,12 +188,29 @@ def main() -> int:
             messages=[CopilotMessage(role="user", content=prompt)], asset_id=c.get("asset_id")
         )
         t0 = time.perf_counter()
-        try:
-            resp = orchestrator.copilot_reply(req, engine=engine)
-            reply, calls, source, status = resp.reply, resp.tool_calls, resp.source, "ok"
-        except Exception as e:  # noqa: BLE001 - record harness failures, keep going
-            reply, calls, source, status = f"ERROR {type(e).__name__}: {e}", [], "error", "error"
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                resp = orchestrator.copilot_reply(req, engine=engine)
+                reply, calls, source, status = resp.reply, resp.tool_calls, resp.source, "ok"
+            except Exception as e:  # noqa: BLE001 - record harness failures, keep going
+                reply, calls, source, status = (
+                    f"ERROR {type(e).__name__}: {e}",
+                    [],
+                    "error",
+                    "error",
+                )
+            # In LLM mode a template answer means the provider call failed (usually a 429):
+            # wait for the rate window and retry, recording the attempt count.
+            if args.mode == "llm" and source != "llm" and attempts <= args.retries:
+                print(f"  {c['id']}: fell back to template (attempt {attempts}); retrying in 25 s")
+                time.sleep(25)
+                continue
+            break
         latency = time.perf_counter() - t0
+        if args.pause:
+            time.sleep(args.pause)
         names = [tc["name"] for tc in calls]
         g, notes = grade(c, reply, names, source, args.mode)
         rows.append(
@@ -184,7 +225,7 @@ def main() -> int:
                 "latency_s": round(latency, 3),
                 "tool_calls": len(calls),
                 "model": model_name,
-                "meta": {"source": source, "tools": names},
+                "meta": {"source": source, "tools": names, "attempts": attempts},
             }
         )
         trace: list[dict[str, Any]] = [{"role": "user", "content": prompt}]

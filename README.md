@@ -32,11 +32,12 @@ See CLAUDE.md for the architecture, agent contracts, and non-negotiable rules.
 ## API key (optional)
 
 Thor runs fully without a key: explanations and the Bolt copilot fall back to deterministic
-templates. With a key, the orchestrator drafts the explanation and Bolt answers through a
-Claude tool loop -- still only over numbers that Python computed.
+templates. With a key, the orchestrator drafts the explanation and Bolt answers through an LLM
+tool loop (OpenAI or Anthropic) -- still only over numbers that Python computed.
 
     cp .env.example .env                    # .env is git- and docker-ignored; never commit it
-    # edit .env: ANTHROPIC_API_KEY=sk-ant-...  (ANTHROPIC_MODEL picks the model)
+    # edit .env: OPENAI_API_KEY=sk-... (OPENAI_MODEL picks the model), or ANTHROPIC_API_KEY=sk-ant-...
+    # LLM_PROVIDER=auto prefers OpenAI when both are set
     python -c "from apps.api.orchestrator import llm_status; print(llm_status())"  # no network
     python -c "from apps.api.orchestrator import llm_ping; print(llm_ping())"      # one tiny call
 
