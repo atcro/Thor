@@ -8,7 +8,8 @@ Kept rows: PPM/UPM == UPM, component names a fan / pump / motor / compressor / c
 air handler / drive, and the free text names a symptom (bearing, vibration, noise, seized,
 belt, overheat, motor ...). Exact (university, WOID) repeats and identical
 (component, description) pairs are dropped. Names after "per"/"attn"/"contact", e-mail
-addresses and phone numbers are scrubbed from the description.
+addresses, phone numbers and trailing " - Surname" sign-offs are scrubbed from the
+description (best effort: a bare name inside a sentence cannot be told from equipment names).
 
 Run: python data/field_history/build_fmucd_slice.py
 """
@@ -35,11 +36,13 @@ SCRUB = [
     (re.compile(r"\(?\b\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"), ""),
     (
         re.compile(
-            r"\b(per|attn?|contact|call|ask for|see)\b\s*[:.-]?\s*[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?",
+            r"\b(?:per|attn?|contact|poc|requestor|requester|call|ask for|see)\b\s*[:.-]?\s*"
+            r"[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){0,2}",
             re.I,
         ),
         "",
     ),
+    (re.compile(r"\s[-/]\s*[A-Z][A-Za-z'.]+\s*$"), ""),  # trailing " - Surname" sign-off
     (re.compile(r"\s{2,}"), " "),
 ]
 COLS = [

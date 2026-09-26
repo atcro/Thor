@@ -788,6 +788,47 @@ def test_copilot_template_mode(engine: Any) -> None:
     assert os.environ.get("ANTHROPIC_API_KEY", "") == ""
 
 
+def test_copilot_template_chains_evidence_and_precedent(engine: Any) -> None:
+    """'Why is MTR-042 at risk?' with an open contract -> asset, contract, precedent, unasked."""
+    import json
+    from pathlib import Path
+
+    from apps.api import orchestrator
+    from apps.api.schemas import DecisionContract
+
+    example = json.loads(
+        (
+            Path(__file__).resolve().parents[1] / "docs" / "decision-contracts" / "example.json"
+        ).read_text(encoding="utf-8")
+    )
+    example["asset_id"] = "MTR-042"
+    dc = DecisionContract.model_validate(example)
+    db.insert_decision_contract(dc, engine=engine)
+
+    r = orchestrator.copilot_reply(
+        CopilotRequest(
+            messages=[CopilotMessage(role="user", content="Why is MTR-042 at risk?")],
+            asset_id=None,
+        ),
+        engine=engine,
+    )
+    names = [c["name"] for c in r.tool_calls]
+    assert names == ["get_asset", "get_contract", "search_field_history"]
+    assert r.tool_calls[1]["args"] == {"contract_id": dc.contract_id}
+    assert r.tool_calls[2]["args"]["query"].startswith("electric motor drive end bearing: ")
+    assert f"Evidence from contract {dc.contract_id}" in r.reply
+    assert "Top risk-raising drivers:" in r.reply
+    assert "motor-maintenance.md section 4.2" in r.reply  # the contract's own citation
+    assert "No field-history cases matched" in r.reply  # empty index in this env; honest
+
+    # Asking about the contract id directly also appends precedent.
+    r = orchestrator.copilot_reply(
+        CopilotRequest(messages=[CopilotMessage(role="user", content=f"show {dc.contract_id}")]),
+        engine=engine,
+    )
+    assert [c["name"] for c in r.tool_calls] == ["get_contract", "search_field_history"]
+
+
 def test_graph_state_helpers() -> None:
     from apps.api import graph_state
 

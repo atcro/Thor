@@ -128,7 +128,12 @@ COPILOT_SYSTEM_PROMPT = (
     "questions, call search_field_history: its cases are real unplanned work orders from a "
     "public dataset of university facilities (FMUCD), not from this plant and not manual "
     "guidance -- present them as precedent ('field history: <component>, <year>') and use "
-    "only the labor hours, costs and medians it returns. Be concise and concrete."
+    "only the labor hours, costs and medians it returns. When asked why an asset is at risk "
+    "or about a decision contract, chain the tools: get_asset or get_contract first, then "
+    "search_field_history with the contract's risk-raising drivers as the symptom, and answer "
+    "in three parts -- the contract's evidence (probability, top drivers), its manual "
+    "citations (already in the contract; do not invent others), and the precedent. Be "
+    "concise and concrete."
 )
 
 CHOOSE_NEXT_NODE_TOOL: dict[str, Any] = {
@@ -1587,6 +1592,42 @@ def _template_history_text(res: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+WHY_WORDS = ("why", "risk", "wrong", "cause", "explain", "happening", "going on", "evidence")
+
+
+def _history_query_for_contract(dc: dict[str, Any]) -> str:
+    """Deterministic symptom query from a contract payload's risk-raising SHAP drivers."""
+    from agents.reliability import rag
+
+    feats = [
+        f["feature"] for f in dc.get("top_features", []) if f.get("direction") == "raises_risk"
+    ]
+    feats = feats or [f["feature"] for f in dc.get("top_features", [])]
+    return rag.history_query_from_features(feats)
+
+
+def _template_contract_evidence(dc: dict[str, Any]) -> str:
+    """Evidence + manual citations already inside a contract (no new retrieval)."""
+    from agents.reliability.explain import FEATURE_PHRASES
+
+    drivers = [
+        FEATURE_PHRASES.get(f["feature"], f["feature"].replace("_", " "))
+        for f in dc.get("top_features", [])
+        if f.get("direction") == "raises_risk"
+    ][:3]
+    lines = [
+        f"Evidence from contract {dc['contract_id']}: failure probability "
+        f"{dc['failure_probability']:.2f}, recommendation {dc['recommendation']}, "
+        f"expected cost {dc['expected_cost']:,.0f}."
+    ]
+    if drivers:
+        lines.append("Top risk-raising drivers: " + ", ".join(drivers) + ".")
+    cites = [f"{p['source']} section {p['section']}" for p in dc.get("manual_context", [])][:3]
+    if cites:
+        lines.append("Manual citations in the contract: " + "; ".join(cites) + ".")
+    return " ".join(lines)
+
+
 HISTORY_WORDS = (
     "seen before",
     "seen this",
@@ -1650,6 +1691,12 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
     fleet_words = ("fleet", "risk", "health", "status", "worst", "motors", "assets")
     wants_history = any(k in text for k in HISTORY_WORDS)
     wants_manual = not wants_history and any(k in text for k in MANUAL_WORDS)
+    wants_why = any(k in text for k in WHY_WORDS)
+
+    def precedent_for(dc: dict[str, Any]) -> str:
+        query = _history_query_for_contract(dc)
+        return _template_history_text(call("search_field_history", {"query": query, "k": 3}))
+
     if m_contract:
         res = call("get_contract", {"contract_id": m_contract.group(0)})
         if "error" in res:
@@ -1660,13 +1707,22 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
                 f"failure probability {res['failure_probability']:.2f}, expected cost "
                 f"{res['expected_cost']:.0f}, status {res['status']}. {res['explanation_text']}"
             )
+            reply += "\n\n" + precedent_for(res)
     elif "pending" in text or "approv" in text or "reject" in text:
         reply = _template_pending_text(call("list_pending_approvals", {}))
     elif m_asset or (req.asset_id and ("asset" in text or "motor" in text or "this" in text)):
         aid = m_asset.group(0).upper() if m_asset else str(req.asset_id)
-        reply = _template_asset_text(call("get_asset", {"asset_id": aid}))
+        asset_res = call("get_asset", {"asset_id": aid})
+        reply = _template_asset_text(asset_res)
         query = ASSET_ID_RE.sub("", last).strip() or last
-        if wants_history:
+        contracts = asset_res.get("contracts") or []
+        if wants_why and contracts:
+            # "Why is MTR-042 at risk?": evidence + the contract's own citations + precedent,
+            # without the user having to ask for each.
+            dc = call("get_contract", {"contract_id": contracts[0]["contract_id"]})
+            if "error" not in dc:
+                reply += "\n\n" + _template_contract_evidence(dc) + "\n\n" + precedent_for(dc)
+        elif wants_history:
             reply += "\n\n" + _template_history_text(call("search_field_history", {"query": query}))
         elif wants_manual:
             reply += "\n\n" + _template_manuals_text(call("search_manuals", {"query": query}))

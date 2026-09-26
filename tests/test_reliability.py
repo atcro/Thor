@@ -333,6 +333,23 @@ def _write_cases(path: Path) -> None:
     ).to_csv(path, index=False)
 
 
+def test_normalize_symptom_text_expands_shorthand() -> None:
+    out = rag.normalize_symptom_text("MASON MECH RM 5B EXH FAN MTR BRG NOISY >>CHECK 335/PCIRC10//")
+    assert out == "mason mechanical room exhaust fan motor bearing noisy check"
+    assert rag.normalize_symptom_text("AHU-3 VFD tripping (2756-102-0039)") == (
+        "air handling unit variable frequency drive tripping"
+    )
+    assert rag.normalize_symptom_text("") == ""
+
+
+def test_history_query_from_features_is_deterministic() -> None:
+    q = rag.history_query_from_features(["vib_rms_z", "bearing_temp_z", "vib_kurt_mean"])
+    assert q.startswith("electric motor drive end bearing: ")
+    assert "vibrating noisy" in q and "running hot" in q and "grinding" in q
+    assert q == rag.history_query_from_features(["vib_rms_z", "bearing_temp_z", "vib_kurt_mean"])
+    assert rag.history_query_from_features([]).endswith("motor bearing noisy")
+
+
 def test_field_history_index_and_retrieval(tmp_path: Path) -> None:
     from apps.api import orchestrator
 
@@ -346,6 +363,11 @@ def test_field_history_index_and_retrieval(tmp_path: Path) -> None:
     assert cases[0].case_id == "fmucd-1-A" and cases[0].labor_hours == 4.0
     assert cases[0].total_cost is None and cases[0].start_date == "2018-03-01"
     assert cases[0].score >= cases[1].score
+    assert cases[0].description.startswith("Roof exhaust fan"), "display text stays original"
+    # Shorthand in the query is expanded before matching: "EXH FAN MTR BRG" finds the fan case.
+    assert (
+        rag.retrieve_field_history("EXH FAN MTR BRG NOISY", chroma, k=1)[0].case_id == "fmucd-1-A"
+    )
 
     res = orchestrator.copilot_search_field_history(
         "pump seized motor hums", k=3, chroma_path=chroma

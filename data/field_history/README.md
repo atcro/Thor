@@ -16,7 +16,9 @@ orders from twelve North American universities, 2002-2021.
 Unplanned (UPM) work orders whose component is a fan, pump, motor, compressor, chiller, air
 handler or drive **and** whose free text names a symptom (bearing, vibration, noise, seized,
 belt, overheat, hums, tripping, overcurrent ...). Exact repeats are dropped; e-mail addresses,
-phone numbers and "per / attn <Name>" clauses are scrubbed. Columns:
+phone numbers, "per / attn / POC <Name>" clauses and trailing " - Surname" sign-offs are
+scrubbed. This is best effort: the source is published with staff names in free text, and a bare
+name mid-sentence cannot be distinguished from an equipment or building name, so a few remain. Columns:
 
 | column | meaning |
 |---|---|

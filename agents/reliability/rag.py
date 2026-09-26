@@ -363,7 +363,97 @@ def retrieve_manual_context(
 # Field history (FMUCD unplanned work orders) -- a SECOND collection, never mixed with manuals
 # --------------------------------------------------------------------------------------
 
-FIELD_HISTORY_COLLECTION = "field_history"
+FIELD_HISTORY_COLLECTION = "field_history_v2"  # bump when the indexed text changes
+
+# Work-order shorthand -> words. Applied to the indexed search text and to queries; the
+# original description is kept untouched in metadata for display.
+ABBREVIATIONS: dict[str, str] = {
+    "exh": "exhaust",
+    "ef": "exhaust fan",
+    "sf": "supply fan",
+    "rf": "return fan",
+    "ahu": "air handling unit",
+    "fcu": "fan coil unit",
+    "hp": "heat pump",
+    "vfd": "variable frequency drive",
+    "vsd": "variable speed drive",
+    "mtr": "motor",
+    "brg": "bearing",
+    "brgs": "bearings",
+    "pmp": "pump",
+    "comp": "compressor",
+    "chw": "chilled water",
+    "hw": "hot water",
+    "hwp": "hot water pump",
+    "cw": "condenser water",
+    "wtr": "water",
+    "rm": "room",
+    "mech": "mechanical",
+    "bldg": "building",
+    "elec": "electrical",
+    "sqk": "squeal",
+    "sqks": "squeals",
+    "squks": "squeals",
+    "chngd": "changed",
+    "req": "request",
+    "temp": "temperature",
+    "amps": "amperage",
+}
+_STOPWORDS = frozenset(
+    "the a an and or of on in at to for is are was be been has have with from this that "
+    "please it its not no very too very check repair replace needs need".split()
+)
+_TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+_WORD_RE = re.compile(r"[a-z]+")
+_HISTORY_SYMPTOMS: dict[str, str] = {
+    "vib": "vibrating noisy vibration",
+    "kurt": "bearing noise grinding",
+    "crest": "bearing noise grinding",
+    "bearing_temp": "bearing running hot overheating",
+    "temp_delta": "bearing running hot overheating",
+    "current": "motor overcurrent drawing high amperage tripping",
+    "rpm": "motor speed hunting",
+    "load": "motor overloaded",
+}
+
+
+def normalize_symptom_text(text: str) -> str:
+    """Lower-case a work-order string, drop equipment codes / tags, expand shorthand.
+
+    Input: raw description or query. Output: space-joined words, deterministic, e.g.
+    "MASON MECH RM 5B EXH FAN MTR BRG NOISY >>CHECK" -> "mason mechanical room exhaust fan
+    motor bearing noisy check". Tokens containing a digit (tags, asset numbers, times) are
+    dropped; "AHU-3" keeps its "ahu". Used for the indexed text and for queries -- never
+    for display.
+    """
+    out: list[str] = []
+    for tok in _TOKEN_SPLIT_RE.split(text.lower()):
+        if not tok or any(ch.isdigit() for ch in tok):
+            continue
+        out.extend(ABBREVIATIONS.get(tok, tok).split())
+    return " ".join(out)
+
+
+def _content_tokens(text: str) -> set[str]:
+    return {w for w in _WORD_RE.findall(text.lower()) if len(w) >= 3 and w not in _STOPWORDS}
+
+
+def history_query_from_features(features: list[str]) -> str:
+    """Deterministic field-history query from SHAP feature names (risk-raising first).
+
+    Input: feature names such as ["vib_rms_z", "bearing_temp_z"]. Output: a fixed-format
+    symptom sentence in work-order vocabulary, e.g. "electric motor drive end bearing:
+    vibrating noisy vibration bearing running hot overheating". Same features -> same query.
+    """
+    parts: list[str] = []
+    for f in features:
+        for key, phrase in _HISTORY_SYMPTOMS.items():
+            if key in f and phrase not in parts:
+                parts.append(phrase)
+                break
+    if not parts:
+        parts = ["motor bearing noisy"]
+    return "electric motor drive end bearing: " + " ".join(parts)
 
 
 def load_field_history_cases(csv_path: Path) -> list[dict[str, Any]]:
@@ -371,9 +461,10 @@ def load_field_history_cases(csv_path: Path) -> list[dict[str, Any]]:
 
     Input: CSV with columns case_id, university, component, description, start_date,
     labor_hours, total_cost (data/field_history/fmucd_rotating_upm.csv). Output: list of
-    {"id", "text", "metadata"} where text = "<component>: <description>" and metadata carries
-    the remaining columns (missing numbers are omitted -- Chroma rejects None). Empty list if
-    the file is missing.
+    {"id", "text", "metadata"} where text is the normalized search string
+    (`normalize_symptom_text(component + description)`) and metadata carries the original
+    columns (missing numbers are omitted -- Chroma rejects None). Empty list if the file is
+    missing.
     """
     import csv
 
@@ -401,7 +492,8 @@ def load_field_history_cases(csv_path: Path) -> list[dict[str, Any]]:
                         meta[key] = float(raw)
                     except ValueError:
                         pass
-            cases.append({"id": row["case_id"], "text": f"{comp}: {desc}", "metadata": meta})
+            text = normalize_symptom_text(f"{comp} {desc}")
+            cases.append({"id": row["case_id"], "text": text, "metadata": meta})
     return cases
 
 
@@ -449,10 +541,16 @@ def retrieve_field_history(
     """Retrieve the k most similar real unplanned work orders for a symptom query.
 
     Inputs: free-text symptom (e.g. "noisy fan motor bearing"), Chroma path, k, collection.
-    Output: FieldCase list, best first, score = 1 - cosine distance clamped to [0, 1]; empty
-    if the collection is missing (self-heals once from settings.field_history_csv) or on any
-    retrieval error. Precedent for Bolt only -- never load-bearing, never a manual citation.
+    Hybrid ranking: the query is normalized like the indexed text, 4k candidates are fetched
+    by embedding similarity, then re-ranked by 0.7 * cosine similarity + 0.3 * keyword
+    overlap (share of query content words present in the case text) so jargon-heavy
+    one-liners with the right nouns outrank vaguely similar prose. Output: FieldCase list,
+    best first, score in [0, 1]; empty if the collection is missing (self-heals once from
+    settings.field_history_csv) or on any retrieval error. Precedent for Bolt only -- never
+    load-bearing, never a manual citation.
     """
+    norm_query = normalize_symptom_text(query) or query.lower()
+    q_tokens = _content_tokens(norm_query)
     try:
         client = _client(Path(chroma_path))
         col = _open_collection(client, collection)
@@ -464,18 +562,24 @@ def retrieve_field_history(
             if col is None or col.count() == 0:
                 return []
         res = col.query(
-            query_texts=[query],
-            n_results=max(1, min(k, col.count())),
-            include=["metadatas", "distances"],
+            query_texts=[norm_query],
+            n_results=max(1, min(max(4 * k, 20), col.count())),
+            include=["documents", "metadatas", "distances"],
         )
     except Exception as e:  # noqa: BLE001 - precedent lookup must never crash a chat turn
         log.warning("field-history retrieval failed: %s", e)
         return []
-    out: list[FieldCase] = []
+    docs = (res.get("documents") or [[]])[0]
     metas = (res.get("metadatas") or [[]])[0]
     dists = (res.get("distances") or [[]])[0]
-    for meta, dist in zip(metas, dists):
-        meta = meta or {}
+    ranked: list[tuple[float, dict[str, Any]]] = []
+    for doc, meta, dist in zip(docs, metas, dists):
+        sim = min(1.0, max(0.0, 1.0 - float(dist)))
+        overlap = len(q_tokens & _content_tokens(str(doc))) / len(q_tokens) if q_tokens else 0.0
+        ranked.append((0.7 * sim + 0.3 * overlap, meta or {}))
+    ranked.sort(key=lambda t: -t[0])
+    out: list[FieldCase] = []
+    for score, meta in ranked[:k]:
         out.append(
             FieldCase(
                 case_id=str(meta.get("case_id", "")),
@@ -485,7 +589,7 @@ def retrieve_field_history(
                 start_date=str(meta["start_date"]) if meta.get("start_date") else None,
                 labor_hours=float(meta["labor_hours"]) if "labor_hours" in meta else None,
                 total_cost=float(meta["total_cost"]) if "total_cost" in meta else None,
-                score=float(min(1.0, max(0.0, 1.0 - float(dist)))),
+                score=float(round(min(1.0, max(0.0, score)), 4)),
             )
         )
     return out
