@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     mqtt_broker_url: str = "mqtt://localhost:1883"
     chroma_path: str = "./.chroma"
     manuals_dir: str = str(REPO_ROOT / "data" / "manuals")
+    # Committed FMUCD slice indexed into a second Chroma collection for Bolt's field history.
+    field_history_csv: str = str(REPO_ROOT / "data" / "field_history" / "fmucd_rotating_upm.csv")
     models_dir: str = "./models"
     replay_speed: float = 1800.0
     simulator_out: str = str(REPO_ROOT / "data" / "simulator" / "out")

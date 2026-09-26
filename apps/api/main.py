@@ -35,6 +35,14 @@ def _build_rag_index() -> None:
         settings = get_settings()
         n = build_index(Path(settings.manuals_dir), Path(settings.chroma_path))
         log.info("RAG index ready: %d chunks", n)
+        from agents.reliability.rag import build_field_history_index
+
+        csv_path = Path(settings.field_history_csv)
+        if csv_path.exists():
+            n_cases = build_field_history_index(csv_path, Path(settings.chroma_path))
+            log.info("field-history index ready: %d cases", n_cases)
+        else:
+            log.info("no field-history CSV at %s; Bolt precedent search disabled", csv_path)
     except ImportError:
         log.info("agents.reliability.rag not available; skipping RAG index")
     except Exception as e:

@@ -124,7 +124,11 @@ COPILOT_SYSTEM_PROMPT = (
     "Thor UI. For questions about failure mechanisms, inspection or maintenance procedures, "
     "thresholds, or plant policy, call search_manuals and quote only the passages it returns, "
     "citing each as '<source> section <section>'. Never cite a manual passage that was not "
-    "returned by search_manuals. Be concise and concrete."
+    "returned by search_manuals. For 'has this been seen before / what did it take to fix' "
+    "questions, call search_field_history: its cases are real unplanned work orders from a "
+    "public dataset of university facilities (FMUCD), not from this plant and not manual "
+    "guidance -- present them as precedent ('field history: <component>, <year>') and use "
+    "only the labor hours, costs and medians it returns. Be concise and concrete."
 )
 
 CHOOSE_NEXT_NODE_TOOL: dict[str, Any] = {
@@ -1294,6 +1298,59 @@ def copilot_search_manuals(
     }
 
 
+def _median(values: list[float]) -> float | None:
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return None
+    mid = len(vals) // 2
+    return float(vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2)
+
+
+def copilot_search_field_history(
+    query: str, k: int = 5, engine: Engine | None = None, chroma_path: Path | None = None
+) -> dict[str, Any]:
+    """Tool: real unplanned work orders similar to a symptom, from the FMUCD field-history slice.
+
+    Wraps `agents.reliability.rag.retrieve_field_history` (Chroma similarity, no LLM).
+    Returns {"query", "source", "cases": [{case_id, component, description, university,
+    start_date, labor_hours, total_cost, score}], "n_cases", "median_labor_hours",
+    "median_total_cost"}. The medians are computed here so Bolt never has to. Empty cases
+    when the collection is missing -- never raises.
+    """
+    query = (query or "").strip()
+    if not query:
+        return {"error": "empty query"}
+    k = max(1, min(int(k or 5), 10))
+    try:
+        from agents.reliability import rag
+
+        path = chroma_path or Path(get_settings().chroma_path)
+        cases = rag.retrieve_field_history(query, path, k=k)
+    except Exception as e:  # noqa: BLE001 - precedent enriches an answer, never blocks it
+        log.warning("copilot search_field_history failed: %s", e)
+        cases = []
+    return {
+        "query": query,
+        "source": "FMUCD (12 North American universities, 2002-2021, CC BY-NC)",
+        "cases": [
+            {
+                "case_id": c.case_id,
+                "component": c.component,
+                "description": c.description,
+                "university": c.university,
+                "start_date": c.start_date,
+                "labor_hours": c.labor_hours,
+                "total_cost": c.total_cost,
+                "score": round(c.score, 3),
+            }
+            for c in cases
+        ],
+        "n_cases": len(cases),
+        "median_labor_hours": _median([c.labor_hours for c in cases]),
+        "median_total_cost": _median([c.total_cost for c in cases]),
+    }
+
+
 COPILOT_TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_fleet",
@@ -1356,6 +1413,24 @@ COPILOT_TOOLS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "search_field_history",
+        "description": (
+            "Find real unplanned work orders similar to a symptom (e.g. 'noisy fan motor "
+            "bearing', 'pump seized') from a public dataset of university facilities. Returns "
+            "cases with component, description, labor hours, cost, and medians. Precedent, "
+            "not guidance; not from this plant."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The symptom, in plain words."},
+                "k": {"type": "integer", "description": "Cases to return (1-10, default 5)."},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -1372,6 +1447,10 @@ def _run_copilot_tool(name: str, args: dict[str, Any], engine: Engine | None) ->
         return copilot_list_pending_approvals(engine)
     if name == "search_manuals":
         return copilot_search_manuals(str(args.get("query", "")), int(args.get("k", 3)), engine)
+    if name == "search_field_history":
+        return copilot_search_field_history(
+            str(args.get("query", "")), int(args.get("k", 5)), engine
+        )
     return {"error": f"unknown tool {name}"}
 
 
@@ -1382,6 +1461,10 @@ def _result_summary(result: dict[str, Any]) -> str:
         ps = result["passages"]
         top = f"; top {ps[0]['source']} section {ps[0]['section']}" if ps else ""
         return f"{len(ps)} manual passages{top}"
+    if "cases" in result:
+        med = result.get("median_labor_hours")
+        tail = f"; median {med:g} labor h" if med is not None else ""
+        return f"{result['n_cases']} field-history cases{tail}"
     if "n_assets" in result:
         worst = result["highest_risk"][0] if result["highest_risk"] else None
         tail = (
@@ -1475,6 +1558,52 @@ def _template_manuals_text(res: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _template_history_text(res: dict[str, Any]) -> str:
+    if "error" in res:
+        return str(res["error"])
+    if not res["cases"]:
+        return f"No field-history cases matched '{res['query']}'."
+    lines = [
+        f"Field history for '{res['query']}' -- {res['n_cases']} similar unplanned work orders "
+        f"from {res['source']}; precedent, not from this plant:"
+    ]
+    for c in res["cases"]:
+        year = c["start_date"][:4] if c["start_date"] else "n/a"
+        bits = []
+        if c["labor_hours"] is not None:
+            bits.append(f"{c['labor_hours']:g} labor h")
+        if c["total_cost"] is not None:
+            bits.append(f"cost {c['total_cost']:,.0f}")
+        tail = f" ({', '.join(bits)})" if bits else ""
+        lines.append(f"- [{c['component']}, {year}] {c['description']}{tail}")
+    med_h, med_c = res["median_labor_hours"], res["median_total_cost"]
+    if med_h is not None or med_c is not None:
+        parts = []
+        if med_h is not None:
+            parts.append(f"labor {med_h:g} h")
+        if med_c is not None:
+            parts.append(f"cost {med_c:,.0f}")
+        lines.append("Median across these cases: " + ", ".join(parts) + ".")
+    return "\n".join(lines)
+
+
+HISTORY_WORDS = (
+    "seen before",
+    "seen this",
+    "history",
+    "similar",
+    "past",
+    "previous",
+    "precedent",
+    "usually",
+    "typically",
+    "how long",
+    "how often",
+    "other plants",
+    "elsewhere",
+    "cases",
+)
+
 MANUAL_WORDS = (
     "manual",
     "guide",
@@ -1499,10 +1628,10 @@ MANUAL_WORDS = (
 
 HELP_TEXT = (
     "I am Bolt, Thor's copilot. Ask me about the fleet ('which motors are at risk?'), an asset "
-    "('how is MTR-042?'), a decision contract or run id, what is pending approval, or the "
-    "plant manuals ('what does rising kurtosis mean?'). I only report numbers produced by "
-    "Thor's deterministic tools and quote only retrieved manual passages; approvals happen in "
-    "the UI."
+    "('how is MTR-042?'), a decision contract or run id, what is pending approval, the plant "
+    "manuals ('what does rising kurtosis mean?'), or field history ('has a noisy fan bearing "
+    "been seen before?'). I only report numbers produced by Thor's deterministic tools and "
+    "quote only retrieved manual passages or field cases; approvals happen in the UI."
 )
 
 
@@ -1519,7 +1648,8 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
     m_asset = ASSET_ID_RE.search(last)
     m_contract = CONTRACT_ID_RE.search(last)
     fleet_words = ("fleet", "risk", "health", "status", "worst", "motors", "assets")
-    wants_manual = any(k in text for k in MANUAL_WORDS)
+    wants_history = any(k in text for k in HISTORY_WORDS)
+    wants_manual = not wants_history and any(k in text for k in MANUAL_WORDS)
     if m_contract:
         res = call("get_contract", {"contract_id": m_contract.group(0)})
         if "error" in res:
@@ -1535,9 +1665,13 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
     elif m_asset or (req.asset_id and ("asset" in text or "motor" in text or "this" in text)):
         aid = m_asset.group(0).upper() if m_asset else str(req.asset_id)
         reply = _template_asset_text(call("get_asset", {"asset_id": aid}))
-        if wants_manual:
-            query = ASSET_ID_RE.sub("", last).strip() or last
+        query = ASSET_ID_RE.sub("", last).strip() or last
+        if wants_history:
+            reply += "\n\n" + _template_history_text(call("search_field_history", {"query": query}))
+        elif wants_manual:
             reply += "\n\n" + _template_manuals_text(call("search_manuals", {"query": query}))
+    elif wants_history:
+        reply = _template_history_text(call("search_field_history", {"query": last}))
     elif wants_manual:
         reply = _template_manuals_text(call("search_manuals", {"query": last}))
     elif any(k in text for k in fleet_words):
@@ -1601,8 +1735,9 @@ def copilot_reply(req: CopilotRequest, engine: Engine | None = None) -> CopilotR
     """Answer a copilot chat request.
 
     With an API key: a Claude tool loop (max 4 tool rounds) over the read-only tools get_fleet,
-    get_asset, get_contract, get_run, list_pending_approvals, search_manuals. Without a key, or
-    when the LLM fails: keyword-routed template answers over the same tools (source "template").
+    get_asset, get_contract, get_run, list_pending_approvals, search_manuals,
+    search_field_history. Without a key, or when the LLM fails: keyword-routed template
+    answers over the same tools (source "template").
     """
     if _api_key():
         try:

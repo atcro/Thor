@@ -70,6 +70,7 @@ def configure_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SIMULATOR_OUT", str(tmp_path / "sim_out"))
     monkeypatch.setenv("MANUALS_DIR", str(tmp_path / "manuals"))
     monkeypatch.setenv("CHROMA_PATH", str(tmp_path / "chroma"))
+    monkeypatch.setenv("FIELD_HISTORY_CSV", str(tmp_path / "missing_field_history.csv"))
     monkeypatch.setenv("MODELS_DIR", str(tmp_path / "models"))
     monkeypatch.setenv("MLFLOW_TRACKING_URI", str(tmp_path / "mlruns"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
@@ -778,6 +779,12 @@ def test_copilot_template_mode(engine: Any) -> None:
     assert [c["name"] for c in r.tool_calls] == ["get_asset", "search_manuals"]
     assert r.tool_calls[1]["args"] == {"query": "Why is  at risk?"}
     assert r.reply.startswith("MTR-042") and "No manual passages" in r.reply
+    # Precedent questions route to search_field_history (empty index here -> honest "none").
+    r = ask("Has a noisy fan bearing been seen before?")
+    assert r.tool_calls[0]["name"] == "search_field_history"
+    assert "No field-history cases matched" in r.reply
+    r = ask("How long does a bearing fix on MTR-042 usually take?")
+    assert [c["name"] for c in r.tool_calls] == ["get_asset", "search_field_history"]
     assert os.environ.get("ANTHROPIC_API_KEY", "") == ""
 
 

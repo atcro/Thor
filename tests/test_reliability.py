@@ -27,6 +27,7 @@ from apps.api.schemas import (
     CalibrationReport,
     Explanation,
     FeatureSpec,
+    FieldCase,
     IndustrialModelScore,
     LeadTimeReport,
     LeakageReport,
@@ -287,6 +288,89 @@ def test_copilot_search_manuals_cites_bearing_section(chroma_path: Path) -> None
     assert orchestrator._result_summary(res).startswith("2 manual passages; top motor-maintenance")
     text = orchestrator._template_manuals_text(res)
     assert text.startswith("From the plant manuals") and "[motor-maintenance.md section 4.2" in text
+
+
+FIELD_HISTORY_CSV = REPO_ROOT / "data" / "field_history" / "fmucd_rotating_upm.csv"
+
+
+def test_committed_field_history_slice_is_clean() -> None:
+    df = pd.read_csv(FIELD_HISTORY_CSV)
+    assert list(df.columns) == [
+        "case_id",
+        "university",
+        "component",
+        "description",
+        "start_date",
+        "labor_hours",
+        "total_cost",
+    ]
+    assert 5_000 <= len(df) <= 20_000
+    assert df["case_id"].is_unique and df["case_id"].str.startswith("fmucd-").all()
+    emails = df["description"].str.contains(r"[\w.+-]+@[\w-]+\.[\w.-]+", regex=True)
+    assert not emails.any(), "e-mail address slipped through"
+    phones = df["description"].str.contains(r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b", regex=True)
+    assert not phones.any(), "phone number slipped through"
+    assert df["description"].str.len().min() >= 12
+    assert FIELD_HISTORY_CSV.stat().st_size < 5_000_000, "keep the committed slice small"
+
+
+def _write_cases(path: Path) -> None:
+    pd.DataFrame(
+        {
+            "case_id": ["fmucd-1-A", "fmucd-2-B", "fmucd-3-C", "fmucd-4-D"],
+            "university": [1, 2, 3, 4],
+            "component": ["Exhaust Fan", "Circulation Pump, Hot Water", "Fan", "Sink"],
+            "description": [
+                "Roof exhaust fan motor bearing very noisy, grinding",
+                "Hot water pump seized, motor hums and will not turn",
+                "Supply fan belt slipping and squealing",
+                "Sink drain slow in room 204",
+            ],
+            "start_date": ["2018-03-01", "2019-07-15", "2017-11-30", "2020-01-02"],
+            "labor_hours": [4.0, 6.5, 1.0, None],
+            "total_cost": [None, 812.5, 77.0, 30.0],
+        }
+    ).to_csv(path, index=False)
+
+
+def test_field_history_index_and_retrieval(tmp_path: Path) -> None:
+    from apps.api import orchestrator
+
+    csv_path = tmp_path / "cases.csv"
+    chroma = tmp_path / "chroma"
+    _write_cases(csv_path)
+    assert rag.build_field_history_index(csv_path, chroma) == 4
+    assert rag.build_field_history_index(csv_path, chroma) == 4  # unchanged -> no rebuild
+    cases = rag.retrieve_field_history("noisy fan motor bearing grinding", chroma, k=2)
+    assert len(cases) == 2 and all(isinstance(c, FieldCase) for c in cases)
+    assert cases[0].case_id == "fmucd-1-A" and cases[0].labor_hours == 4.0
+    assert cases[0].total_cost is None and cases[0].start_date == "2018-03-01"
+    assert cases[0].score >= cases[1].score
+
+    res = orchestrator.copilot_search_field_history(
+        "pump seized motor hums", k=3, chroma_path=chroma
+    )
+    assert res["n_cases"] == 3 and res["cases"][0]["case_id"] == "fmucd-2-B"
+    assert res["median_labor_hours"] is not None and res["median_total_cost"] is not None
+    assert orchestrator.copilot_search_field_history("", chroma_path=chroma) == {
+        "error": "empty query"
+    }
+    assert orchestrator._result_summary(res).startswith("3 field-history cases; median")
+    text = orchestrator._template_history_text(res)
+    assert text.startswith("Field history for") and "precedent, not from this plant" in text
+    assert "[Circulation Pump, Hot Water, 2019]" in text and "Median across these cases" in text
+
+
+def test_field_history_missing_csv_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api.settings import get_settings
+
+    monkeypatch.setenv("FIELD_HISTORY_CSV", str(tmp_path / "nope.csv"))
+    get_settings.cache_clear()
+    assert rag.load_field_history_cases(tmp_path / "nope.csv") == []
+    assert rag.retrieve_field_history("anything", tmp_path / "chroma_empty") == []
+    get_settings.cache_clear()
 
 
 def test_retrieve_missing_index_returns_empty(

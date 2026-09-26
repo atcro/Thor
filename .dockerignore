@@ -16,3 +16,4 @@ __pycache__
 .pytest_cache
 .ruff_cache
 THOR_SESSION_MEMORY.md
+data/external

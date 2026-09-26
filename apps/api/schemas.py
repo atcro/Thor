@@ -276,6 +276,21 @@ class ManualPassage(BaseModel):
     score: float
 
 
+class FieldCase(BaseModel):
+    """One real unplanned work order from the FMUCD field-history slice (Bolt precedent, not
+    manual guidance -- never cited in a Decision Contract explanation)."""
+
+    case_id: str
+    source: str = "FMUCD"
+    university: int
+    component: str
+    description: str
+    start_date: str | None = None
+    labor_hours: float | None = None
+    total_cost: float | None = None
+    score: float
+
+
 class CostOption(BaseModel):
     option: Literal["maintain_now", "maintain_later", "run_to_failure"]
     when: datetime | None

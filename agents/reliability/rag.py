@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from apps.api.schemas import Explanation, ManualPassage
+from apps.api.schemas import Explanation, FieldCase, ManualPassage
 
 from .explain import FEATURE_PHRASES
 
@@ -357,6 +357,138 @@ def retrieve_manual_context(
             )
         )
     return passages
+
+
+# --------------------------------------------------------------------------------------
+# Field history (FMUCD unplanned work orders) -- a SECOND collection, never mixed with manuals
+# --------------------------------------------------------------------------------------
+
+FIELD_HISTORY_COLLECTION = "field_history"
+
+
+def load_field_history_cases(csv_path: Path) -> list[dict[str, Any]]:
+    """Load the committed FMUCD slice as Chroma documents.
+
+    Input: CSV with columns case_id, university, component, description, start_date,
+    labor_hours, total_cost (data/field_history/fmucd_rotating_upm.csv). Output: list of
+    {"id", "text", "metadata"} where text = "<component>: <description>" and metadata carries
+    the remaining columns (missing numbers are omitted -- Chroma rejects None). Empty list if
+    the file is missing.
+    """
+    import csv
+
+    path = Path(csv_path)
+    if not path.exists():
+        return []
+    cases: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8", newline="") as fh:
+        for row in csv.DictReader(fh):
+            desc = (row.get("description") or "").strip()
+            comp = (row.get("component") or "").strip()
+            if not desc or not row.get("case_id"):
+                continue
+            meta: dict[str, Any] = {
+                "case_id": row["case_id"],
+                "university": int(float(row.get("university") or 0)),
+                "component": comp,
+                "description": desc,
+                "start_date": (row.get("start_date") or "")[:10],
+            }
+            for key in ("labor_hours", "total_cost"):
+                raw = (row.get(key) or "").strip()
+                if raw:
+                    try:
+                        meta[key] = float(raw)
+                    except ValueError:
+                        pass
+            cases.append({"id": row["case_id"], "text": f"{comp}: {desc}", "metadata": meta})
+    return cases
+
+
+def build_field_history_index(
+    csv_path: Path,
+    chroma_path: Path,
+    collection: str = FIELD_HISTORY_COLLECTION,
+    force: bool = False,
+) -> int:
+    """(Re)build the field-history collection from the FMUCD slice.
+
+    Inputs: slice CSV, Chroma path, collection name, force. Unless `force`, an existing
+    collection whose count already matches the CSV is left alone (restart-friendly).
+    Output: number of cases indexed (0 if the CSV is missing or empty).
+    """
+    cases = load_field_history_cases(Path(csv_path))
+    client = _client(Path(chroma_path))
+    if not force and cases:
+        existing = _open_collection(client, collection)
+        if existing is not None and existing.count() == len(cases):
+            return len(cases)
+    try:
+        client.delete_collection(collection)
+    except Exception:  # noqa: BLE001 - did not exist
+        pass
+    col = _create_collection(client, collection, _embedding_function())
+    if not cases:
+        log.warning("no field-history cases found in %s", csv_path)
+        return 0
+    batch = 128
+    for start in range(0, len(cases), batch):
+        part = cases[start : start + batch]
+        col.upsert(
+            ids=[c["id"] for c in part],
+            documents=[c["text"] for c in part],
+            metadatas=[c["metadata"] for c in part],
+        )
+    log.info("indexed %d field-history cases from %s into %s", len(cases), csv_path, chroma_path)
+    return len(cases)
+
+
+def retrieve_field_history(
+    query: str, chroma_path: Path, k: int = 5, collection: str = FIELD_HISTORY_COLLECTION
+) -> list[FieldCase]:
+    """Retrieve the k most similar real unplanned work orders for a symptom query.
+
+    Inputs: free-text symptom (e.g. "noisy fan motor bearing"), Chroma path, k, collection.
+    Output: FieldCase list, best first, score = 1 - cosine distance clamped to [0, 1]; empty
+    if the collection is missing (self-heals once from settings.field_history_csv) or on any
+    retrieval error. Precedent for Bolt only -- never load-bearing, never a manual citation.
+    """
+    try:
+        client = _client(Path(chroma_path))
+        col = _open_collection(client, collection)
+        if col is None or col.count() == 0:
+            from apps.api.settings import get_settings
+
+            build_field_history_index(Path(get_settings().field_history_csv), Path(chroma_path))
+            col = _open_collection(client, collection)
+            if col is None or col.count() == 0:
+                return []
+        res = col.query(
+            query_texts=[query],
+            n_results=max(1, min(k, col.count())),
+            include=["metadatas", "distances"],
+        )
+    except Exception as e:  # noqa: BLE001 - precedent lookup must never crash a chat turn
+        log.warning("field-history retrieval failed: %s", e)
+        return []
+    out: list[FieldCase] = []
+    metas = (res.get("metadatas") or [[]])[0]
+    dists = (res.get("distances") or [[]])[0]
+    for meta, dist in zip(metas, dists):
+        meta = meta or {}
+        out.append(
+            FieldCase(
+                case_id=str(meta.get("case_id", "")),
+                university=int(meta.get("university", 0)),
+                component=str(meta.get("component", "")),
+                description=str(meta.get("description", "")),
+                start_date=str(meta["start_date"]) if meta.get("start_date") else None,
+                labor_hours=float(meta["labor_hours"]) if "labor_hours" in meta else None,
+                total_cost=float(meta["total_cost"]) if "total_cost" in meta else None,
+                score=float(min(1.0, max(0.0, 1.0 - float(dist)))),
+            )
+        )
+    return out
 
 
 def query_from_explanation(exp: Explanation) -> str:
