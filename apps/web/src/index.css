@@ -878,6 +878,23 @@ table.tbl {
   background: var(--steel-dim);
   border-color: rgba(132, 172, 199, 0.35);
 }
+.bolt-logo {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  object-fit: cover;
+  flex: none;
+  border: 1px solid var(--line);
+  background: #fff7e6;
+}
+.bolt-avatar {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  object-fit: cover;
+  vertical-align: middle;
+  flex: none;
+}
 .msg .meta {
   display: flex;
   gap: 6px;

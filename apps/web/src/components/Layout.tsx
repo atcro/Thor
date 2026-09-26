@@ -46,7 +46,19 @@ export function Layout() {
               `nav-link${isActive || (n.to === "/" && pathname.startsWith("/assets/")) ? " active" : ""}`
             }
           >
-            <span className="lbl">{n.label}</span>
+            <span className="lbl">
+              {n.to === "/copilot" && (
+                <img
+                  src="/bolt-logo.png"
+                  alt=""
+                  className="bolt-avatar"
+                  width={16}
+                  height={16}
+                  style={{ marginRight: 6 }}
+                />
+              )}
+              {n.label}
+            </span>
             <span className="k">{n.key}</span>
           </NavLink>
         ))}

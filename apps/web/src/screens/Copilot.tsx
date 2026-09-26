@@ -75,9 +75,12 @@ export function Copilot() {
   return (
     <div>
       <div className="page-head">
-        <div>
-          <h1>Bolt</h1>
-          <div className="sub">Read-only copilot over deterministic tools (get_fleet, get_asset, get_contract, get_run, list_pending_approvals, search_manuals, search_field_history, field_history_stats). It explains numbers and quotes retrieved manual passages or real field cases; it never produces any of them.</div>
+        <div className="row" style={{ gap: 12, alignItems: "flex-start" }}>
+          <img src="/bolt-logo.png" alt="Bolt, Thor's copilot" className="bolt-logo" width={48} height={48} />
+          <div>
+            <h1>Bolt</h1>
+            <div className="sub">Read-only copilot over deterministic tools (get_fleet, get_asset, get_contract, get_run, list_pending_approvals, search_manuals, search_field_history, field_history_stats). It explains numbers and quotes retrieved manual passages or real field cases; it never produces any of them.</div>
+          </div>
         </div>
         <div className="row">
           <label className="field">
@@ -128,7 +131,14 @@ export function Copilot() {
                   {m.content}
                 </div>
                 <div className="meta">
-                  <span>{m.role === "user" ? "you" : "bolt"}</span>
+                  {m.role === "user" ? (
+                    <span>you</span>
+                  ) : (
+                    <span className="row" style={{ gap: 4 }}>
+                      <img src="/bolt-logo.png" alt="" className="bolt-avatar" width={16} height={16} />
+                      bolt
+                    </span>
+                  )}
                   {m.source && <SourceChip source={m.source} />}
                 </div>
               </div>
@@ -136,6 +146,7 @@ export function Copilot() {
             {busy && (
               <div className="msg assistant">
                 <div className="bubble muted">
+                  <img src="/bolt-logo.png" alt="" className="bolt-avatar" width={16} height={16} style={{ marginRight: 6 }} />
                   <span className="dot pulse" style={{ background: "var(--steel)", marginRight: 6 }} />
                   thinking…
                 </div>
