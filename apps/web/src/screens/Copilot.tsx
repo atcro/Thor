@@ -77,7 +77,7 @@ export function Copilot() {
       <div className="page-head">
         <div>
           <h1>Bolt</h1>
-          <div className="sub">Read-only copilot over deterministic tools (get_fleet, get_asset, get_contract, get_run, whatif). It explains numbers; it never produces them.</div>
+          <div className="sub">Read-only copilot over deterministic tools (get_fleet, get_asset, get_contract, get_run, list_pending_approvals, search_manuals). It explains numbers and quotes retrieved manual passages; it never produces either.</div>
         </div>
         <div className="row">
           <label className="field">

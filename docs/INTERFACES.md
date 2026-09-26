@@ -281,7 +281,8 @@ def await_approval(state) -> GraphState   # persists stage=awaiting_approval and
 def resume(run_id: str, approval: Approval, engine=None) -> GraphState   # continues after record_decision
 def copilot_reply(req: CopilotRequest, engine=None) -> CopilotResponse
     # tools the LLM may call (all deterministic, read-only): get_fleet, get_asset, get_contract,
-    # get_run, whatif. Without key: keyword-routed template answers over the same tools.
+    # get_run, list_pending_approvals, search_manuals (Chroma lookup over data/manuals; Bolt
+    # may quote only what it returns). Without key: keyword-routed template answers, same tools.
 ```
 Run execution must persist `GraphState` to `pipeline_runs` after every node (db.save_run) with
 events appended so the UI can poll progress. Wrap each node in try/except -> stage=failed,

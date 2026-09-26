@@ -269,6 +269,26 @@ def test_retrieve_manual_context_hits_bearing_section(chroma_path: Path) -> None
     assert passages[0].page is None
 
 
+def test_copilot_search_manuals_cites_bearing_section(chroma_path: Path) -> None:
+    from apps.api import orchestrator
+
+    res = orchestrator.copilot_search_manuals(
+        "drive-end bearing wear vibration RMS kurtosis bearing temperature",
+        k=2,
+        chroma_path=chroma_path,
+    )
+    assert res["query"].startswith("drive-end") and len(res["passages"]) == 2
+    top = res["passages"][0]
+    assert top["source"] == "motor-maintenance.md" and top["section"].startswith("4.2")
+    assert set(top) == {"source", "section", "page", "text", "score"}
+    assert orchestrator.copilot_search_manuals("   ", chroma_path=chroma_path) == {
+        "error": "empty query"
+    }
+    assert orchestrator._result_summary(res).startswith("2 manual passages; top motor-maintenance")
+    text = orchestrator._template_manuals_text(res)
+    assert text.startswith("From the plant manuals") and "[motor-maintenance.md section 4.2" in text
+
+
 def test_retrieve_missing_index_returns_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

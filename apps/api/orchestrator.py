@@ -121,7 +121,10 @@ COPILOT_SYSTEM_PROMPT = (
     "companion to the plant's MES/CMMS. You may only report numbers, ids and facts returned by "
     "your tools -- never invent or estimate a value. You cannot approve or reject anything: when "
     "a decision contract or promotion is pending, tell the user to approve or reject it in the "
-    "Thor UI. Be concise and concrete."
+    "Thor UI. For questions about failure mechanisms, inspection or maintenance procedures, "
+    "thresholds, or plant policy, call search_manuals and quote only the passages it returns, "
+    "citing each as '<source> section <section>'. Never cite a manual passage that was not "
+    "returned by search_manuals. Be concise and concrete."
 )
 
 CHOOSE_NEXT_NODE_TOOL: dict[str, Any] = {
@@ -1254,6 +1257,43 @@ def copilot_list_pending_approvals(engine: Engine | None = None) -> dict[str, An
     return {"contracts": contracts, "promotions": promotions}
 
 
+def copilot_search_manuals(
+    query: str, k: int = 3, engine: Engine | None = None, chroma_path: Path | None = None
+) -> dict[str, Any]:
+    """Tool: the k most relevant plant-manual passages for a free-text query.
+
+    Wraps `agents.reliability.rag.retrieve_manual_context` (Chroma similarity lookup, no LLM).
+    Returns {"query", "passages": [{source, section, page, text, score}]}; the passages are
+    the ONLY manual text Bolt may quote (CLAUDE.md section 7). Empty list when the index is
+    missing or nothing matches -- never raises.
+    """
+    query = (query or "").strip()
+    if not query:
+        return {"error": "empty query"}
+    k = max(1, min(int(k or 3), 5))
+    try:
+        from agents.reliability import rag
+
+        path = chroma_path or Path(get_settings().chroma_path)
+        passages = rag.retrieve_manual_context(query, path, k=k)
+    except Exception as e:  # noqa: BLE001 - retrieval enriches an answer, never blocks it
+        log.warning("copilot search_manuals failed: %s", e)
+        passages = []
+    return {
+        "query": query,
+        "passages": [
+            {
+                "source": p.source,
+                "section": p.section,
+                "page": p.page,
+                "text": p.text,
+                "score": round(p.score, 3),
+            }
+            for p in passages
+        ],
+    }
+
+
 COPILOT_TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_fleet",
@@ -1298,6 +1338,24 @@ COPILOT_TOOLS: list[dict[str, Any]] = [
         "description": "Decision contracts and model promotions still waiting for a human decision.",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
+    {
+        "name": "search_manuals",
+        "description": (
+            "Search the plant manuals (motor maintenance manual, vibration analysis guide, "
+            "maintenance policy) for passages about a failure mode, symptom, threshold, "
+            "inspection or repair procedure, or policy. Returns cited passages with source and "
+            "section; quote only what it returns."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to look up, in plain words."},
+                "k": {"type": "integer", "description": "Passages to return (1-5, default 3)."},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -1312,12 +1370,18 @@ def _run_copilot_tool(name: str, args: dict[str, Any], engine: Engine | None) ->
         return copilot_get_run(str(args.get("run_id", "")), engine)
     if name == "list_pending_approvals":
         return copilot_list_pending_approvals(engine)
+    if name == "search_manuals":
+        return copilot_search_manuals(str(args.get("query", "")), int(args.get("k", 3)), engine)
     return {"error": f"unknown tool {name}"}
 
 
 def _result_summary(result: dict[str, Any]) -> str:
     if "error" in result:
         return str(result["error"])
+    if "passages" in result:
+        ps = result["passages"]
+        top = f"; top {ps[0]['source']} section {ps[0]['section']}" if ps else ""
+        return f"{len(ps)} manual passages{top}"
     if "n_assets" in result:
         worst = result["highest_risk"][0] if result["highest_risk"] else None
         tail = (
@@ -1394,10 +1458,51 @@ def _template_pending_text(res: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _template_manuals_text(res: dict[str, Any]) -> str:
+    if "error" in res:
+        return str(res["error"])
+    if not res["passages"]:
+        return f"No manual passages matched '{res['query']}'."
+    lines = [f"From the plant manuals (query: {res['query']}):"]
+    for p in res["passages"]:
+        where = f"{p['source']} section {p['section']}"
+        if p["page"] is not None:
+            where += f", p. {p['page']}"
+        body = " ".join(p["text"].split())
+        if len(body) > 400:
+            body = body[:400].rsplit(" ", 1)[0] + " ..."
+        lines.append(f"- [{where}] {body}")
+    return "\n".join(lines)
+
+
+MANUAL_WORDS = (
+    "manual",
+    "guide",
+    "policy",
+    "procedure",
+    "section",
+    "how do i",
+    "how to",
+    "how should",
+    "what does",
+    "what is",
+    "why",
+    "cause",
+    "mean",
+    "inspect",
+    "replace",
+    "lubric",
+    "grease",
+    "threshold",
+    "iso",
+)
+
 HELP_TEXT = (
     "I am Bolt, Thor's copilot. Ask me about the fleet ('which motors are at risk?'), an asset "
-    "('how is MTR-042?'), a decision contract or run id, or what is pending approval. I only "
-    "report numbers produced by Thor's deterministic tools, and approvals happen in the UI."
+    "('how is MTR-042?'), a decision contract or run id, what is pending approval, or the "
+    "plant manuals ('what does rising kurtosis mean?'). I only report numbers produced by "
+    "Thor's deterministic tools and quote only retrieved manual passages; approvals happen in "
+    "the UI."
 )
 
 
@@ -1414,6 +1519,7 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
     m_asset = ASSET_ID_RE.search(last)
     m_contract = CONTRACT_ID_RE.search(last)
     fleet_words = ("fleet", "risk", "health", "status", "worst", "motors", "assets")
+    wants_manual = any(k in text for k in MANUAL_WORDS)
     if m_contract:
         res = call("get_contract", {"contract_id": m_contract.group(0)})
         if "error" in res:
@@ -1429,6 +1535,11 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
     elif m_asset or (req.asset_id and ("asset" in text or "motor" in text or "this" in text)):
         aid = m_asset.group(0).upper() if m_asset else str(req.asset_id)
         reply = _template_asset_text(call("get_asset", {"asset_id": aid}))
+        if wants_manual:
+            query = ASSET_ID_RE.sub("", last).strip() or last
+            reply += "\n\n" + _template_manuals_text(call("search_manuals", {"query": query}))
+    elif wants_manual:
+        reply = _template_manuals_text(call("search_manuals", {"query": last}))
     elif any(k in text for k in fleet_words):
         reply = _template_fleet_text(call("get_fleet", {}))
     else:
@@ -1490,8 +1601,8 @@ def copilot_reply(req: CopilotRequest, engine: Engine | None = None) -> CopilotR
     """Answer a copilot chat request.
 
     With an API key: a Claude tool loop (max 4 tool rounds) over the read-only tools get_fleet,
-    get_asset, get_contract, get_run, list_pending_approvals. Without a key, or when the LLM
-    fails: keyword-routed template answers over the same tools (source "template").
+    get_asset, get_contract, get_run, list_pending_approvals, search_manuals. Without a key, or
+    when the LLM fails: keyword-routed template answers over the same tools (source "template").
     """
     if _api_key():
         try:

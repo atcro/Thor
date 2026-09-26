@@ -768,6 +768,16 @@ def test_copilot_template_mode(engine: Any) -> None:
     assert "Nothing is waiting" in r.reply
     r = ask("hello there")
     assert r.tool_calls == [] and "Bolt" in r.reply
+    # Manual questions route to search_manuals; the test env has no manuals, so the tool
+    # returns no passages and the template says so instead of inventing a citation.
+    r = ask("What does rising kurtosis mean?")
+    assert r.tool_calls[0]["name"] == "search_manuals"
+    assert r.tool_calls[0]["args"] == {"query": "What does rising kurtosis mean?"}
+    assert "No manual passages matched" in r.reply
+    r = ask("Why is MTR-042 at risk?")
+    assert [c["name"] for c in r.tool_calls] == ["get_asset", "search_manuals"]
+    assert r.tool_calls[1]["args"] == {"query": "Why is  at risk?"}
+    assert r.reply.startswith("MTR-042") and "No manual passages" in r.reply
     assert os.environ.get("ANTHROPIC_API_KEY", "") == ""
 
 
