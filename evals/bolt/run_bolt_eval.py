@@ -191,9 +191,11 @@ def main() -> int:
         attempts = 0
         while True:
             attempts += 1
+            usage: dict[str, int] | None = None
             try:
                 resp = orchestrator.copilot_reply(req, engine=engine)
                 reply, calls, source, status = resp.reply, resp.tool_calls, resp.source, "ok"
+                usage = resp.usage
             except Exception as e:  # noqa: BLE001 - record harness failures, keep going
                 reply, calls, source, status = (
                     f"ERROR {type(e).__name__}: {e}",
@@ -224,6 +226,7 @@ def main() -> int:
                 "explanation": notes,
                 "latency_s": round(latency, 3),
                 "tool_calls": len(calls),
+                "usage": usage,
                 "model": model_name,
                 "meta": {"source": source, "tools": names, "attempts": attempts},
             }
@@ -267,6 +270,13 @@ def main() -> int:
     n_all = len(rows)
     overall = sum(r["grade"]["pass"] for r in rows) / n_all if n_all else 0.0
     print(f"{'ALL':<10}{n_all:>4}{overall:>7.0%}")
+    tok_in = sum((r.get("usage") or {}).get("input_tokens", 0) for r in rows)
+    tok_out = sum((r.get("usage") or {}).get("output_tokens", 0) for r in rows)
+    if tok_in or tok_out:
+        print(
+            f"tokens: {tok_in:,} in / {tok_out:,} out over {n_all} cases "
+            f"(avg {tok_in // max(n_all, 1):,} in per case)"
+        )
     fails = [r for r in rows if r["grade"]["pass"] < 1]
     if fails:
         print("\nfailures:")

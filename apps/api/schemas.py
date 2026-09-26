@@ -180,9 +180,7 @@ class CandidateSet(BaseModel):
     features: FeatureSpec
     candidates: list[CandidateModel]
     mlflow_experiment: str
-    ranked: list[str] = Field(
-        default_factory=list, description="candidate_ids best → worst by IMS"
-    )
+    ranked: list[str] = Field(default_factory=list, description="candidate_ids best → worst by IMS")
 
 
 # --------------------------------------------------------------------------------------
@@ -515,9 +513,13 @@ class DecisionRequest(BaseModel):
     note: str = ""
 
 
+COPILOT_MAX_MESSAGE_CHARS = 2000
+
+
 class CopilotMessage(BaseModel):
     role: Literal["user", "assistant", "tool"]
-    content: str
+    # Input cap: a pasted log file must fail validation (422), not become a large prompt.
+    content: str = Field(max_length=COPILOT_MAX_MESSAGE_CHARS)
 
 
 class CopilotRequest(BaseModel):
@@ -529,3 +531,5 @@ class CopilotResponse(BaseModel):
     reply: str
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     source: Literal["llm", "template"]
+    # LLM mode only: {"input_tokens", "output_tokens", "llm_calls"} summed over the turn.
+    usage: dict[str, int] | None = None

@@ -133,7 +133,7 @@ of refused. After fixes: **51 / 51**. `--mode llm` runs the same set once the ke
 100/100, P(48 h) about 0.5 inside the window, maintain-now on recorded runs, regime shares,
 version-id shape, ~30 s edge pickup) plus a quotable-numbers table with ranges.
 
-**Verification at end of session:** `ruff check .` clean; `pytest` **167 passed**;
+**Verification at end of session:** `ruff check .` clean; `pytest` **169 passed**;
 `npm --prefix apps/web run build` and tests pass; Bolt eval 51/51 (template, hashed embedding).
 
 **Still not verified:** LLM mode. No key has ever been configured, so the drafted explanation,
@@ -148,6 +148,27 @@ path is unchanged. `/system/health` reports `provider`; the key-guard test cover
 Verified with scripted fake clients for ping, route (choice recorded, legal transition wins),
 draft (refusal -> template) and the copilot loop (tool executed, result fed back). No live call
 has been made yet: at the end of the session `.env` still had an empty `OPENAI_API_KEY`.
+
+**Live LLM mode (late evening, OpenAI key funded).** `llm_ping()` OK. First full LLM-mode eval
+exposed a real bug: reasoning models (gpt-5 family) spend hidden reasoning tokens from
+`max_completion_tokens`; at 1024 the visible reply was empty in 29 of 39 cases. Fixed with a
+4096-token floor (4x the visible target) and `reasoning_effort=low` for reasoning models.
+Second full run on `gpt-5-mini`: **92 % (47/51)**, every category 100 % except two findings
+that were then fixed in the prompt -- three "why" answers omitted the contract id (now
+required: "name its contract_id so the answer is auditable"), and one manual question was
+answered from general knowledge without calling `search_manuals` (now: "ALWAYS call
+search_manuals first ... if it returns nothing relevant, say the manuals do not cover it").
+Re-run of those categories: why 5/5, manual 7/8; the remaining miss is the offline hashed
+embedding not surfacing "3.5 Regime normalisation" for a query phrased "normalise", and Bolt
+correctly said the manuals do not cover it instead of improvising. Cost: a chained "why"
+answer is ~12k input / 1.7k output tokens on gpt-5-mini; a manual question ~4k / 650.
+
+**Copilot limits.** Four caps bound one Bolt turn to ~10-15k tokens: 2,000-character user
+messages (422 above), the last 10 chat messages only, each tool result clipped to 6,000
+characters with a marker, and per-call token usage logged and returned as
+`CopilotResponse.usage` (the eval sums it). Rate limits on this account: 50 RPM; 10k TPM on
+`gpt-5.5` (too low for a chained answer), 60k TPM on `gpt-5-mini` -- `.env` uses `gpt-5-mini`.
+
 
 **Housekeeping:** `streaming/__init__.py` had been dragged to the repo root (empty file);
 restored. Raw datasets live in `data/external/` (ignored). `evals/bolt/out/` is ignored.

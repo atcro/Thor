@@ -50,3 +50,10 @@ were real routing bugs ("approve dc_..." answered as a lookup, "what is" hijacki
 questions, "causing" and "waiting for a decision" unmatched, question scaffolding polluting
 manual retrieval). After the fixes: 100 % (51/51). Re-run after every change to Bolt; the
 `--min-pass 0.95` bar is the intended CI gate once the LLM mode has its own baseline.
+
+LLM mode (2026-09-25, `gpt-5-mini`, hashed embedding): 92 % (47/51) on the first valid run;
+the misses were three answers that omitted the contract id and one manual answer given without
+calling `search_manuals` -- both fixed in the system prompt, re-run why 5/5, manual 7/8 (the
+remaining miss is the hashed embedding, not Bolt: it said the manuals do not cover it). LLM
+mode is graded on substance (`tools_llm` subset, `must_llm` regexes), template mode on exact
+phrasing. Template mode blanks both provider keys, so it never bills.

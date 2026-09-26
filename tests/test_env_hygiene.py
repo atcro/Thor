@@ -111,7 +111,11 @@ class _FakeOpenAI:
     def _create(self, **kwargs: Any) -> Any:
         self.requests.append(kwargs)
         msg = self.scripted.pop(0)
-        return SimpleNamespace(choices=[SimpleNamespace(message=msg)], id="chatcmpl_test")
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=msg)],
+            id="chatcmpl_test",
+            usage=SimpleNamespace(prompt_tokens=100, completion_tokens=20),
+        )
 
 
 def _oa_msg(content: str | None = None, tool_calls: list[tuple[str, str, dict]] | None = None):
@@ -151,7 +155,27 @@ def test_llm_ping_openai_with_fake_client(monkeypatch: pytest.MonkeyPatch) -> No
         "reply": "ready",
         "request_id": "chatcmpl_test",
     }
-    assert fake.requests[0]["model"] == "gpt-5" and "max_completion_tokens" in fake.requests[0]
+    req = fake.requests[0]
+    assert req["model"] == "gpt-5" and req["max_completion_tokens"] >= 4096
+    assert req["reasoning_effort"] == "low", "gpt-5 family is a reasoning model"
+
+
+def test_openai_kwargs_skip_reasoning_effort_for_non_reasoning_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api import orchestrator
+
+    _set_openai(monkeypatch)
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4.1-mini")
+    get_settings.cache_clear()
+    kw = orchestrator._openai_kwargs(1024)
+    assert kw == {"max_completion_tokens": 4096}
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5-mini")
+    get_settings.cache_clear()
+    assert orchestrator._openai_kwargs(2000) == {
+        "max_completion_tokens": 8000,
+        "reasoning_effort": "low",
+    }
 
 
 def test_route_openai_tool_choice_is_advisory(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -228,6 +252,61 @@ def test_copilot_openai_tool_loop(monkeypatch: pytest.MonkeyPatch) -> None:
         "content": '{"query": "kurtosis", "passages": []}',
     }
     assert fake.requests[0]["tools"][0]["type"] == "function"
+    assert resp.usage == {"input_tokens": 200, "output_tokens": 40, "llm_calls": 2}
+
+
+def test_copilot_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Input cap, history cap, and tool-result clipping bound one Bolt turn."""
+    from pydantic import ValidationError
+
+    from apps.api import orchestrator
+    from apps.api.schemas import COPILOT_MAX_MESSAGE_CHARS, CopilotMessage, CopilotRequest
+
+    # 1. input cap: an over-long message fails validation (the route returns 422)
+    with pytest.raises(ValidationError):
+        CopilotMessage(role="user", content="x" * (COPILOT_MAX_MESSAGE_CHARS + 1))
+    CopilotMessage(role="user", content="x" * COPILOT_MAX_MESSAGE_CHARS)
+
+    # 2. tool-result clipping keeps the payload bounded and says so
+    big = "y" * 20_000
+    clipped = orchestrator._clip_tool_result(big)
+    assert len(clipped) < 20_000 and clipped.startswith("y" * 100)
+    assert clipped.endswith("[truncated: result clipped to 6000 characters]")
+    assert orchestrator._clip_tool_result("short") == "short"
+
+    # 3. history cap: only the last COPILOT_MAX_HISTORY messages reach the model
+    _set_openai(monkeypatch)
+    fake = _FakeOpenAI([_oa_msg("ok")])
+    monkeypatch.setattr(orchestrator, "_openai_client", lambda: fake)
+    history = [
+        CopilotMessage(role="user" if i % 2 == 0 else "assistant", content=f"m{i}")
+        for i in range(25)
+    ]
+    history.append(CopilotMessage(role="user", content="latest question"))
+    orchestrator.copilot_reply(CopilotRequest(messages=history))
+    sent = fake.requests[0]["messages"]
+    assert sent[0]["role"] == "system"
+    assert len(sent) == 1 + orchestrator.COPILOT_MAX_HISTORY
+    assert sent[-1]["content"] == "latest question" and sent[1]["content"] == "m16"
+
+    # 4. a large tool result is clipped before it goes back to the model
+    fake2 = _FakeOpenAI(
+        [
+            _oa_msg(None, [("call_b", "get_fleet", {})]),
+            _oa_msg("done"),
+        ]
+    )
+    monkeypatch.setattr(orchestrator, "_openai_client", lambda: fake2)
+    monkeypatch.setattr(
+        orchestrator, "copilot_get_fleet", lambda engine=None: {"blob": "z" * 50_000}
+    )
+    resp = orchestrator.copilot_reply(
+        CopilotRequest(messages=[CopilotMessage(role="user", content="fleet?")])
+    )
+    tool_msg = fake2.requests[1]["messages"][-1]
+    assert tool_msg["role"] == "tool" and len(tool_msg["content"]) < 6200
+    assert tool_msg["content"].endswith("[truncated: result clipped to 6000 characters]")
+    assert resp.usage["llm_calls"] == 2
 
 
 def test_llm_ping_without_key(monkeypatch: pytest.MonkeyPatch) -> None:

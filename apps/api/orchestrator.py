@@ -41,6 +41,7 @@ from apps.api.schemas import (
     Approval,
     CandidateSet,
     ChampionComparison,
+    CopilotMessage,
     CopilotRequest,
     CopilotResponse,
     CostComparison,
@@ -122,8 +123,10 @@ COPILOT_SYSTEM_PROMPT = (
     "your tools -- never invent or estimate a value. You cannot approve or reject anything: when "
     "a decision contract or promotion is pending, tell the user to approve or reject it in the "
     "Thor UI. For questions about failure mechanisms, inspection or maintenance procedures, "
-    "thresholds, or plant policy, call search_manuals and quote only the passages it returns, "
-    "citing each as '<source> section <section>'. Never cite a manual passage that was not "
+    "thresholds, or plant policy, ALWAYS call search_manuals first -- never answer such a "
+    "question from general knowledge, even when you know the answer -- and quote only the "
+    "passages it returns, citing each as '<source> section <section>'. If it returns nothing "
+    "relevant, say the manuals do not cover it. Never cite a manual passage that was not "
     "returned by search_manuals. For 'has this been seen before / what did it take to fix' "
     "questions, call search_field_history: its cases are real unplanned work orders from a "
     "public dataset of university facilities (FMUCD), not from this plant and not manual "
@@ -134,7 +137,8 @@ COPILOT_SYSTEM_PROMPT = (
     "or about a decision contract, chain the tools: get_asset or get_contract first, then "
     "search_field_history with the contract's risk-raising drivers as the symptom, and answer "
     "in three parts -- the contract's evidence (probability, top drivers), its manual "
-    "citations (already in the contract; do not invent others), and the precedent.\n\n"
+    "citations (already in the contract; do not invent others), and the precedent. Whenever "
+    "you discuss a contract, name its contract_id (dc_...) so the answer is auditable.\n\n"
     "Voice: you sound like a calm senior reliability engineer writing a shift-handover note, "
     "not an assistant. Lead with the actionable conclusion, then the evidence, then the "
     "precedent. State confidence honestly and in the contract's terms ('the contract puts it "
@@ -227,6 +231,60 @@ def _openai_client() -> Any:
     return openai.OpenAI(api_key=key, max_retries=3, timeout=90.0)
 
 
+def _openai_kwargs(max_visible_tokens: int) -> dict[str, Any]:
+    """Per-call kwargs for OpenAI chat completions that work for reasoning models too.
+
+    Reasoning models (gpt-5 family, o-series) bill hidden reasoning tokens against
+    `max_completion_tokens`; a 1024 budget was fully consumed by reasoning and returned an
+    empty message. So the budget is 4x the visible target with a 4096 floor, and reasoning
+    effort is set low for those models (Bolt's answers are lookups, not proofs). The
+    `reasoning_effort` field is rejected by non-reasoning models, hence the name check.
+    """
+    model = get_settings().openai_model.lower()
+    kwargs: dict[str, Any] = {"max_completion_tokens": max(4096, 4 * max_visible_tokens)}
+    if model.startswith(("gpt-5", "o1", "o3", "o4")):
+        kwargs["reasoning_effort"] = "low"
+    return kwargs
+
+
+# Copilot cost/size limits. Together they bound one Bolt turn to roughly 10-15k tokens.
+COPILOT_MAX_HISTORY = 10  # most recent chat messages sent to the model
+COPILOT_TOOL_RESULT_CHARS = 6000  # each tool result is clipped to this before the model sees it
+_CLIP_MARK = ' ..."[truncated: result clipped to {n} characters]'
+
+
+def _clip_tool_result(text: str, limit: int = COPILOT_TOOL_RESULT_CHARS) -> str:
+    """Clip a serialized tool result so a large contract or telemetry payload cannot blow up
+    the prompt. The marker tells the model the payload was cut rather than complete."""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + _CLIP_MARK.format(n=limit)
+
+
+def _recent_history(req: CopilotRequest) -> list[CopilotMessage]:
+    """The last COPILOT_MAX_HISTORY messages (whole history when shorter)."""
+    return list(req.messages)[-COPILOT_MAX_HISTORY:]
+
+
+def _usage_of(resp: Any, provider: str) -> tuple[int, int]:
+    """(input_tokens, output_tokens) from a provider response; zeros when absent."""
+    u = getattr(resp, "usage", None)
+    if u is None:
+        return 0, 0
+    if provider == "openai":
+        return int(getattr(u, "prompt_tokens", 0) or 0), int(
+            getattr(u, "completion_tokens", 0) or 0
+        )
+    return int(getattr(u, "input_tokens", 0) or 0), int(getattr(u, "output_tokens", 0) or 0)
+
+
+def _log_usage(kind: str, resp: Any, provider: str) -> tuple[int, int]:
+    """Log token usage for one LLM call (cost is derivable from these); returns the pair."""
+    inp, out = _usage_of(resp, provider)
+    log.info("llm usage %s provider=%s input_tokens=%d output_tokens=%d", kind, provider, inp, out)
+    return inp, out
+
+
 def _openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Translate this module's tool specs (Anthropic shape) to OpenAI function-calling shape."""
     return [
@@ -315,8 +373,8 @@ def llm_ping() -> dict[str, Any]:
         if status["provider"] == "openai":
             resp = _openai_client().chat.completions.create(
                 model=status["model"],
-                max_completion_tokens=64,
                 messages=[{"role": "user", "content": prompt}],
+                **_openai_kwargs(64),
             )
             reply = (resp.choices[0].message.content or "").strip()
             request_id = getattr(resp, "_request_id", None) or getattr(resp, "id", None)
@@ -650,7 +708,6 @@ def _llm_choose_next_node(state: GraphState, allowed: list[str]) -> str | None:
     if _provider() == "openai":
         resp = _openai_client().chat.completions.create(
             model=get_settings().openai_model,
-            max_completion_tokens=256,
             messages=[
                 {"role": "system", "content": ROUTE_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
@@ -658,7 +715,9 @@ def _llm_choose_next_node(state: GraphState, allowed: list[str]) -> str | None:
             tools=_openai_tools([CHOOSE_NEXT_NODE_TOOL]),
             tool_choice="auto",
             parallel_tool_calls=False,
+            **_openai_kwargs(256),
         )
+        _log_usage("route", resp, "openai")
         for _cid, name, args in _openai_tool_calls(resp.choices[0].message):
             if name == "choose_next_node":
                 return str(args.get("node", "")) or None
@@ -671,6 +730,7 @@ def _llm_choose_next_node(state: GraphState, allowed: list[str]) -> str | None:
         tool_choice={"type": "auto", "disable_parallel_tool_use": True},
         messages=[{"role": "user", "content": user_msg}],
     )
+    _log_usage("route", resp, "anthropic")
     for block in resp.content:
         if getattr(block, "type", "") == "tool_use" and block.name == "choose_next_node":
             raw = block.input if isinstance(block.input, dict) else json.loads(str(block.input))
@@ -724,12 +784,13 @@ def _llm_draft(bundle: EvidenceBundle) -> str:
     if _provider() == "openai":
         resp = _openai_client().chat.completions.create(
             model=get_settings().openai_model,
-            max_completion_tokens=1024,
             messages=[
                 {"role": "system", "content": EXPLANATION_SYSTEM_PROMPT},
                 {"role": "user", "content": payload},
             ],
+            **_openai_kwargs(1024),
         )
+        _log_usage("draft", resp, "openai")
         msg = resp.choices[0].message
         if getattr(msg, "refusal", None):
             return ""
@@ -740,6 +801,7 @@ def _llm_draft(bundle: EvidenceBundle) -> str:
         system=EXPLANATION_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": payload}],
     )
+    _log_usage("draft", resp, "anthropic")
     if getattr(resp, "stop_reason", "") == "refusal":
         return ""
     return _text_of(resp)
@@ -2049,7 +2111,7 @@ def _copilot_llm_openai(req: CopilotRequest, engine: Engine | None) -> CopilotRe
     client = _openai_client()
     model = get_settings().openai_model
     messages: list[dict[str, Any]] = [{"role": "system", "content": _copilot_system(req)}]
-    for m in req.messages:
+    for m in _recent_history(req):
         role = "assistant" if m.role == "assistant" else "user"
         messages.append({"role": role, "content": m.content})
     if len(messages) == 1 or messages[-1]["role"] != "user":
@@ -2057,14 +2119,23 @@ def _copilot_llm_openai(req: CopilotRequest, engine: Engine | None) -> CopilotRe
     tools = _openai_tools(COPILOT_TOOLS)
     calls: list[dict[str, Any]] = []
     reply = ""
+    usage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
+
+    def account(resp: Any) -> None:
+        inp, out = _log_usage("copilot", resp, "openai")
+        usage["input_tokens"] += inp
+        usage["output_tokens"] += out
+        usage["llm_calls"] += 1
+
     for _round in range(4):
         resp = client.chat.completions.create(
             model=model,
-            max_completion_tokens=1024,
             messages=messages,
             tools=tools,
             tool_choice="auto",
+            **_openai_kwargs(1024),
         )
+        account(resp)
         msg = resp.choices[0].message
         reply = (msg.content or "").strip() or reply
         tool_calls = _openai_tool_calls(msg)
@@ -2088,17 +2159,22 @@ def _copilot_llm_openai(req: CopilotRequest, engine: Engine | None) -> CopilotRe
             res = _run_copilot_tool(name, args, engine)
             calls.append({"name": name, "args": args, "result_summary": _result_summary(res)})
             messages.append(
-                {"role": "tool", "tool_call_id": cid, "content": json.dumps(res, default=str)}
+                {
+                    "role": "tool",
+                    "tool_call_id": cid,
+                    "content": _clip_tool_result(json.dumps(res, default=str)),
+                }
             )
     else:
         # tool budget exhausted: one last call without tools to get the final text
         resp = client.chat.completions.create(
-            model=model, max_completion_tokens=1024, messages=messages
+            model=model, messages=messages, **_openai_kwargs(1024)
         )
+        account(resp)
         reply = (resp.choices[0].message.content or "").strip() or reply
     if not reply:
         reply = "I could not produce an answer from the tool results; please try rephrasing."
-    return CopilotResponse(reply=reply, tool_calls=calls, source="llm")
+    return CopilotResponse(reply=reply, tool_calls=calls, source="llm", usage=usage)
 
 
 def _copilot_llm(req: CopilotRequest, engine: Engine | None) -> CopilotResponse:
@@ -2106,7 +2182,7 @@ def _copilot_llm(req: CopilotRequest, engine: Engine | None) -> CopilotResponse:
         return _copilot_llm_openai(req, engine)
     client = _llm_client()
     messages: list[dict[str, Any]] = []
-    for m in req.messages:
+    for m in _recent_history(req):
         role = "assistant" if m.role == "assistant" else "user"
         if messages and messages[-1]["role"] == role and isinstance(messages[-1]["content"], str):
             messages[-1]["content"] += "\n" + m.content
@@ -2118,10 +2194,19 @@ def _copilot_llm(req: CopilotRequest, engine: Engine | None) -> CopilotResponse:
     calls: list[dict[str, Any]] = []
     reply = ""
     model = get_settings().anthropic_model
+    usage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
+
+    def account(resp: Any) -> None:
+        inp, out = _log_usage("copilot", resp, "anthropic")
+        usage["input_tokens"] += inp
+        usage["output_tokens"] += out
+        usage["llm_calls"] += 1
+
     for _round in range(4):
         resp = client.messages.create(
             model=model, max_tokens=1024, system=system, tools=COPILOT_TOOLS, messages=messages
         )
+        account(resp)
         tool_uses = [b for b in resp.content if getattr(b, "type", "") == "tool_use"]
         reply = _text_of(resp) or reply
         if resp.stop_reason != "tool_use" or not tool_uses:
@@ -2136,7 +2221,7 @@ def _copilot_llm(req: CopilotRequest, engine: Engine | None) -> CopilotResponse:
                 {
                     "type": "tool_result",
                     "tool_use_id": tu.id,
-                    "content": json.dumps(res, default=str),
+                    "content": _clip_tool_result(json.dumps(res, default=str)),
                 }
             )
         messages.append({"role": "user", "content": results})
@@ -2145,10 +2230,11 @@ def _copilot_llm(req: CopilotRequest, engine: Engine | None) -> CopilotResponse:
         resp = client.messages.create(
             model=model, max_tokens=1024, system=system, messages=messages
         )
+        account(resp)
         reply = _text_of(resp) or reply
     if not reply:
         reply = "I could not produce an answer from the tool results; please try rephrasing."
-    return CopilotResponse(reply=reply, tool_calls=calls, source="llm")
+    return CopilotResponse(reply=reply, tool_calls=calls, source="llm", usage=usage)
 
 
 def copilot_reply(req: CopilotRequest, engine: Engine | None = None) -> CopilotResponse:
