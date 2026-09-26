@@ -1,7 +1,8 @@
-# Thor — Build Status (2026-09-13)
+# Thor — Build Status (updated 2026-09-25)
 
-Prototype build of the full Theme 1 platform, done in one session by six parallel agents
-working against `docs/INTERFACES.md`. Everything below is committed on `main`.
+Prototype build of the full Theme 1 platform, done on 2026-09-13 by six parallel agents
+working against `docs/INTERFACES.md`, then extended on 2026-09-25 (copilot corpus, eval, API-key
+wiring -- see the session section below). Everything below is committed on `main`.
 
 ## What runs
 
@@ -37,7 +38,7 @@ After approval: `thor-bearing-classifier v… → production`, `models/<name>_<v
 a JSON sidecar carrying `features`, `window_rows`, `calibration`, and the per-regime
 `baseline` the edge container needs to compute the same features.
 
-## Verification
+## Verification (2026-09-13; current numbers in the session section below)
 
 - `ruff check .` — clean
 - `pytest` — **146 passed**, including `tests/test_e2e_pipeline.py` (the whole chain, real
@@ -79,7 +80,70 @@ Note: the edge serves the tree model's *uncalibrated* probability (`calibration:
 the sidecar), so fleet numbers from the edge and the contract's calibrated probability are
 not on the same scale; healthy motors sit at the uncalibrated base rate (~0.11).
 
-## Not verified in this session
+## Session 2026-09-25 -- copilot corpus, eval, API-key wiring
+
+Six commits (`784850e` .. `308fabd`). Nothing in the P0 pipeline changed; all work is on the
+copilot (Bolt), its retrieval layer, and operator plumbing.
+
+**API key placeholders** (`784850e`). `.env` / `.env.*` are git- and docker-ignored;
+`.env.example` documents blank-key template mode. `orchestrator.llm_status()` reports
+`mode` / `model` without exposing the key and warns on a non-`sk-ant-` value;
+`orchestrator.llm_ping()` is a one-call operator smoke test. The API logs `LLM mode:` at
+startup, `GET /system/health` returns it under `llm`, and the Fleet System panel shows an LLM
+row. `docs/API_KEY.md` is the runbook for the day the key arrives.
+
+**Bolt tools** (`76929d4`, `29aaa7d`, `affc21e`). Bolt went from five read-only tools to eight:
+
+| tool | backing | notes |
+|---|---|---|
+| `search_manuals` | `rag.retrieve_manual_context` over the `manuals` collection | the only manual text Bolt may quote |
+| `search_field_history` | `rag.retrieve_field_history` over a **second** collection `field_history_v2` | real unplanned work orders as precedent; never a manual citation |
+| `field_history_stats` | same retrieval, up to 100 cases | labor-hour / cost quartiles, year range, top components, computed in Python |
+
+Both modes use them: the LLM tool loop declares them; template mode keyword-routes to them.
+
+**Field-history corpus** (`29aaa7d`, `8e1e391`). Source: Facility Management Unified
+Classification Database (FMUCD), 3.73 M work orders from 12 North American universities,
+2002-2021, CC BY-NC (`data/external/README.md`). `data/field_history/build_fmucd_slice.py`
+carves unplanned orders on fans / pumps / motors / compressors / chillers / drives whose text
+names a symptom, dedupes, and scrubs e-mail, phone numbers and named contacts (best effort;
+the source is published with names in free text). Committed slice: **8,355 cases, 1.2 MB**.
+Indexed at API startup next to the manual index (skipped on restart when the count matches).
+Retrieval normalizes work-order shorthand (EXH/MTR/BRG/VFD/CHW ...) and re-ranks embedding
+candidates with keyword overlap (0.7 sim + 0.3 overlap). The Kaggle "Maintenance Work Orders
+Dataset" was evaluated and rejected: synthetic, with resolution notes drawn independently of
+the reported issue (every issue pairs with all 24 notes at ~5 % each).
+
+**Chained answers** (`8e1e391`). "Why is MTR-042 at risk?" now runs `get_asset` ->
+`get_contract` -> `search_field_history` (query derived from the contract's risk-raising SHAP
+drivers) and answers in three parts: contract evidence, the contract's own manual citations,
+precedent with labor hours. Asking for a contract id appends precedent too. The LLM system
+prompt asks for the same chain, and gained a **voice** section (handover-note tone, lead with
+the conclusion, confidence stated in the contract's terms, say what returned nothing, plant
+vocabulary, no filler).
+
+**Bolt eval** (`affc21e`). `evals/bolt/`: 51 fixed cases (fleet, asset, why-chain, contract,
+pending, manual citations, 12 real FMUCD phrasings, stats, guardrails) graded on route /
+content / guardrail, writing `results.jsonl` + traces. First run scored 88 %; every failure
+was a real template-routing bug -- notably "approve dc_..." was answered as a lookup instead
+of refused. After fixes: **51 / 51**. `--mode llm` runs the same set once the key exists;
+`--min-pass` is the intended CI gate.
+
+**Demo script** (`308fabd`). `docs/DEMO.md` numbers replaced with recorded ones (quality
+100/100, P(48 h) about 0.5 inside the window, maintain-now on recorded runs, regime shares,
+version-id shape, ~30 s edge pickup) plus a quotable-numbers table with ranges.
+
+**Verification at end of session:** `ruff check .` clean; `pytest` **161 passed**;
+`npm --prefix apps/web run build` and tests pass; Bolt eval 51/51 (template, hashed embedding).
+
+**Still not verified:** LLM mode. No key has ever been configured, so the drafted explanation,
+the Bolt tool loop, the chained three-part answer and the voice are all unexercised. First
+steps when it arrives: `docs/API_KEY.md`, then `python evals/bolt/run_bolt_eval.py --mode llm`.
+
+**Housekeeping:** `streaming/__init__.py` had been dragged to the repo root (empty file);
+restored. Raw datasets live in `data/external/` (ignored). `evals/bolt/out/` is ignored.
+
+## Not verified in this session (2026-09-13)
 
 - **LLM mode** — no `ANTHROPIC_API_KEY` was configured, so every run used the deterministic
   template explanation and the template Copilot. Both LLM paths exist in
@@ -134,6 +198,13 @@ not on the same scale; healthy motors sit at the uncalibrated base rate (~0.11).
 ## Commit log
 
 ```
+308fabd Align the demo script with recorded pipeline results
+affc21e Add field_history_stats tool, Bolt eval harness, routing fixes, and Bolt voice
+8e1e391 Chain evidence, citations and precedent in Bolt; hybrid field-history retrieval
+29aaa7d Add FMUCD field-history corpus and Bolt search_field_history tool
+76929d4 Add search_manuals tool to the Bolt copilot
+784850e Add API key placeholder wiring, LLM mode visibility, and key runbook
+f7f5784 Add Thor-vs-Bolt overview to the architecture doc and CLAUDE.md
 8738cae Integrate the P0 chain end to end on real simulator data
 136a88e Add AI4I 2020 credibility benchmark
 f09a98d Add Validation (06) and Reliability (07) agents with manual corpus
