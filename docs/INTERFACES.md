@@ -284,7 +284,8 @@ def copilot_reply(req: CopilotRequest, engine=None) -> CopilotResponse
     # get_run, list_pending_approvals, search_manuals (Chroma lookup over data/manuals; Bolt
     # may quote only what it returns), search_field_history (second Chroma collection built from
     # data/field_history/fmucd_rotating_upm.csv -- real FMUCD work orders as precedent, never a
-    # manual citation). Without key: keyword-routed template answers, same tools.
+    # manual citation), field_history_stats (labor/cost quartiles over up to 100 similar cases).
+    # Without key: keyword-routed template answers, same tools. Eval: evals/bolt/run_bolt_eval.py
 ```
 Run execution must persist `GraphState` to `pipeline_runs` after every node (db.save_run) with
 events appended so the UI can poll progress. Wrap each node in try/except -> stage=failed,

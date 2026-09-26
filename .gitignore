@@ -25,3 +25,6 @@ THOR_SESSION_MEMORY.md
 # Raw external datasets (multi-GB; see data/external/README.md for sources)
 data/external/*
 !data/external/README.md
+
+# Bolt eval outputs (results, traces)
+evals/bolt/out/

@@ -382,6 +382,25 @@ def test_field_history_index_and_retrieval(tmp_path: Path) -> None:
     assert text.startswith("Field history for") and "precedent, not from this plant" in text
     assert "[Circulation Pump, Hot Water, 2019]" in text and "Median across these cases" in text
 
+    stats = orchestrator.copilot_field_history_stats("motor bearing", n=10, chroma_path=chroma)
+    assert stats["n_cases"] == 4 and stats["years"] == [2017, 2020]
+    assert stats["labor_hours"] == {
+        "n": 3,
+        "p25": 2.5,
+        "p50": 4.0,
+        "p75": 5.25,
+        "min": 1.0,
+        "max": 6.5,
+    }
+    assert stats["total_cost"]["n"] == 3 and stats["total_cost"]["p50"] == 77.0
+    assert stats["components"][0] == {"component": "Circulation Pump, Hot Water", "n": 1}
+    assert orchestrator._result_summary(stats).startswith("stats over 4 field-history cases")
+    stext = orchestrator._template_stats_text(stats)
+    assert "typically 2.5-5.25 h (median 4 h" in stext and "years: 2017-2020" in stext
+    assert orchestrator.copilot_field_history_stats("", chroma_path=chroma) == {
+        "error": "empty query"
+    }
+
 
 def test_field_history_missing_csv_is_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

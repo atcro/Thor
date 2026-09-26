@@ -25,6 +25,7 @@ artifact designed to feed one, not become one.
     npm --prefix apps/web install && npm --prefix apps/web run dev
     pytest
     ruff check .
+    python evals/bolt/run_bolt_eval.py              # Bolt copilot eval (template mode, offline)
 
 See CLAUDE.md for the architecture, agent contracts, and non-negotiable rules.
 

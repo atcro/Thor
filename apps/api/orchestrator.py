@@ -128,12 +128,22 @@ COPILOT_SYSTEM_PROMPT = (
     "questions, call search_field_history: its cases are real unplanned work orders from a "
     "public dataset of university facilities (FMUCD), not from this plant and not manual "
     "guidance -- present them as precedent ('field history: <component>, <year>') and use "
-    "only the labor hours, costs and medians it returns. When asked why an asset is at risk "
+    "only the labor hours, costs and medians it returns. For 'how long / how much does this "
+    "usually take' questions call field_history_stats (quartiles over up to 100 similar cases) "
+    "rather than reading numbers off a few cases. When asked why an asset is at risk "
     "or about a decision contract, chain the tools: get_asset or get_contract first, then "
     "search_field_history with the contract's risk-raising drivers as the symptom, and answer "
     "in three parts -- the contract's evidence (probability, top drivers), its manual "
-    "citations (already in the contract; do not invent others), and the precedent. Be "
-    "concise and concrete."
+    "citations (already in the contract; do not invent others), and the precedent.\n\n"
+    "Voice: you sound like a calm senior reliability engineer writing a shift-handover note, "
+    "not an assistant. Lead with the actionable conclusion, then the evidence, then the "
+    "precedent. State confidence honestly and in the contract's terms ('the contract puts it "
+    "at 0.50 within 48 h', never 'it will fail'). Say plainly what is unknown or what returned "
+    "nothing instead of filling the gap. Use the plant's vocabulary (drive-end bearing, regime, "
+    "alarm window, lead time), not generic phrases like 'anomaly detected'. Mention that "
+    "approval happens in the Thor UI only when the user asks you to act, not on every turn. No "
+    "exclamation marks, no apologies, no 'great question', no first-person feelings. Short "
+    "sentences; numbers on their own line or in a short list when there are more than two."
 )
 
 CHOOSE_NEXT_NODE_TOOL: dict[str, Any] = {
@@ -1266,6 +1276,12 @@ def copilot_list_pending_approvals(engine: Engine | None = None) -> dict[str, An
     return {"contracts": contracts, "promotions": promotions}
 
 
+_QUESTION_WORDS = frozenset(
+    "what is are in the a an of does do did how should i we you it this that to for on at by "
+    "and or with about tell me explain mean means say says please can could would".split()
+)
+
+
 def copilot_search_manuals(
     query: str, k: int = 3, engine: Engine | None = None, chroma_path: Path | None = None
 ) -> dict[str, Any]:
@@ -1280,11 +1296,17 @@ def copilot_search_manuals(
     if not query:
         return {"error": "empty query"}
     k = max(1, min(int(k or 3), 5))
+    # Drop question scaffolding ("what is in the ...?") so the content words drive retrieval;
+    # matters most for the offline hashed embedding, harmless for MiniLM.
+    content_words = [
+        w for w in re.findall(r"[A-Za-z0-9-]+", query) if w.lower() not in _QUESTION_WORDS
+    ]
+    search_query = " ".join(content_words) or query
     try:
         from agents.reliability import rag
 
         path = chroma_path or Path(get_settings().chroma_path)
-        passages = rag.retrieve_manual_context(query, path, k=k)
+        passages = rag.retrieve_manual_context(search_query, path, k=k)
     except Exception as e:  # noqa: BLE001 - retrieval enriches an answer, never blocks it
         log.warning("copilot search_manuals failed: %s", e)
         passages = []
@@ -1353,6 +1375,66 @@ def copilot_search_field_history(
         "n_cases": len(cases),
         "median_labor_hours": _median([c.labor_hours for c in cases]),
         "median_total_cost": _median([c.total_cost for c in cases]),
+    }
+
+
+def _quartiles(values: list[float | None]) -> dict[str, float | int] | None:
+    """{n, p25, p50, p75, min, max} over the non-null values (inclusive method), or None."""
+    import statistics
+
+    vals = sorted(float(v) for v in values if v is not None)
+    if not vals:
+        return None
+    if len(vals) == 1:
+        q = [vals[0]] * 3
+    else:
+        q = statistics.quantiles(vals, n=4, method="inclusive")
+    return {
+        "n": len(vals),
+        "p25": round(q[0], 2),
+        "p50": round(q[1], 2),
+        "p75": round(q[2], 2),
+        "min": round(vals[0], 2),
+        "max": round(vals[-1], 2),
+    }
+
+
+def copilot_field_history_stats(
+    query: str, n: int = 50, engine: Engine | None = None, chroma_path: Path | None = None
+) -> dict[str, Any]:
+    """Tool: labor-hour and cost quartiles over the n most similar field-history cases.
+
+    Same retrieval as search_field_history but wider (10-100 cases, default 50), then
+    deterministic aggregates: {"query", "source", "n_cases", "labor_hours": {n, p25, p50,
+    p75, min, max} | None, "total_cost": {...} | None, "years": [first, last] | None,
+    "components": [{component, n}] top 5}. Built so Bolt can say "these jobs usually take
+    1-4 h" from a distribution rather than three anecdotes. Never raises.
+    """
+    query = (query or "").strip()
+    if not query:
+        return {"error": "empty query"}
+    n = max(10, min(int(n or 50), 100))
+    try:
+        from agents.reliability import rag
+
+        path = chroma_path or Path(get_settings().chroma_path)
+        cases = rag.retrieve_field_history(query, path, k=n)
+    except Exception as e:  # noqa: BLE001 - stats enrich an answer, never block it
+        log.warning("copilot field_history_stats failed: %s", e)
+        cases = []
+    years = sorted(int(c.start_date[:4]) for c in cases if c.start_date)
+    comp_counts: dict[str, int] = {}
+    for c in cases:
+        comp_counts[c.component] = comp_counts.get(c.component, 0) + 1
+    top_components = sorted(comp_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
+    return {
+        "query": query,
+        "source": "FMUCD (12 North American universities, 2002-2021, CC BY-NC)",
+        "n_cases": len(cases),
+        "labor_hours": _quartiles([c.labor_hours for c in cases]),
+        "total_cost": _quartiles([c.total_cost for c in cases]),
+        "years": [years[0], years[-1]] if years else None,
+        "components": [{"component": k, "n": v} for k, v in top_components],
     }
 
 
@@ -1436,6 +1518,24 @@ COPILOT_TOOLS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "field_history_stats",
+        "description": (
+            "Quartiles of labor hours and cost over the most similar real unplanned work orders "
+            "for a symptom (default 50 cases, max 100), plus year range and top components. Use "
+            "for 'how long / how much does this usually take'. Precedent from a public campus "
+            "dataset, not this plant."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The symptom or job, in plain words."},
+                "n": {"type": "integer", "description": "Cases to aggregate (10-100, default 50)."},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -1456,6 +1556,10 @@ def _run_copilot_tool(name: str, args: dict[str, Any], engine: Engine | None) ->
         return copilot_search_field_history(
             str(args.get("query", "")), int(args.get("k", 5)), engine
         )
+    if name == "field_history_stats":
+        return copilot_field_history_stats(
+            str(args.get("query", "")), int(args.get("n", 50)), engine
+        )
     return {"error": f"unknown tool {name}"}
 
 
@@ -1470,6 +1574,10 @@ def _result_summary(result: dict[str, Any]) -> str:
         med = result.get("median_labor_hours")
         tail = f"; median {med:g} labor h" if med is not None else ""
         return f"{result['n_cases']} field-history cases{tail}"
+    if "labor_hours" in result and "components" in result:
+        lh = result["labor_hours"]
+        tail = f"; labor p25/p50/p75 {lh['p25']:g}/{lh['p50']:g}/{lh['p75']:g} h" if lh else ""
+        return f"stats over {result['n_cases']} field-history cases{tail}"
     if "n_assets" in result:
         worst = result["highest_risk"][0] if result["highest_risk"] else None
         tail = (
@@ -1592,7 +1700,8 @@ def _template_history_text(res: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-WHY_WORDS = ("why", "risk", "wrong", "cause", "explain", "happening", "going on", "evidence")
+WHY_WORDS = ("why", "risk", "wrong", "caus", "explain", "happening", "going on", "evidence")
+ACTION_WORDS = ("pending", "approv", "reject", "promot", "deploy", "waiting", "decision")
 
 
 def _history_query_for_contract(dc: dict[str, Any]) -> str:
@@ -1628,6 +1737,46 @@ def _template_contract_evidence(dc: dict[str, Any]) -> str:
     return " ".join(lines)
 
 
+def _template_stats_text(res: dict[str, Any]) -> str:
+    if "error" in res:
+        return str(res["error"])
+    if not res["n_cases"]:
+        return f"No field-history cases matched '{res['query']}'."
+    lines = [
+        f"Field-history statistics for '{res['query']}' over the {res['n_cases']} most similar "
+        f"unplanned work orders from {res['source']}; precedent, not from this plant:"
+    ]
+    lh, tc = res["labor_hours"], res["total_cost"]
+    if lh:
+        lines.append(
+            f"- labor hours: typically {lh['p25']:g}-{lh['p75']:g} h (median {lh['p50']:g} h, "
+            f"range {lh['min']:g}-{lh['max']:g}, n={lh['n']})"
+        )
+    if tc:
+        lines.append(
+            f"- total cost: typically {tc['p25']:,.0f}-{tc['p75']:,.0f} (median {tc['p50']:,.0f}, "
+            f"n={tc['n']}; campus facilities cost basis)"
+        )
+    if res["years"]:
+        lines.append(f"- years: {res['years'][0]}-{res['years'][1]}")
+    if res["components"]:
+        comps = ", ".join(f"{c['component']} ({c['n']})" for c in res["components"])
+        lines.append(f"- components: {comps}")
+    return "\n".join(lines)
+
+
+STATS_WORDS = (
+    "how long",
+    "how much",
+    "usually",
+    "typically",
+    "on average",
+    "average",
+    "distribution",
+    "how many hours",
+    "labor hours",
+)
+
 HISTORY_WORDS = (
     "seen before",
     "seen this",
@@ -1636,9 +1785,6 @@ HISTORY_WORDS = (
     "past",
     "previous",
     "precedent",
-    "usually",
-    "typically",
-    "how long",
     "how often",
     "other plants",
     "elsewhere",
@@ -1654,11 +1800,12 @@ MANUAL_WORDS = (
     "how do i",
     "how to",
     "how should",
-    "what does",
-    "what is",
     "why",
     "cause",
     "mean",
+    "indicate",
+    "signif",
+    "define",
     "inspect",
     "replace",
     "lubric",
@@ -1689,15 +1836,21 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
     m_asset = ASSET_ID_RE.search(last)
     m_contract = CONTRACT_ID_RE.search(last)
     fleet_words = ("fleet", "risk", "health", "status", "worst", "motors", "assets")
-    wants_history = any(k in text for k in HISTORY_WORDS)
-    wants_manual = not wants_history and any(k in text for k in MANUAL_WORDS)
+    wants_stats = any(k in text for k in STATS_WORDS)
+    wants_history = not wants_stats and any(k in text for k in HISTORY_WORDS)
+    wants_manual = not (wants_stats or wants_history) and any(k in text for k in MANUAL_WORDS)
     wants_why = any(k in text for k in WHY_WORDS)
 
     def precedent_for(dc: dict[str, Any]) -> str:
         query = _history_query_for_contract(dc)
         return _template_history_text(call("search_field_history", {"query": query, "k": 3}))
 
-    if m_contract:
+    wants_action = any(k in text for k in ACTION_WORDS)
+    if wants_action:
+        # Checked before the contract-id branch on purpose: "approve dc_..." must be refused,
+        # never answered as a lookup. The template can only list what is pending.
+        reply = _template_pending_text(call("list_pending_approvals", {}))
+    elif m_contract:
         res = call("get_contract", {"contract_id": m_contract.group(0)})
         if "error" in res:
             reply = str(res["error"])
@@ -1708,8 +1861,6 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
                 f"{res['expected_cost']:.0f}, status {res['status']}. {res['explanation_text']}"
             )
             reply += "\n\n" + precedent_for(res)
-    elif "pending" in text or "approv" in text or "reject" in text:
-        reply = _template_pending_text(call("list_pending_approvals", {}))
     elif m_asset or (req.asset_id and ("asset" in text or "motor" in text or "this" in text)):
         aid = m_asset.group(0).upper() if m_asset else str(req.asset_id)
         asset_res = call("get_asset", {"asset_id": aid})
@@ -1722,16 +1873,20 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
             dc = call("get_contract", {"contract_id": contracts[0]["contract_id"]})
             if "error" not in dc:
                 reply += "\n\n" + _template_contract_evidence(dc) + "\n\n" + precedent_for(dc)
+        elif wants_stats:
+            reply += "\n\n" + _template_stats_text(call("field_history_stats", {"query": query}))
         elif wants_history:
             reply += "\n\n" + _template_history_text(call("search_field_history", {"query": query}))
         elif wants_manual:
             reply += "\n\n" + _template_manuals_text(call("search_manuals", {"query": query}))
+    elif wants_stats:
+        reply = _template_stats_text(call("field_history_stats", {"query": last}))
     elif wants_history:
         reply = _template_history_text(call("search_field_history", {"query": last}))
-    elif wants_manual:
-        reply = _template_manuals_text(call("search_manuals", {"query": last}))
     elif any(k in text for k in fleet_words):
         reply = _template_fleet_text(call("get_fleet", {}))
+    elif wants_manual:
+        reply = _template_manuals_text(call("search_manuals", {"query": last}))
     else:
         reply = HELP_TEXT
     return CopilotResponse(reply=reply, tool_calls=calls, source="template")
@@ -1792,8 +1947,8 @@ def copilot_reply(req: CopilotRequest, engine: Engine | None = None) -> CopilotR
 
     With an API key: a Claude tool loop (max 4 tool rounds) over the read-only tools get_fleet,
     get_asset, get_contract, get_run, list_pending_approvals, search_manuals,
-    search_field_history. Without a key, or when the LLM fails: keyword-routed template
-    answers over the same tools (source "template").
+    search_field_history, field_history_stats. Without a key, or when the LLM fails:
+    keyword-routed template answers over the same tools (source "template").
     """
     if _api_key():
         try:

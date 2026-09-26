@@ -784,7 +784,10 @@ def test_copilot_template_mode(engine: Any) -> None:
     assert r.tool_calls[0]["name"] == "search_field_history"
     assert "No field-history cases matched" in r.reply
     r = ask("How long does a bearing fix on MTR-042 usually take?")
-    assert [c["name"] for c in r.tool_calls] == ["get_asset", "search_field_history"]
+    assert [c["name"] for c in r.tool_calls] == ["get_asset", "field_history_stats"]
+    r = ask("How much does a fan motor replacement typically cost?")
+    assert r.tool_calls[0]["name"] == "field_history_stats"
+    assert "No field-history cases matched" in r.reply
     assert os.environ.get("ANTHROPIC_API_KEY", "") == ""
 
 
