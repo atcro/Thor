@@ -13,7 +13,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # --------------------------------------------------------------------------------------
 # Shared primitives
@@ -514,12 +514,29 @@ class DecisionRequest(BaseModel):
 
 
 COPILOT_MAX_MESSAGE_CHARS = 2000
+# Bolt's own replies (max_tokens=1024, roughly 4-5k chars) come back as history on the next
+# turn. They are clipped, never rejected: the server produced them, so a 422 would lock the
+# chat after one long answer.
+COPILOT_MAX_HISTORY_CHARS = 8000
 
 
 class CopilotMessage(BaseModel):
     role: Literal["user", "assistant", "tool"]
-    # Input cap: a pasted log file must fail validation (422), not become a large prompt.
-    content: str = Field(max_length=COPILOT_MAX_MESSAGE_CHARS)
+    content: str
+
+    @model_validator(mode="after")
+    def _cap_content(self) -> CopilotMessage:
+        """User input over COPILOT_MAX_MESSAGE_CHARS fails validation (422), so a pasted log
+        file never becomes a large prompt. Assistant/tool history over
+        COPILOT_MAX_HISTORY_CHARS is truncated in place."""
+        if self.role == "user":
+            if len(self.content) > COPILOT_MAX_MESSAGE_CHARS:
+                raise ValueError(
+                    f"String should have at most {COPILOT_MAX_MESSAGE_CHARS} characters"
+                )
+        elif len(self.content) > COPILOT_MAX_HISTORY_CHARS:
+            self.content = self.content[: COPILOT_MAX_HISTORY_CHARS - 15] + "\n...[truncated]"
+        return self
 
 
 class CopilotRequest(BaseModel):

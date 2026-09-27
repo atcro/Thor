@@ -260,12 +260,23 @@ def test_copilot_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     from pydantic import ValidationError
 
     from apps.api import orchestrator
-    from apps.api.schemas import COPILOT_MAX_MESSAGE_CHARS, CopilotMessage, CopilotRequest
+    from apps.api.schemas import (
+        COPILOT_MAX_HISTORY_CHARS,
+        COPILOT_MAX_MESSAGE_CHARS,
+        CopilotMessage,
+        CopilotRequest,
+    )
 
-    # 1. input cap: an over-long message fails validation (the route returns 422)
+    # 1. input cap: an over-long USER message fails validation (the route returns 422)
     with pytest.raises(ValidationError):
         CopilotMessage(role="user", content="x" * (COPILOT_MAX_MESSAGE_CHARS + 1))
     CopilotMessage(role="user", content="x" * COPILOT_MAX_MESSAGE_CHARS)
+    # 1b. Bolt's own long reply echoed back as history is accepted, not 422'd (it was the
+    # server's output, and rejecting it locked the chat after one long answer)
+    echoed = CopilotMessage(role="assistant", content="a" * (COPILOT_MAX_MESSAGE_CHARS + 1))
+    assert len(echoed.content) == COPILOT_MAX_MESSAGE_CHARS + 1
+    huge = CopilotMessage(role="assistant", content="a" * (COPILOT_MAX_HISTORY_CHARS + 500))
+    assert len(huge.content) <= COPILOT_MAX_HISTORY_CHARS and huge.content.endswith("[truncated]")
 
     # 2. tool-result clipping keeps the payload bounded and says so
     big = "y" * 20_000

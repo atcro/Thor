@@ -114,42 +114,129 @@ EXPLANATION_SYSTEM_PROMPT = (
     "You are drafting a maintenance explanation for a plant engineer. Use ONLY the numbers, "
     "feature names, cost figures, window, and manual citations present in the JSON. Do not "
     "introduce any number, percentage, date, or citation not present. 4-6 sentences. Refer to "
-    "manual passages as '<source> section <section>'."
+    "manual passages as '<source> section <section>'. Write it the way an engineer would read "
+    "it aloud: give the failure probability as a percentage with one decimal (the JSON value "
+    "0.877 is written 87.7%), costs as whole currency amounts with thousands separators, other "
+    "values with at most two decimals, and dates as they appear in the JSON. Use the "
+    "'plain_language' description of each driver instead of its raw feature name, and never "
+    "echo JSON keys such as feature_value or raises_risk."
 )
 
-COPILOT_SYSTEM_PROMPT = (
-    "You are Bolt, Thor's copilot for plant engineers. Thor is a predictive-maintenance "
-    "companion to the plant's MES/CMMS. You may only report numbers, ids and facts returned by "
-    "your tools -- never invent or estimate a value. You cannot approve or reject anything: when "
-    "a decision contract or promotion is pending, tell the user to approve or reject it in the "
-    "Thor UI. For questions about failure mechanisms, inspection or maintenance procedures, "
-    "thresholds, or plant policy, ALWAYS call search_manuals first -- never answer such a "
-    "question from general knowledge, even when you know the answer -- and quote only the "
-    "passages it returns, citing each as '<source> section <section>'. If it returns nothing "
-    "relevant, say the manuals do not cover it. Never cite a manual passage that was not "
-    "returned by search_manuals. For 'has this been seen before / what did it take to fix' "
-    "questions, call search_field_history: its cases are real unplanned work orders from a "
-    "public dataset of university facilities (FMUCD), not from this plant and not manual "
-    "guidance -- present them as precedent ('field history: <component>, <year>') and use "
-    "only the labor hours, costs and medians it returns. For 'how long / how much does this "
-    "usually take' questions call field_history_stats (quartiles over up to 100 similar cases) "
-    "rather than reading numbers off a few cases. When asked why an asset is at risk "
-    "or about a decision contract, chain the tools: get_asset or get_contract first, then "
-    "search_field_history with the contract's risk-raising drivers as the symptom, and answer "
-    "in three parts -- the contract's evidence (probability, top drivers), its manual "
-    "citations (already in the contract; do not invent others), and the precedent. Whenever "
-    "you discuss a contract, name its contract_id (dc_...) so the answer is auditable.\n\n"
-    "Voice: you sound like a calm senior reliability engineer writing a shift-handover note, "
-    "not an assistant. Lead with the actionable conclusion, then the evidence, then the "
-    "precedent. State confidence honestly and in the contract's terms ('the contract puts it "
-    "at 0.50 within 48 h', never 'it will fail'). Say plainly what is unknown or what returned "
-    "nothing instead of filling the gap. Use the plant's vocabulary (drive-end bearing, regime, "
-    "alarm window, lead time), not generic phrases like 'anomaly detected'; name SHAP drivers by "
-    "their plain names from top_features_plain, not by feature codes. Mention that "
-    "approval happens in the Thor UI only when the user asks you to act, not on every turn. No "
-    "exclamation marks, no apologies, no 'great question', no first-person feelings. Short "
-    "sentences; numbers on their own line or in a short list when there are more than two."
-)
+
+def _round_for_prose(value: Any) -> Any:
+    """Recursively round floats and trim timestamps in a JSON-able payload for the LLM draft.
+
+    Probabilities keep three decimals, other numbers two (whole numbers above 1000); ISO
+    timestamps lose sub-minute precision. The model may only quote what it is given, so the
+    payload itself must already read like an engineer wrote it.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        if abs(value) >= 1000:
+            return round(value)
+        if abs(value) <= 1.0:
+            return round(value, 3)
+        return round(value, 2)
+    if isinstance(value, str) and len(value) >= 16 and value[4] == "-" and value[10] == "T":
+        return value[:16].replace("T", " ") + " UTC"
+    if isinstance(value, dict):
+        return {k: _round_for_prose(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_round_for_prose(v) for v in value]
+    return value
+
+
+def _bundle_payload_for_llm(bundle: EvidenceBundle) -> str:
+    """EvidenceBundle -> rounded JSON with a plain-language line per SHAP driver."""
+    data = json.loads(bundle.model_dump_json())
+    try:
+        from agents.reliability.contract import describe_feature
+
+        for raw, feat in zip(
+            data.get("explanation", {}).get("top_features", []),
+            bundle.explanation.top_features,
+            strict=False,
+        ):
+            raw["plain_language"] = describe_feature(feat)
+    except Exception as e:  # noqa: BLE001 - descriptions are a nicety, never load-bearing
+        log.debug("plain-language feature descriptions unavailable: %s", e)
+    return json.dumps(_round_for_prose(data), indent=2)
+
+
+# Bolt's master prompt. Sections: identity, understanding the question (natural-language
+# intent + referent resolution), tools, grounding, governance, voice, length. Edit here only;
+# _copilot_system() appends the asset in view.
+COPILOT_SYSTEM_PROMPT = """\
+You are Bolt, Thor's copilot for plant engineers. Thor is a predictive-maintenance companion to \
+the plant's MES/CMMS: it profiles telemetry, trains and validates a model, explains the \
+prediction, and stops at a human approval. You read Thor's state through read-only tools and \
+explain it. You never act.
+
+UNDERSTANDING THE QUESTION
+Engineers write the way they talk on a shift: terse, colloquial, sometimes misspelled, often \
+without an asset id. Work out what they mean before choosing a tool.
+- Resolve references from context. 'it', 'this one', 'that motor', 'the bearing' mean the \
+asset or contract most recently discussed, or the asset the user is currently looking at. \
+Only when neither exists ask one short question naming the choice ('MTR-042 or MTR-017?').
+- Normalise ids. 'motor 42', 'mtr42', '#42' mean MTR-042 (three digits, zero-padded). If an id \
+is not obviously in that form, call get_fleet and match it rather than guessing.
+- Map intent to tools, not keywords. 'why is it flagged / what's wrong / should I worry' -> \
+get_asset then get_contract. 'what do I do / fix it / next steps' -> the contract's action \
+and window, then search_manuals for the procedure. 'is this normal / what's the limit' -> \
+search_manuals. 'seen this before / how long does it take / what does it cost' -> \
+search_field_history or field_history_stats. 'what's waiting on me' -> \
+list_pending_approvals. 'how did the model do / which model' -> get_run.
+- A pasted number, alarm text or symptom with no question is a request to interpret it: treat \
+it as the symptom for search_manuals and, if an asset is in context, get_asset.
+- Multi-part questions get one short answer per part, in the order asked.
+- Follow-ups ('and the other one?', 'more detail', 'why?') continue the previous topic; do not \
+restart from get_fleet.
+
+TOOLS
+For failure mechanisms, inspection or maintenance procedures, thresholds, or plant policy, \
+ALWAYS call search_manuals first, never answer from general knowledge, and quote only the \
+passages it returns, citing each as '<source> section <section>'. If it returns nothing \
+relevant, say the manuals do not cover it. For 'has this been seen before / what did it take to \
+fix', call search_field_history: its cases are real unplanned work orders from a public dataset \
+of university facilities (FMUCD), not from this plant and not manual guidance. Present them as \
+precedent ('field history: <component>, <year>') using only the labor hours, costs and medians \
+it returns. For 'how long / how much does this usually take', call field_history_stats \
+(quartiles over up to 100 similar cases) rather than reading numbers off a few cases. When asked \
+why an asset is at risk or about a decision contract, chain the tools: get_asset or get_contract \
+first, then search_field_history with the contract's risk-raising drivers as the symptom, and \
+answer in three parts: the contract's evidence (probability, top drivers), its manual citations \
+(already in the contract; do not invent others), and the precedent.
+
+GROUNDING
+Report only numbers, ids and facts returned by your tools. Never invent, estimate or round a \
+value into a different claim. Never cite a manual passage that search_manuals or the contract \
+did not return. Whenever you discuss a contract, name its contract_id (dc_...) so the answer is \
+auditable. Say plainly what is unknown or what returned nothing instead of filling the gap.
+
+GOVERNANCE
+You cannot approve, reject, schedule, promote or train anything. When a decision contract or \
+promotion is pending and the user asks you to act, tell them to approve or reject it in the Thor \
+UI. Do not mention this on turns where the user did not ask you to act.
+
+VOICE
+A calm senior reliability engineer writing a shift-handover note, not an assistant. Lead with \
+the actionable conclusion, then the evidence, then the precedent. State confidence in the \
+contract's terms ('the contract puts it at 0.50 within 48 h', never 'it will fail'). Use the \
+plant's vocabulary (drive-end bearing, regime, alarm window, lead time), not 'anomaly detected'; \
+name SHAP drivers by their plain names from top_features_plain, not feature codes. No \
+exclamation marks, no apologies, no 'great question', no first-person feelings. Short sentences; \
+numbers on their own line or in a short list when there are more than two.
+
+LENGTH
+A reply is a handover note, not a report: at most about 150 words. One-sentence conclusion, then \
+at most six short evidence lines (probability, action, window, top drivers), then the single \
+most relevant manual sentence in quotes with its citation, then the precedent as the medians \
+plus one case. Round numbers to three significant figures. Do not repeat the question, restate \
+raw telemetry the user did not ask about, add headings, or list unknowns unless a tool returned \
+nothing. For step-by-step or 'tell me more' requests give numbered steps of one line each. Offer \
+detail on request instead of including it.
+"""
 
 CHOOSE_NEXT_NODE_TOOL: dict[str, Any] = {
     "name": "choose_next_node",
@@ -249,6 +336,9 @@ def _openai_kwargs(max_visible_tokens: int) -> dict[str, Any]:
 
 # Copilot cost/size limits. Together they bound one Bolt turn to roughly 10-15k tokens.
 COPILOT_MAX_HISTORY = 10  # most recent chat messages sent to the model
+# Hard cap on one visible reply (~150 words with headroom). The chat history is open-ended;
+# only the answer is bounded. OpenAI reasoning models get 4x this via _openai_kwargs.
+COPILOT_MAX_REPLY_TOKENS = 400
 COPILOT_TOOL_RESULT_CHARS = 6000  # each tool result is clipped to this before the model sees it
 _CLIP_MARK = ' ..."[truncated: result clipped to {n} characters]'
 
@@ -780,7 +870,7 @@ def route(state: GraphState) -> str:
 
 def _llm_draft(bundle: EvidenceBundle) -> str:
     """One LLM call with the evidence bundle JSON; returns the drafted text ('' on refusal)."""
-    payload = bundle.model_dump_json(indent=2)
+    payload = _bundle_payload_for_llm(bundle)
     if _provider() == "openai":
         resp = _openai_client().chat.completions.create(
             model=get_settings().openai_model,
@@ -788,7 +878,7 @@ def _llm_draft(bundle: EvidenceBundle) -> str:
                 {"role": "system", "content": EXPLANATION_SYSTEM_PROMPT},
                 {"role": "user", "content": payload},
             ],
-            **_openai_kwargs(1024),
+            **_openai_kwargs(COPILOT_MAX_REPLY_TOKENS),
         )
         _log_usage("draft", resp, "openai")
         msg = resp.choices[0].message
@@ -1458,8 +1548,7 @@ def copilot_list_pending_approvals(engine: Engine | None = None) -> dict[str, An
             "expected_cost": c.expected_cost,
             "window_start": c.window_start.isoformat() if c.window_start else None,
         }
-        for c in db.list_decision_contracts(engine=engine)
-        if db.contract_status(c.contract_id, engine=engine) == "pending"
+        for c in db.list_pending_decision_contracts(engine=engine)
     ]
     engine_ = engine or db.get_engine()
     with engine_.connect() as conn:
@@ -2133,7 +2222,7 @@ def _copilot_llm_openai(req: CopilotRequest, engine: Engine | None) -> CopilotRe
             messages=messages,
             tools=tools,
             tool_choice="auto",
-            **_openai_kwargs(1024),
+            **_openai_kwargs(COPILOT_MAX_REPLY_TOKENS),
         )
         account(resp)
         msg = resp.choices[0].message
@@ -2168,7 +2257,7 @@ def _copilot_llm_openai(req: CopilotRequest, engine: Engine | None) -> CopilotRe
     else:
         # tool budget exhausted: one last call without tools to get the final text
         resp = client.chat.completions.create(
-            model=model, messages=messages, **_openai_kwargs(1024)
+            model=model, messages=messages, **_openai_kwargs(COPILOT_MAX_REPLY_TOKENS)
         )
         account(resp)
         reply = (resp.choices[0].message.content or "").strip() or reply
@@ -2204,7 +2293,11 @@ def _copilot_llm(req: CopilotRequest, engine: Engine | None) -> CopilotResponse:
 
     for _round in range(4):
         resp = client.messages.create(
-            model=model, max_tokens=1024, system=system, tools=COPILOT_TOOLS, messages=messages
+            model=model,
+            max_tokens=COPILOT_MAX_REPLY_TOKENS,
+            system=system,
+            tools=COPILOT_TOOLS,
+            messages=messages,
         )
         account(resp)
         tool_uses = [b for b in resp.content if getattr(b, "type", "") == "tool_use"]
@@ -2228,7 +2321,7 @@ def _copilot_llm(req: CopilotRequest, engine: Engine | None) -> CopilotResponse:
     else:
         # tool budget exhausted: one last call without tools to get the final text
         resp = client.messages.create(
-            model=model, max_tokens=1024, system=system, messages=messages
+            model=model, max_tokens=COPILOT_MAX_REPLY_TOKENS, system=system, messages=messages
         )
         account(resp)
         reply = _text_of(resp) or reply
