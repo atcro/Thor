@@ -55,7 +55,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-On Windows PowerShell, copy the environment template with `Copy-Item .env.example .env`. Do not commit or share `.env`. The archive also contains a local environment file; use your own `.env` generated from `.env.example` and keep any existing keys private.
+On Windows PowerShell, copy the environment template with `Copy-Item .env.example .env`. No `.env` file is included in the submission, and no API key is provided. Judges who want the language model enabled should place their own OpenAI or Anthropic key in the `.env` they create from `.env.example`; with the keys left blank, the full pipeline, approval gate, and Bolt copilot run in deterministic template mode. Do not commit or share `.env`.
 
 |Address|Purpose|
 |-|-|
@@ -79,7 +79,7 @@ To stop while keeping data, use `docker compose down`. To reset the demo databas
 
 ### Optional language model
 
-Set `OPENAI\_API\_KEY` and optionally `OPENAI\_MODEL`, or `ANTHROPIC\_API\_KEY` and optionally `ANTHROPIC\_MODEL`, in the private `.env` file. `LLM\_PROVIDER=auto` prefers OpenAI when both keys are present. Restart the API or Compose stack after editing the file. Confirm the selected mode in `/system/health` or the Fleet System panel. The numerical pipeline and approval gate also operate in template mode. See `docs/API\_KEY.md` for a provider smoke test. External model calls may incur charges.
+The submission ships without an API key. To see language model routed explanations and Bolt answers, set your own `OPENAI\_API\_KEY` and optionally `OPENAI\_MODEL`, or `ANTHROPIC\_API\_KEY` and optionally `ANTHROPIC\_MODEL`, in the private `.env` file. `LLM\_PROVIDER=auto` prefers OpenAI when both keys are present. Restart the API or Compose stack after editing the file. Confirm the selected mode in `/system/health` or the Fleet System panel. The numerical pipeline and approval gate also operate in template mode. See `docs/API\_KEY.md` for a provider smoke test. External model calls may incur charges.
 
 ### Developer run and checks
 
