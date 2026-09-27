@@ -52,6 +52,25 @@ def state_from_json(data: dict[str, Any]) -> GraphState:
     return GraphState.model_validate(data)
 
 
+def public_state(raw: dict[str, Any]) -> dict[str, Any]:
+    """The persisted GraphState JSON minus bulk arrays no screen renders.
+
+    `data_quality.regimes.row_regime` is one label per telemetry row (100k+ strings, ~600 KB
+    of JSON) that only `build_feature_pipeline()` consumes inside the run. Asset 360 and the
+    Studio poll the run state every 2-3 s, so it is replaced here by `row_regime_count`. The
+    stored state is untouched; a run that resumes still has the full array.
+    """
+    dq = raw.get("data_quality")
+    regimes = dq.get("regimes") if isinstance(dq, dict) else None
+    if not isinstance(regimes, dict) or "row_regime" not in regimes:
+        return raw
+    rows = regimes.get("row_regime") or []
+    slim_regimes = {k: v for k, v in regimes.items() if k != "row_regime"}
+    slim_regimes["row_regime"] = []
+    slim_regimes["row_regime_count"] = len(rows)
+    return {**raw, "data_quality": {**dq, "regimes": slim_regimes}}
+
+
 def run_summary(state: dict[str, Any] | GraphState) -> dict[str, Any]:
     """Compact run summary for list endpoints: ids, stage, error, contract id, event count."""
     gs = state if isinstance(state, GraphState) else state_from_json(state)

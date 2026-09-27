@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from apps.api import db, orchestrator
-from apps.api.graph_state import run_summary
+from apps.api.graph_state import public_state, run_summary
 from apps.api.schemas import (
     PipelineRunRequest,
     PipelineRunResponse,
@@ -60,11 +60,11 @@ def list_pipeline_runs(asset_id: str | None = None) -> list[dict[str, Any]]:
 
 @router.get("/pipeline/{run_id}")
 def get_pipeline_run(run_id: str) -> dict[str, Any]:
-    """The persisted GraphState of a run as JSON."""
+    """The persisted GraphState of a run as JSON (bulk per-row arrays stripped, see public_state)."""
     raw = db.load_run(run_id, engine=db.get_engine())
     if raw is None:
         raise HTTPException(status_code=404, detail=f"unknown run {run_id}")
-    return raw
+    return public_state(raw)
 
 
 @router.post("/whatif", response_model=WhatIfResult)
@@ -91,7 +91,7 @@ async def ws_run(websocket: WebSocket, run_id: str) -> None:
             if raw is None:
                 await websocket.send_json({"error": f"unknown run {run_id}"})
                 break
-            await websocket.send_json(raw)
+            await websocket.send_json(public_state(raw))
             if raw.get("stage") in WS_TERMINAL:
                 break
             await asyncio.sleep(1.0)

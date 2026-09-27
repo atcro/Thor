@@ -28,7 +28,9 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         yield c
 
 
-def _poll(client: TestClient, run_id: str, stages: set[str], timeout: float = 15.0) -> dict[str, Any]:
+def _poll(
+    client: TestClient, run_id: str, stages: set[str], timeout: float = 15.0
+) -> dict[str, Any]:
     deadline = time.time() + timeout
     last: dict[str, Any] = {}
     while time.time() < deadline:
@@ -181,10 +183,28 @@ def test_copilot_template_mode_over_http(client: TestClient) -> None:
     assert "MTR-042" in body["reply"]
     r = client.post(
         "/copilot/chat",
-        json={"messages": [{"role": "user", "content": "status of MTR-003?"}], "asset_id": "MTR-003"},
+        json={
+            "messages": [{"role": "user", "content": "status of MTR-003?"}],
+            "asset_id": "MTR-003",
+        },
     )
     assert r.json()["tool_calls"][0]["args"] == {"asset_id": "MTR-003"}
     assert client.post("/copilot/chat", json={"messages": []}).status_code == 422
+    # Regression: a second turn re-sends Bolt's own long reply as history. The 2000-char
+    # cap applies to user input only, so this must not 422.
+    r = client.post(
+        "/copilot/chat",
+        json={
+            "messages": [
+                {"role": "user", "content": "Why is MTR-042 flagged?"},
+                {"role": "assistant", "content": "Actionable conclusion " * 200},
+                {"role": "user", "content": "How can we remediate this step by step?"},
+            ]
+        },
+    )
+    assert r.status_code == 200
+    too_long = {"messages": [{"role": "user", "content": "z" * 2001}]}
+    assert client.post("/copilot/chat", json=too_long).status_code == 422
 
 
 def test_ws_run_stream(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -196,3 +216,32 @@ def test_ws_run_stream(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> N
     with client.websocket_connect(f"/ws/runs/{run_id}") as ws:
         msg = ws.receive_json()
     assert msg["run_id"] == run_id and msg["stage"] == "awaiting_approval"
+
+
+def test_public_state_strips_row_regime() -> None:
+    """GET /pipeline/{run} and the WS push must not ship one label per telemetry row."""
+    from apps.api.graph_state import public_state
+
+    raw = {
+        "run_id": "r1",
+        "stage": "training",
+        "data_quality": {
+            "quality_score": 100.0,
+            "regimes": {
+                "regimes": [{"regime_id": "R1"}],
+                "row_regime": ["R1"] * 5000,
+                "method": "kmeans",
+            },
+        },
+    }
+    slim = public_state(raw)
+    assert slim["data_quality"]["regimes"]["row_regime"] == []
+    assert slim["data_quality"]["regimes"]["row_regime_count"] == 5000
+    assert slim["data_quality"]["regimes"]["regimes"] == [{"regime_id": "R1"}]
+    assert slim["data_quality"]["quality_score"] == 100.0
+    assert len(raw["data_quality"]["regimes"]["row_regime"]) == 5000  # stored state untouched
+    assert public_state({"run_id": "r2", "stage": "queued", "data_quality": None}) == {
+        "run_id": "r2",
+        "stage": "queued",
+        "data_quality": None,
+    }
