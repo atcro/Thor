@@ -7,7 +7,7 @@
 > rather than letting this drift out of sync with the code.
 
 Full function-level architecture reference (diagram + every function, role, and connection):
-https://claude.ai/code/artifact/63de1101-3801-45bc-9a42-ab49a5a96848
+`docs/architecture.html` (open it in a browser).
 
 ## 1. What Thor is (read this before writing code)
 
@@ -109,8 +109,7 @@ surface over the Reliability toolbox's RAG layer (Chroma index of the plant manu
 embeddings) that reaches data only through read-only tools on the same control plane and can
 explain but never approve, promote, train, or invent a citation.
 
-Full prose + IN/OUT for every function: see the artifact link at the top of this file
-(source: `docs/architecture.html`).
+Full prose + IN/OUT for every function: see `docs/architecture.html`.
 
 ## 5. Repository layout
 
@@ -268,7 +267,7 @@ item runs end to end:
 
 ## 14. References
 
-- Full architecture cheat sheet (diagram + every function): https://claude.ai/code/artifact/63de1101-3801-45bc-9a42-ab49a5a96848
+- Full architecture cheat sheet (diagram + every function): `docs/architecture.html`
 - ECC plugin: https://github.com/affaan-m/ECC
 - Anthropic Claude Code best practices: https://code.claude.com/docs/en/best-practices
 - AI4I 2020 Predictive Maintenance Dataset (UCI) — credibility benchmark, not primary demo data
