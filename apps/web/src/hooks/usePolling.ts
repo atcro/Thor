@@ -55,10 +55,23 @@ export function usePolling<T>(
       };
     }
     void run();
-    const id = intervalMs > 0 ? window.setInterval(() => void run(), intervalMs) : undefined;
+    // Skip ticks while the tab is hidden (five screens polling in background tabs would
+    // otherwise keep the control plane busy for nobody); refresh as soon as it is visible again.
+    const tick = () => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      void run();
+    };
+    const onVisible = () => {
+      if (typeof document !== "undefined" && !document.hidden) void run();
+    };
+    const id = intervalMs > 0 ? window.setInterval(tick, intervalMs) : undefined;
+    if (id !== undefined) document.addEventListener("visibilitychange", onVisible);
     return () => {
       alive.current = false;
-      if (id !== undefined) window.clearInterval(id);
+      if (id !== undefined) {
+        window.clearInterval(id);
+        document.removeEventListener("visibilitychange", onVisible);
+      }
     };
   }, [run, intervalMs, key, enabled]);
 

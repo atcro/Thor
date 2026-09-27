@@ -26,6 +26,16 @@
   --red: #d9534f;
   --red-dim: rgba(217, 83, 79, 0.16);
 
+  /* Risk tiers (Okabe-Ito: bluish green, orange, vermillion) — distinguishable under
+     deuteranopia and protanopia; tiers are also encoded by motion and a text tag. */
+  --tier-low: #009e73;
+  --tier-low-dim: rgba(0, 158, 115, 0.2);
+  --tier-medium: #e69f00;
+  --tier-medium-dim: rgba(230, 159, 0, 0.22);
+  --tier-high: #d55e00;
+  --tier-high-dim: rgba(213, 94, 0, 0.26);
+  --tier-high-hot: #ff8a3d;
+
   --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Mono", Consolas, "Courier New", monospace;
 
@@ -552,12 +562,21 @@ table.tbl {
 
 /* ---------- fleet ---------- */
 
+/* The fleet grid sits on a plant floor: a faint isometric tile pattern behind the cards. */
 .fleet-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background-color: #0c1116;
+  background-image:
+    repeating-linear-gradient(30deg, rgba(132, 172, 199, 0.07) 0 1px, transparent 1px 34px),
+    repeating-linear-gradient(150deg, rgba(132, 172, 199, 0.07) 0 1px, transparent 1px 34px);
 }
 .asset-card {
+  --heat: 0;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -567,14 +586,325 @@ table.tbl {
   gap: 6px;
   color: inherit;
   position: relative;
+  overflow: hidden;
 }
 .asset-card:hover {
   border-color: var(--line-strong);
   background: var(--panel-2);
   color: inherit;
 }
-.asset-card.risk {
-  border-color: rgba(227, 121, 59, 0.5);
+/* Tier outlines: low = steady green, medium = pulsing amber, high = vermillion with heat glow. */
+.asset-card.tier-low {
+  border-color: var(--tier-low);
+}
+.asset-card.tier-medium {
+  border-color: var(--tier-medium);
+  animation: tier-pulse 1.6s ease-in-out infinite;
+}
+.asset-card.tier-high {
+  border-color: var(--tier-high);
+  box-shadow: 0 0 0 1px var(--tier-high-dim), 0 0 24px rgba(213, 94, 0, calc(var(--heat) * 0.45));
+}
+.asset-card .sprite {
+  margin: -10px -12px 2px;
+  height: 78px;
+  background: linear-gradient(#090d12, var(--panel));
+  border-bottom: 1px solid var(--line);
+  position: relative;
+}
+.asset-card .sprite svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.asset-card .tier-tag {
+  position: absolute;
+  left: 8px;
+  top: 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  padding: 1px 5px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-strong);
+  color: var(--ink-3);
+  background: rgba(15, 20, 26, 0.7);
+}
+.asset-card .tier-tag.low {
+  color: var(--tier-low);
+  border-color: var(--tier-low);
+}
+.asset-card .tier-tag.medium {
+  color: var(--tier-medium);
+  border-color: var(--tier-medium);
+}
+.asset-card .tier-tag.high {
+  color: var(--tier-high-hot);
+  border-color: var(--tier-high);
+  background: var(--tier-high-dim);
+}
+@keyframes tier-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--tier-medium-dim);
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--tier-medium-dim);
+  }
+}
+
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.seg-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.seg-btn + .seg-btn {
+  border-left: 1px solid var(--line-strong);
+}
+.seg-btn.on {
+  background: var(--panel-3);
+  color: var(--ink);
+}
+.seg-btn:focus-visible {
+  outline: 2px solid var(--steel);
+  outline-offset: -2px;
+}
+
+/* ---------- motor sprite ---------- */
+
+.motor {
+  --m-body: #3b4a58;
+  --m-top: #55697d;
+  --m-dark: #27323d;
+  --m-fin: #1d262f;
+  --m-shaft: #8a97a3;
+  --spin: 0.6s;
+  --heat: 0;
+  --shake: 0px;
+  --lamp: var(--ink-4);
+}
+.motor.tier-low {
+  --lamp: var(--tier-low);
+}
+.motor.tier-medium {
+  --lamp: var(--tier-medium);
+}
+.motor.tier-high {
+  --lamp: var(--tier-high);
+}
+.motor .floor {
+  fill: #141c24;
+  stroke: #26313d;
+  stroke-width: 1;
+}
+.motor .floor-edge {
+  fill: #0b0f14;
+}
+.motor .body {
+  fill: var(--m-body);
+}
+.motor .top {
+  fill: var(--m-top);
+}
+.motor .dark {
+  fill: var(--m-dark);
+}
+.motor .fin {
+  fill: var(--m-fin);
+}
+.motor .blade {
+  fill: #6f8294;
+}
+.motor .hub {
+  fill: #a9b6c2;
+}
+.motor .shaft {
+  fill: var(--m-shaft);
+}
+.motor .shaft-dash {
+  stroke: #5c6973;
+  stroke-width: 4;
+  stroke-dasharray: 3 3;
+  /* the offset travels 6px per cycle; 6 steps is 1px per step -- visually identical to
+     linear, but 6 SVG repaints per cycle instead of ~60/s */
+  animation: shaft-run var(--spin) steps(6) infinite;
+}
+.motor .lamp {
+  fill: var(--lamp);
+}
+.motor.tier-medium .lamp {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.motor .halo {
+  fill: var(--tier-high);
+  opacity: calc(var(--heat) * 0.5);
+  filter: blur(3px);
+}
+.motor.pixel .halo {
+  filter: none;
+  opacity: calc(var(--heat) * 0.35);
+}
+.motor .hot {
+  fill: var(--tier-high-hot);
+  opacity: calc(var(--heat) * 0.95);
+}
+.motor .puff {
+  fill: #9aa4ad;
+  opacity: 0;
+  animation: smoke-rise 2.4s ease-out infinite;
+}
+.motor .puff:nth-child(2) {
+  animation-delay: 0.8s;
+}
+.motor .puff:nth-child(3) {
+  animation-delay: 1.6s;
+}
+.motor.pixel .puff {
+  animation: smoke-rise-px 2.4s steps(6, jump-none) infinite;
+}
+.motor.pixel .puff:nth-child(2) {
+  animation-delay: 0.8s;
+}
+.motor.pixel .puff:nth-child(3) {
+  animation-delay: 1.6s;
+}
+.motor .beacon rect {
+  fill: var(--ember);
+}
+.motor .beacon {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.motor .fan {
+  transform-box: fill-box;
+  transform-origin: center;
+  /* SVG transforms are not composited: every frame of a smooth spin repaints the whole
+     sprite, x24 cards. A 16-step rotation still reads as a running fan at a fraction of
+     the paint cost. */
+  animation: motor-spin var(--spin) steps(16) infinite;
+}
+/* pixel style: two-frame flipbook instead of a rotation */
+.motor .shaft-stripe {
+  fill: #5c6973;
+}
+.motor.pixel .frame-a {
+  animation: flip-a var(--spin) steps(1, end) infinite;
+}
+.motor.pixel .frame-b {
+  opacity: 0;
+  animation: flip-b var(--spin) steps(1, end) infinite;
+}
+.motor.stopped .fan,
+.motor.stopped .shaft-dash,
+.motor.stopped .frame-a,
+.motor.stopped .frame-b {
+  animation-play-state: paused;
+}
+.motor.stopped .mech {
+  opacity: 0.55;
+}
+.motor.vibrating .mech {
+  animation: motor-shake 0.12s steps(2, jump-none) infinite;
+}
+@keyframes motor-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes shaft-run {
+  to {
+    stroke-dashoffset: -6;
+  }
+}
+@keyframes flip-a {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  50.01%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes flip-b {
+  0%,
+  50% {
+    opacity: 0;
+  }
+  50.01%,
+  100% {
+    opacity: 1;
+  }
+}
+@keyframes smoke-rise {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.6);
+  }
+  15% {
+    opacity: 0.55;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(4px, -22px) scale(1.6);
+  }
+}
+@keyframes smoke-rise-px {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0);
+  }
+  15% {
+    opacity: 0.7;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(1px, -4px);
+  }
+}
+@keyframes motor-shake {
+  0% {
+    transform: translate(calc(var(--shake) * -1), 0);
+  }
+  50% {
+    transform: translate(var(--shake), calc(var(--shake) * 0.5));
+  }
+  100% {
+    transform: translate(calc(var(--shake) * -1), 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .motor .fan,
+  .motor .shaft-dash,
+  .motor .frame-a,
+  .motor .frame-b,
+  .motor .lamp,
+  .motor .beacon,
+  .motor .puff,
+  .motor.vibrating .mech,
+  .asset-card.tier-medium {
+    animation: none;
+  }
+  .motor .frame-b {
+    opacity: 0;
+  }
+  .motor .puff {
+    opacity: 0.4;
+  }
+}
+.asset-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 250px;
 }
 .asset-card .id {
   font-family: var(--font-mono);
@@ -661,15 +991,16 @@ table.tbl {
 .stepper {
   display: flex;
   align-items: center;
-  gap: 0;
-  overflow-x: auto;
+  flex-wrap: wrap;
+  gap: 6px 0;
 }
 .step {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1;
-  min-width: 0;
+  /* never shrink below the label: six steps wrap onto a second row in a narrow panel
+     instead of the last labels overlapping */
+  flex: 1 0 auto;
 }
 .step .node {
   width: 22px;
@@ -691,6 +1022,7 @@ table.tbl {
 }
 .step .bar {
   flex: 1;
+  min-width: 10px;
   height: 1px;
   background: var(--line-strong);
   margin: 0 8px;
@@ -888,10 +1220,11 @@ table.tbl {
   background: #fff7e6;
 }
 .bolt-avatar {
+  display: inline-block;
   width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  object-fit: cover;
+  font-size: 13px;
+  line-height: 1;
+  text-align: center;
   vertical-align: middle;
   flex: none;
 }

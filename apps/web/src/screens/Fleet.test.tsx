@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FleetAsset, SystemHealth } from "../api/types";
@@ -85,5 +85,47 @@ describe("Fleet screen", () => {
     expect(ids.indexOf("MTR-042")).toBeLessThan(ids.indexOf("MTR-001"));
     // system panel rendered from GET /system/health
     expect(await screen.findByText("103,680")).toBeInTheDocument();
+  });
+
+  it("draws one motor sprite per asset, tiered by failure probability", async () => {
+    render(
+      <MemoryRouter>
+        <Fleet />
+      </MemoryRouter>,
+    );
+    const hot = await screen.findByRole("img", { name: /^MTR-042: high risk, nominal, p\(fail\) 62.0%, contract open$/ });
+    expect(hot).toHaveAttribute("data-tier", "high");
+    expect(hot).toHaveClass("iso", "tier-high", "vibrating");
+    expect(hot.querySelector(".smoke")).not.toBeNull();
+    expect(hot.querySelector(".beacon")).not.toBeNull();
+
+    const calm = screen.getByRole("img", { name: /^MTR-001: low risk, nominal, p\(fail\) 2.0%$/ });
+    expect(calm).toHaveAttribute("data-tier", "low");
+    expect(calm).not.toHaveClass("vibrating");
+    expect(calm.querySelector(".smoke")).toBeNull();
+    expect(calm.querySelector(".beacon")).toBeNull();
+
+    // tier is also written as text so colour is never the only cue
+    expect(screen.getByText("high risk")).toBeInTheDocument();
+    expect(screen.getByText("low risk")).toBeInTheDocument();
+  });
+
+  it("switches every sprite to pixel style from the toggle and remembers it", async () => {
+    render(
+      <MemoryRouter>
+        <Fleet />
+      </MemoryRouter>,
+    );
+    await screen.findByText("MTR-042");
+    const pixel = screen.getByRole("button", { name: "Pixel" });
+    expect(pixel).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(pixel);
+    expect(pixel).toHaveAttribute("aria-pressed", "true");
+    for (const img of screen.getAllByRole("img")) {
+      expect(img).toHaveClass("pixel");
+      expect(img).not.toHaveClass("iso");
+    }
+    expect(localStorage.getItem("thor.fleet.spriteStyle")).toBe("pixel");
+    localStorage.removeItem("thor.fleet.spriteStyle");
   });
 });

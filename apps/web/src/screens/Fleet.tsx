@@ -1,10 +1,11 @@
-import { useMemo } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import { getFleet, getSystemHealth } from "../api/client";
 import type { FleetAsset } from "../api/types";
+import { MotorSprite, spriteParams, TIER_WORD, type SpriteStyle } from "../components/MotorSprite";
 import { Dot, HealthPill, Loaded, ModelStageChip, Panel, Pill, RegimeBadge } from "../components/ui";
 import { usePolling } from "../hooks/usePolling";
-import { fmtDateTime, fmtInt, fmtPct, fmtRel, probTone } from "../lib/format";
+import { fmtDateTime, fmtInt, fmtPct, fmtRel, fmtShort, probTone } from "../lib/format";
 
 /** Sort by failure risk desc; assets without a prediction sort by health asc afterwards. */
 function sortByRisk(list: FleetAsset[]): FleetAsset[] {
@@ -16,12 +17,62 @@ function sortByRisk(list: FleetAsset[]): FleetAsset[] {
   });
 }
 
-function AssetCard({ item }: { item: FleetAsset }) {
+/** Sprite style preference; a per-viewer convenience, so browser storage is fine here. */
+const STYLE_KEY = "thor.fleet.spriteStyle";
+
+function readStyle(): SpriteStyle {
+  try {
+    return localStorage.getItem(STYLE_KEY) === "pixel" ? "pixel" : "iso";
+  } catch {
+    return "iso";
+  }
+}
+
+function saveStyle(style: SpriteStyle): void {
+  try {
+    localStorage.setItem(STYLE_KEY, style);
+  } catch {
+    /* private mode or blocked storage: the toggle still works for this page view */
+  }
+}
+
+function StyleToggle({ value, onChange }: { value: SpriteStyle; onChange: (s: SpriteStyle) => void }) {
+  return (
+    <div className="seg" role="group" aria-label="Sprite style">
+      {(
+        [
+          ["iso", "Isometric"],
+          ["pixel", "Pixel"],
+        ] as [SpriteStyle, string][]
+      ).map(([key, label]) => (
+        <button
+          key={key}
+          type="button"
+          className={`seg-btn${value === key ? " on" : ""}`}
+          aria-pressed={value === key}
+          onClick={() => onChange(key)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function AssetCard({ item, style }: { item: FleetAsset; style: SpriteStyle }) {
   const { asset } = item;
   const p = item.failure_probability;
-  const atRisk = (p ?? 0) >= 0.4 || item.health_score < 60;
+  const { atRisk, heat, tier } = spriteParams(item);
   return (
-    <Link to={`/assets/${encodeURIComponent(asset.asset_id)}`} className={`asset-card${atRisk ? " risk" : ""}`}>
+    <Link
+      to={`/assets/${encodeURIComponent(asset.asset_id)}`}
+      className={`asset-card tier-${tier}${atRisk ? " risk" : ""}`}
+      style={{ "--heat": heat } as CSSProperties}
+    >
+      <div className="sprite">
+        <MotorSprite item={item} style={style} />
+        <span className={`tier-tag ${tier}`}>{TIER_WORD[tier]}</span>
+      </div>
       {item.open_contract_id && <span className="flag" title={`Open decision contract ${item.open_contract_id}`} />}
       <div className="row" style={{ justifyContent: "space-between" }}>
         <span className="id">{asset.asset_id}</span>
@@ -42,7 +93,7 @@ function AssetCard({ item }: { item: FleetAsset }) {
         {item.stage && <ModelStageChip stage={item.stage} />}
       </div>
       <div className="foot">
-        <span title={fmtDateTime(item.last_ts)}>seen {fmtRel(item.last_ts)}</span>
+        <span title={fmtDateTime(item.last_ts)}>last sample {fmtShort(item.last_ts)}</span>
         {item.open_contract_id && <span style={{ color: "var(--ember)" }}>contract open</span>}
       </div>
     </Link>
@@ -97,9 +148,9 @@ function SystemPanel() {
                 <span className="mono">{fmtInt(h.n_telemetry_rows)}</span>
               </div>
               <div className="row">
-                <span className="muted">last ingest</span>
+                <span className="muted">plant time</span>
                 <span className="mono" title={fmtDateTime(h.last_ingest_ts)}>
-                  {fmtRel(h.last_ingest_ts)}
+                  {fmtShort(h.last_ingest_ts)}
                 </span>
               </div>
             </div>
@@ -112,6 +163,11 @@ function SystemPanel() {
 
 export function Fleet() {
   const fleet = usePolling(getFleet, 5000, "fleet");
+  const [style, setStyle] = useState<SpriteStyle>(readStyle);
+  const changeStyle = (s: SpriteStyle) => {
+    setStyle(s);
+    saveStyle(s);
+  };
   const sorted = useMemo(() => (fleet.data ? sortByRisk(fleet.data) : []), [fleet.data]);
   const nRisk = sorted.filter((a) => (a.failure_probability ?? 0) >= 0.4 || a.health_score < 60).length;
   const nOpen = sorted.filter((a) => a.open_contract_id).length;
@@ -127,7 +183,10 @@ export function Fleet() {
               : "Loading fleet…"}
           </div>
         </div>
-        <span className="small muted mono">poll 5s{fleet.lastUpdated ? ` · ${fmtRel(new Date(fleet.lastUpdated).toISOString())}` : ""}</span>
+        <div className="row" style={{ gap: 12 }}>
+          <StyleToggle value={style} onChange={changeStyle} />
+          <span className="small muted mono">poll 5s{fleet.lastUpdated ? ` · ${fmtRel(new Date(fleet.lastUpdated).toISOString())}` : ""}</span>
+        </div>
       </div>
       <div className="grid" style={{ gridTemplateColumns: "1fr 240px", alignItems: "start" }}>
         <div>
@@ -141,7 +200,7 @@ export function Fleet() {
             {() => (
               <div className="fleet-grid">
                 {sorted.map((item) => (
-                  <AssetCard key={item.asset.asset_id} item={item} />
+                  <AssetCard key={item.asset.asset_id} item={item} style={style} />
                 ))}
               </div>
             )}

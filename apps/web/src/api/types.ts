@@ -58,7 +58,9 @@ export interface Regime {
 
 export interface RegimeReport {
   regimes: Regime[];
-  row_regime: string[];
+  /** Per-row labels are stripped by the API (see public_state); only the count is sent. */
+  row_regime?: string[];
+  row_regime_count?: number;
   method: string;
   silhouette?: number | null;
 }

@@ -7,7 +7,7 @@ import { CHART, TimeSeriesChart, type TimePoint } from "../components/charts";
 import { DecisionContractPanel } from "../components/DecisionContractPanel";
 import { EmptyState, ErrorState, HealthPill, Loaded, LoadingState, Panel, Pill, RegimeBadge, StageChip, Stat } from "../components/ui";
 import { usePolling } from "../hooks/usePolling";
-import { fmtNum, fmtPct, fmtRel, fmtTime, probTone, STAGE_LABEL } from "../lib/format";
+import { STAGE_LABEL, fmtNum, fmtPct, fmtRel, fmtShort, fmtTime, probTone } from "../lib/format";
 
 const STEPS: { stage: PipelineStage; label: string }[] = [
   { stage: "profiling", label: "Profiling" },
@@ -327,7 +327,7 @@ export function Asset360() {
             {detail.data ? (
               <>
                 {detail.data.asset.name} · {detail.data.asset.site} / {detail.data.asset.line} · {detail.data.asset.rated_kw} kW ·{" "}
-                {detail.data.asset.criticality} criticality · last sample {fmtRel(latest?.ts)}
+                {detail.data.asset.criticality} criticality · last sample {fmtShort(latest?.ts)}
               </>
             ) : detail.error ? (
               <span style={{ color: "var(--ember-2)" }}>{detail.error}</span>

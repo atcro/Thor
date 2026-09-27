@@ -12,9 +12,9 @@ interface ChatEntry extends CopilotMessage {
 }
 
 const SUGGESTIONS = [
+  "Why is MTR-042 at risk?",
+  "How long do similar bearing repairs usually take?",
   "Which assets are at highest risk right now?",
-  "Why is MTR-042 flagged?",
-  "What would the failure probability be at 40% load?",
   "Summarise the open decision contract.",
 ];
 
@@ -135,7 +135,7 @@ export function Copilot() {
                     <span>you</span>
                   ) : (
                     <span className="row" style={{ gap: 4 }}>
-                      <img src="/bolt-logo.png" alt="" className="bolt-avatar" width={16} height={16} />
+                      <span className="bolt-avatar" aria-hidden="true">⚡</span>
                       bolt
                     </span>
                   )}
@@ -146,7 +146,7 @@ export function Copilot() {
             {busy && (
               <div className="msg assistant">
                 <div className="bubble muted">
-                  <img src="/bolt-logo.png" alt="" className="bolt-avatar" width={16} height={16} style={{ marginRight: 6 }} />
+                  <span className="bolt-avatar" aria-hidden="true" style={{ marginRight: 6 }}>⚡</span>
                   <span className="dot pulse" style={{ background: "var(--steel)", marginRight: 6 }} />
                   thinking…
                 </div>

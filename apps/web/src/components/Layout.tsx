@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { API_BASE_URL, getSystemHealth } from "../api/client";
 import { usePolling } from "../hooks/usePolling";
-import { fmtRel } from "../lib/format";
+import { fmtDateTime } from "../lib/format";
 import { Dot } from "./ui";
 
 const NAV: { to: string; label: string; key: string; end?: boolean }[] = [
@@ -48,14 +48,7 @@ export function Layout() {
           >
             <span className="lbl">
               {n.to === "/copilot" && (
-                <img
-                  src="/bolt-logo.png"
-                  alt=""
-                  className="bolt-avatar"
-                  width={16}
-                  height={16}
-                  style={{ marginRight: 6 }}
-                />
+                <span className="bolt-avatar" aria-hidden="true" style={{ marginRight: 6 }}>⚡</span>
               )}
               {n.label}
             </span>
@@ -80,8 +73,8 @@ export function Layout() {
         <div className="conn">
           {health.data && (
             <span title="Telemetry rows in the control-plane store">
-              {health.data.n_telemetry_rows.toLocaleString("en-US")} rows · ingest{" "}
-              {fmtRel(health.data.last_ingest_ts)}
+              {health.data.n_telemetry_rows.toLocaleString("en-US")} rows · plant time{" "}
+              {fmtDateTime(health.data.last_ingest_ts)}
             </span>
           )}
           <span className="api" title={API_BASE_URL}>
