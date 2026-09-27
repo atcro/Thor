@@ -11,6 +11,7 @@ for them -- see CLAUDE.md section 7.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -31,6 +32,7 @@ from sqlalchemy import (
     Table,
     Text,
     create_engine,
+    func,
     insert,
     select,
     text,
@@ -45,6 +47,8 @@ from apps.api.schemas import (
     TelemetryRow,
 )
 from apps.api.settings import get_settings
+
+log = logging.getLogger("thor.db")
 
 metadata = MetaData()
 
@@ -82,6 +86,12 @@ predictions = Table(
     Column("failure_probability", Float, nullable=False),
     Column("source", String(16), nullable=False, default="edge"),
 )
+# One row per (asset, ts, model, source). The replay loops forever and the edge re-scores every
+# row on each pass, so inserts are ON CONFLICT DO NOTHING against this key -- otherwise the table
+# grows without bound (7M+ rows after a day of demo loops). It also backs the fleet view's
+# "latest prediction per asset" probe.
+PREDICTIONS_KEY = ("asset_id", "ts", "model_version", "source")
+Index("ux_predictions_key", *[predictions.c[c] for c in PREDICTIONS_KEY], unique=True)
 
 pipeline_runs = Table(
     "pipeline_runs",
@@ -219,11 +229,44 @@ def init_db(engine: Engine | None = None) -> Engine:
     """Create every table (idempotent). On Postgres, enable Timescale + hypertable."""
     engine = engine or get_engine()
     metadata.create_all(engine)
+    _ensure_predictions_key(engine)
     if is_postgres(engine):
         with engine.begin() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS timescaledb"))
             conn.execute(text(HYPERTABLE_SQL))
     return engine
+
+
+_PREDICTIONS_KEY_SQL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_predictions_key "
+    "ON predictions (asset_id, ts, model_version, source)"
+)
+_PREDICTIONS_DEDUPE_SQL = (
+    "DELETE FROM predictions WHERE id NOT IN "
+    "(SELECT MAX(id) FROM predictions GROUP BY asset_id, ts, model_version, source)"
+)
+
+
+def _ensure_predictions_key(engine: Engine) -> None:
+    """Create ux_predictions_key on databases that predate it, deduplicating first if needed.
+
+    create_all skips tables that already exist, so a volume populated by an older build has
+    no key and (because the replay loops) millions of duplicate prediction rows. Keeping the
+    newest row per key is lossless -- duplicates are identical edge outputs for the same
+    telemetry row -- and takes seconds once, after which inserts simply ignore repeats.
+    """
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(_PREDICTIONS_KEY_SQL))
+        return
+    except Exception as exc:  # noqa: BLE001 - duplicates present: dedupe, then retry
+        log.warning("predictions key not yet enforceable (%s); deduplicating", exc)
+    with engine.begin() as conn:
+        before = int(conn.execute(select(func.count()).select_from(predictions)).scalar() or 0)
+        conn.execute(text(_PREDICTIONS_DEDUPE_SQL))
+        after = int(conn.execute(select(func.count()).select_from(predictions)).scalar() or 0)
+        conn.execute(text(_PREDICTIONS_KEY_SQL))
+    log.info("deduplicated predictions: %d -> %d rows; ux_predictions_key created", before, after)
 
 
 def now_utc() -> datetime:
@@ -313,15 +356,53 @@ def read_telemetry(
     return df.sort_values(["asset_id", "ts"]).reset_index(drop=True)
 
 
+def _latest_rows_query(table: Table) -> Any:
+    """SELECT the newest row of `table` for every registered asset.
+
+    Drives from `assets` with a correlated max(ts) per asset, which Postgres and SQLite both
+    answer with one backward index probe on (asset_id, ts) -- independent of table size, so
+    the fleet poll costs the same at 100k rows and at 10M.
+    """
+    a = assets.alias("a")
+    t = table.alias("t")
+    newest_ts = select(func.max(t.c.ts)).where(t.c.asset_id == a.c.asset_id).scalar_subquery()
+    newest = select(a.c.asset_id, newest_ts.label("ts")).subquery("newest")
+    return select(table).join(
+        newest, (table.c.asset_id == newest.c.asset_id) & (table.c.ts == newest.c.ts)
+    )
+
+
 def latest_telemetry(engine: Engine | None = None) -> pd.DataFrame:
-    """One most-recent row per asset."""
+    """One most-recent telemetry row per registered asset (see `_latest_rows_query`)."""
     engine = engine or get_engine()
+    q = _latest_rows_query(telemetry)
     with engine.connect() as conn:
-        df = pd.read_sql(select(telemetry), conn)
+        df = pd.read_sql(q, conn)
     if df.empty:
         return df
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
-    return df.sort_values("ts").groupby("asset_id").tail(1).reset_index(drop=True)
+    return df.sort_values("ts").reset_index(drop=True)
+
+
+def insert_predictions(rows: Iterable[dict[str, Any]], engine: Engine | None = None) -> int:
+    """Bulk insert prediction rows in one transaction.
+
+    Input: dicts with asset_id, ts, model_version, failure_probability and optional source.
+    Output: number of rows inserted. The edge posts these in batches of a few hundred.
+    """
+    engine = engine or get_engine()
+    payload = [{"source": "edge", **r} for r in rows]
+    if not payload:
+        return 0
+    if is_postgres(engine):
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        stmt = pg_insert(predictions).on_conflict_do_nothing(index_elements=list(PREDICTIONS_KEY))
+    else:
+        stmt = insert(predictions).prefix_with("OR IGNORE")
+    with engine.begin() as conn:
+        conn.execute(stmt, payload)
+    return len(payload)
 
 
 def insert_prediction(
@@ -332,28 +413,34 @@ def insert_prediction(
     source: str = "edge",
     engine: Engine | None = None,
 ) -> None:
-    engine = engine or get_engine()
-    with engine.begin() as conn:
-        conn.execute(
-            insert(predictions).values(
-                asset_id=asset_id,
-                ts=ts,
-                model_version=model_version,
-                failure_probability=failure_probability,
-                source=source,
-            )
-        )
+    insert_predictions(
+        [
+            {
+                "asset_id": asset_id,
+                "ts": ts,
+                "model_version": model_version,
+                "failure_probability": failure_probability,
+                "source": source,
+            }
+        ],
+        engine=engine,
+    )
 
 
 def latest_predictions(engine: Engine | None = None) -> dict[str, float]:
-    """asset_id -> most recent failure_probability."""
+    """asset_id -> most recent failure_probability (ties on ts broken by the newest row id).
+
+    One index probe per registered asset (see `_latest_rows_query`); the predictions table
+    grows by one row per telemetry message, so it must never be read whole.
+    """
     engine = engine or get_engine()
+    q = _latest_rows_query(predictions).order_by(predictions.c.asset_id, predictions.c.id)
     with engine.connect() as conn:
-        df = pd.read_sql(select(predictions), conn)
-    if df.empty:
-        return {}
-    df = df.sort_values("ts").groupby("asset_id").tail(1)
-    return dict(zip(df["asset_id"], df["failure_probability"], strict=True))
+        rows = conn.execute(q).mappings().all()
+    out: dict[str, float] = {}
+    for r in rows:  # ordered by id, so the last write per asset wins
+        out[r["asset_id"]] = float(r["failure_probability"])
+    return out
 
 
 # --------------------------------------------------------------------------------------
@@ -482,6 +569,39 @@ def approvals_for(
     with engine.connect() as conn:
         rows = conn.execute(q).mappings().all()
     return [Approval(**dict(r)) for r in rows]
+
+
+def decided_contract_ids(engine: Engine | None = None) -> set[str]:
+    """Every contract_id that has at least one approvals row (i.e. is no longer pending)."""
+    engine = engine or get_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(approvals.c.contract_id).where(approvals.c.contract_id.is_not(None)).distinct()
+        ).all()
+    return {r[0] for r in rows}
+
+
+def list_pending_decision_contracts(engine: Engine | None = None) -> list[DecisionContract]:
+    """Contracts with no recorded decision yet, newest first -- two queries, not one per row."""
+    engine = engine or get_engine()
+    decided = decided_contract_ids(engine)
+    return [c for c in list_decision_contracts(engine=engine) if c.contract_id not in decided]
+
+
+def open_contract_by_asset(engine: Engine | None = None) -> dict[str, str]:
+    """asset_id -> newest pending contract_id, reading only ids (no JSON payloads)."""
+    engine = engine or get_engine()
+    decided = decided_contract_ids(engine)
+    q = select(decision_contracts.c.asset_id, decision_contracts.c.contract_id).order_by(
+        decision_contracts.c.created_at.desc()
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(q).all()
+    out: dict[str, str] = {}
+    for asset_id, contract_id in rows:
+        if asset_id not in out and contract_id not in decided:
+            out[asset_id] = contract_id
+    return out
 
 
 def contract_status(contract_id: str, engine: Engine | None = None) -> str:

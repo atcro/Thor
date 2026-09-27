@@ -60,18 +60,24 @@ services:
       MANUALS_DIR: /app/data/manuals
       MODELS_DIR: /models
       EDGE_URL: http://edge:8001
-      LLM_PROVIDER: ${LLM_PROVIDER:-auto}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5}
       SEED_ON_START: "1"
       SEED_FRACTION: ${SEED_FRACTION:-0.80}
+    # LLM provider + keys (LLM_PROVIDER, OPENAI_API_KEY/OPENAI_MODEL, ANTHROPIC_API_KEY/
+    # ANTHROPIC_MODEL) come from the repo-root .env. They are deliberately NOT listed under
+    # `environment`: `${VAR}` interpolation only reads a .env next to this file (infra/), so
+    # that form silently passed empty keys and the api ran in template mode. Only the api
+    # service gets the file -- it holds the one module allowed to read the keys (CLAUDE.md 7).
+    env_file:
+      - path: ../.env
+        required: false
     ports:
       - "8000:8000"
     volumes:
       - models:/models
       - chroma-data:/data/chroma
+      # chromadb's default embedding model (~80 MB ONNX) is downloaded into ~/.cache; persist
+      # it so a restart does not re-download and re-initialise it.
+      - model-cache:/root/.cache
     depends_on:
       timescale:
         condition: service_healthy
@@ -128,3 +134,4 @@ volumes:
   mlflow-data:
   models:
   chroma-data:
+  model-cache:

@@ -20,7 +20,7 @@ from sqlalchemy.pool import StaticPool
 
 from apps.api import db
 from apps.api.routes import telemetry as tel
-from apps.api.schemas import TelemetryRow
+from apps.api.schemas import Asset, TelemetryRow
 from data.simulator.generate import df_to_rows, generate_fleet
 
 
@@ -30,6 +30,15 @@ def engine() -> Engine:
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool, future=True
     )
     db.init_db(eng)
+    # latest_predictions()/latest_telemetry() are driven from the assets table (one index
+    # probe per registered asset), so the fixture registers the two assets the tests use.
+    db.upsert_assets(
+        [
+            Asset(asset_id="MTR-042", name="Motor 42", site="Plant A", line="Line 1"),
+            Asset(asset_id="MTR-001", name="Motor 1", site="Plant A", line="Line 1"),
+        ],
+        engine=eng,
+    )
     return eng
 
 
@@ -131,6 +140,40 @@ def test_predictions_roundtrip(client: TestClient) -> None:
     assert db.latest_predictions(engine=client.app.dependency_overrides[tel.get_db_engine]())[
         "MTR-042"
     ] == pytest.approx(0.6)
+
+
+def test_predictions_batch_post_and_latest_per_asset(client: TestClient) -> None:
+    """The edge posts JSON arrays; latest_predictions picks the newest ts (then newest id)."""
+    base = datetime(2025, 8, 21, 8, 0, tzinfo=UTC)
+    batch = [
+        {
+            "asset_id": asset,
+            "ts": (base + timedelta(minutes=10 * i)).isoformat(),
+            "model_version": "v2",
+            "failure_probability": p,
+            "source": "edge",
+        }
+        for asset, i, p in [("MTR-042", 0, 0.30), ("MTR-042", 1, 0.35), ("MTR-001", 0, 0.05)]
+    ]
+    r = client.post("/predictions", json=batch)
+    assert r.status_code == 200 and r.json() == {"ok": True, "inserted": 3}
+    # The replay loops, so the edge re-posts identical (asset, ts, model, source) keys every
+    # pass: those are ignored rather than stored again.
+    r = client.post("/predictions", json=[{**batch[1], "failure_probability": 0.99}])
+    assert r.status_code == 200
+    assert client.post("/predictions", json=[]).json() == {"ok": True, "inserted": 0}
+    engine = client.app.dependency_overrides[tel.get_db_engine]()
+    latest = db.latest_predictions(engine=engine)
+    assert latest["MTR-042"] == pytest.approx(0.35)
+    assert latest["MTR-001"] == pytest.approx(0.05)
+    assert len(client.get("/assets/MTR-042/predictions").json()) == 2
+    # A newer model version at the same ts is a distinct row, and the later write wins.
+    r = client.post(
+        "/predictions", json=[{**batch[1], "model_version": "v3", "failure_probability": 0.50}]
+    )
+    assert r.status_code == 200
+    assert db.latest_predictions(engine=engine)["MTR-042"] == pytest.approx(0.50)
+    assert len(client.get("/assets/MTR-042/predictions").json()) == 3
 
 
 def test_mqtt_subscriber_batches_payloads(engine: Engine, demo_rows: list[TelemetryRow]) -> None:

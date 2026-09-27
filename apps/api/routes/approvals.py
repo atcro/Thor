@@ -45,11 +45,7 @@ def _new_approval(
 def pending_approvals() -> dict[str, Any]:
     """Decision contracts and promotion requests still waiting for a human decision."""
     engine = db.get_engine()
-    contracts = [
-        c
-        for c in db.list_decision_contracts(engine=engine)
-        if db.contract_status(c.contract_id, engine=engine) == "pending"
-    ]
+    contracts = db.list_pending_decision_contracts(engine=engine)
     promotions = [p for p in list_promotions_db(engine) if p.status == "pending"]
     return {"contracts": contracts, "promotions": promotions}
 

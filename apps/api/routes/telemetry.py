@@ -5,7 +5,7 @@ Routes (mounted by apps/api/main.py):
     POST /ingest                               list[TelemetryRow] | TelemetryRow -> {"inserted": n}
     GET  /assets/{asset_id}/telemetry          ?hours=24&limit=2000 -> list[TelemetryRow]
     GET  /assets/{asset_id}/predictions        ?limit=500 -> list[{ts, failure_probability, model_version, source}]
-    POST /predictions                          {asset_id, ts, model_version, failure_probability, source} -> {"ok": true}
+    POST /predictions                          PredictionIn | list[PredictionIn] -> {"ok": true[, "inserted": n]}
 
 `start_mqtt_subscriber(engine)` runs a background paho client that subscribes to `telemetry/#`
 and inserts rows in batches of 50 or every 2 s. It never raises when the broker is down --
@@ -163,16 +163,32 @@ def get_asset_predictions(
 
 
 @router.post("/predictions")
-def post_prediction(pred: PredictionIn, engine: Engine = Depends(get_db_engine)) -> dict[str, bool]:
-    """Store one prediction row (edge inference sink). Output: {"ok": true}."""
-    db.insert_prediction(
-        asset_id=pred.asset_id,
-        ts=_as_utc(pred.ts),
-        model_version=pred.model_version,
-        failure_probability=float(pred.failure_probability),
-        source=pred.source,
+def post_prediction(
+    payload: list[PredictionIn] | PredictionIn = Body(...),
+    engine: Engine = Depends(get_db_engine),
+) -> dict[str, Any]:
+    """Store one prediction row or a batch (edge inference sink).
+
+    Input: PredictionIn or list[PredictionIn]. Output: {"ok": true} for a single row,
+    {"ok": true, "inserted": n} for a batch. The edge drains its queue into batches so the
+    control plane sees a couple of requests per second instead of one per telemetry message.
+    """
+    preds = payload if isinstance(payload, list) else [payload]
+    n = db.insert_predictions(
+        [
+            {
+                "asset_id": p.asset_id,
+                "ts": _as_utc(p.ts),
+                "model_version": p.model_version,
+                "failure_probability": float(p.failure_probability),
+                "source": p.source,
+            }
+            for p in preds
+        ],
         engine=engine,
     )
+    if isinstance(payload, list):
+        return {"ok": True, "inserted": n}
     return {"ok": True}
 
 

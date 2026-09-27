@@ -7,7 +7,8 @@ httpx / pydantic. Never imports from `apps/` or `agents/`.
 * Subscribes to `telemetry/#`, keeps a per-asset rolling buffer of raw rows, computes the
   canonical feature set with `edge.features`, runs onnxruntime and publishes
   `predictions/{asset_id}` = {asset_id, ts, failure_probability, model_version}; the same
-  payload is POSTed best-effort to `{CONTROL_PLANE_URL}/predictions`.
+  payloads are POSTed best-effort to `{CONTROL_PLANE_URL}/predictions` in batches (a JSON
+  array of up to EDGE_POST_BATCH_ROWS rows, at most every EDGE_POST_INTERVAL_S seconds).
 * GET  /health   -> {status, model_version, n_assets_seen, uptime_s, ...}
 * GET|POST /predict  body {"features": {name: value}} -> {"failure_probability": p}
 * POST /ingest  body row | [rows] -> predictions produced (dev/test path without a broker)
@@ -62,6 +63,8 @@ class EdgeConfig(BaseModel):
     model_poll_s: float = 10.0
     buffer_rows: int = 64
     retry_delay_s: float = 5.0
+    post_batch_rows: int = 500
+    post_interval_s: float = 0.5
 
     @classmethod
     def from_env(cls) -> EdgeConfig:
@@ -75,6 +78,8 @@ class EdgeConfig(BaseModel):
             model_poll_s=float(os.getenv("EDGE_MODEL_POLL_S", "10")),
             buffer_rows=int(os.getenv("EDGE_BUFFER_ROWS", "64")),
             retry_delay_s=float(os.getenv("EDGE_MQTT_RETRY_S", "5")),
+            post_batch_rows=int(os.getenv("EDGE_POST_BATCH_ROWS", "500")),
+            post_interval_s=float(os.getenv("EDGE_POST_INTERVAL_S", "0.5")),
         )
 
 
@@ -226,21 +231,48 @@ class EdgeState:
                 self._client = None
             self._stop.wait(self.cfg.retry_delay_s)
 
+    def _drain_batch(self, first_wait: float = 0.5) -> list[dict[str, Any]]:
+        """Block up to `first_wait` for one prediction, then take whatever else is queued."""
+        try:
+            batch = [self._post_queue.get(timeout=first_wait)]
+        except queue.Empty:
+            return []
+        while len(batch) < self.cfg.post_batch_rows:
+            try:
+                batch.append(self._post_queue.get_nowait())
+            except queue.Empty:
+                break
+        return batch
+
     def _poster_loop(self) -> None:
+        """POST queued predictions to the control plane as JSON arrays.
+
+        One request per batch (up to `post_batch_rows`, at most every `post_interval_s`)
+        keeps the control plane at a few requests per second at any replay speed instead of
+        one request per telemetry message.
+        """
         url = self.cfg.control_plane_url.rstrip("/") + "/predictions"
-        with httpx.Client(timeout=2.0) as http:
+        with httpx.Client(timeout=5.0) as http:
             while not self._stop.is_set():
-                try:
-                    pred = self._post_queue.get(timeout=0.5)
-                except queue.Empty:
+                batch = self._drain_batch()
+                if not batch:
                     continue
+                if self.cfg.post_interval_s > 0:
+                    self._stop.wait(self.cfg.post_interval_s)
+                    batch.extend(self._drain_batch(first_wait=0.0))
                 try:
-                    http.post(url, json={k: v for k, v in pred.items()})
+                    http.post(url, json=batch).raise_for_status()
                     self._post_failures = 0
                 except (httpx.HTTPError, OSError) as exc:
                     self._post_failures += 1
                     if self._post_failures in (1, 10, 100) or self._post_failures % 1000 == 0:
-                        log.warning("POST %s failed (%d so far): %s", url, self._post_failures, exc)
+                        log.warning(
+                            "POST %s (%d rows) failed (%d so far): %s",
+                            url,
+                            len(batch),
+                            self._post_failures,
+                            exc,
+                        )
 
     def _model_watch_loop(self) -> None:
         while not self._stop.wait(self.cfg.model_poll_s):

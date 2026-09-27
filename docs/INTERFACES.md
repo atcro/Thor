@@ -81,7 +81,8 @@ router = APIRouter()
 POST /ingest            body: list[TelemetryRow] | TelemetryRow   -> {"inserted": int}
 GET  /assets/{asset_id}/telemetry?hours=24&limit=2000              -> list[TelemetryRow]
 GET  /assets/{asset_id}/predictions?limit=500                      -> list[{ts, failure_probability, model_version, source}]
-POST /predictions       body: {asset_id, ts, model_version, failure_probability, source}  -> {"ok": true}
+POST /predictions       body: {asset_id, ts, model_version, failure_probability, source} | [..]  -> {"ok": true[, "inserted": n]}
+                        duplicates on (asset_id, ts, model_version, source) are ignored
 def start_mqtt_subscriber(engine) -> None    # background paho client; subscribes telemetry/#,
                                              # inserts rows in batches of 50 or every 2s; never
                                              # raises if broker down (log + retry every 5s)
@@ -98,7 +99,8 @@ container only installs fastapi/uvicorn/onnxruntime/paho/numpy/httpx/pydantic.
   dependency-free copy (numpy only) — keep the two in sync via a shared test in `tests/`.
 - Runs onnxruntime, publishes `predictions/{asset_id}` with
   `{asset_id, ts, failure_probability, model_version}` and POSTs the same to
-  `{CONTROL_PLANE_URL}/predictions` (best effort).
+  `{CONTROL_PLANE_URL}/predictions` (best effort, batched: JSON arrays of up to
+  EDGE_POST_BATCH_ROWS=500 rows at most every EDGE_POST_INTERVAL_S=0.5 s).
 - `GET /health` -> `{status, model_version, n_assets_seen, uptime_s}`; `GET /predict` body
   `{features: {name: value}}` -> `{failure_probability}`.
 - Without a model present: healthy, logs "no model", no predictions.

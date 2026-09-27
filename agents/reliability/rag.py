@@ -264,15 +264,24 @@ def _open_collection(client: Any, name: str) -> Any | None:
 # --------------------------------------------------------------------------------------
 
 
-def build_index(manuals_dir: Path, chroma_path: Path, collection: str = "manuals") -> int:
+def build_index(
+    manuals_dir: Path, chroma_path: Path, collection: str = "manuals", force: bool = False
+) -> int:
     """(Re)build the manual index.
 
     Inputs: directory of *.md / *.txt / *.pdf manuals, Chroma persistence path, collection
-    name. The collection is dropped and rebuilt so the index always mirrors the directory.
+    name, force. Unless `force`, a persisted collection whose chunk count already matches the
+    directory is reused (restart-friendly: no re-embedding on every container start);
+    otherwise the collection is dropped and rebuilt so the index mirrors the directory.
     Output: number of chunks indexed (0 if the directory has no readable manuals).
     """
     chunks = load_manual_chunks(Path(manuals_dir))
     client = _client(Path(chroma_path))
+    if not force and chunks:
+        existing = _open_collection(client, collection)
+        if existing is not None and existing.count() == len(chunks):
+            log.info("manual index up to date (%d chunks); skipping rebuild", len(chunks))
+            return len(chunks)
     try:
         client.delete_collection(collection)
     except Exception:  # noqa: BLE001 - did not exist

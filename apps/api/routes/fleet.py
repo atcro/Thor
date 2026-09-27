@@ -73,12 +73,7 @@ def compute_fleet(engine: Engine | None = None) -> list[FleetAsset]:
     assets = db.list_assets(engine)
     latest = db.latest_telemetry(engine)
     preds = db.latest_predictions(engine)
-    open_contracts: dict[str, str] = {}
-    for c in db.list_decision_contracts(engine=engine):
-        if c.asset_id in open_contracts:
-            continue
-        if db.contract_status(c.contract_id, engine=engine) == "pending":
-            open_contracts[c.asset_id] = c.contract_id
+    open_contracts = db.open_contract_by_asset(engine)
     stage = _registry_stage(engine)
     vib_mean = vib_std = 0.0
     latest_by_asset: dict[str, dict[str, Any]] = {}
