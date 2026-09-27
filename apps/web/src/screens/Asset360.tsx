@@ -5,7 +5,7 @@ import type { Approval, Decision, GraphState, PipelineStage, RunSummary, WhatIfR
 import { TERMINAL_STAGES } from "../api/types";
 import { CHART, TimeSeriesChart, type TimePoint } from "../components/charts";
 import { DecisionContractPanel } from "../components/DecisionContractPanel";
-import { EmptyState, ErrorState, HealthPill, Loaded, LoadingState, Panel, Pill, RegimeBadge, StageChip, Stat } from "../components/ui";
+import { EmptyState, ErrorState, HealthPill, Loaded, LoadingState, Panel, Pill, RegimeBadge, StageChip, Stat, WorkOrderPill } from "../components/ui";
 import { usePolling } from "../hooks/usePolling";
 import { STAGE_LABEL, fmtNum, fmtPct, fmtRel, fmtShort, fmtTime, probTone } from "../lib/format";
 
@@ -434,6 +434,7 @@ export function Asset360() {
                   <th>Model</th>
                   <th className="right">p(fail)</th>
                   <th>Recommendation</th>
+                  <th>Work order</th>
                   <th className="right">Expected cost</th>
                   <th>Hash</th>
                 </tr>
@@ -446,6 +447,12 @@ export function Asset360() {
                     <td className="mono">{c.model_version}</td>
                     <td className="num">{fmtPct(c.failure_probability)}</td>
                     <td>{c.recommendation}</td>
+                    <td>
+                      {(() => {
+                        const wo = detail.data?.work_orders?.find((w) => w.contract_id === c.contract_id);
+                        return wo ? <WorkOrderPill wo={wo} /> : <span className="dim">—</span>;
+                      })()}
+                    </td>
                     <td className="num">{fmtNum(c.expected_cost, 0)}</td>
                     <td className="mono dim">{c.evidence_hash.slice(0, 12)}</td>
                   </tr>

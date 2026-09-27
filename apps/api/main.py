@@ -19,7 +19,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api import db, seed
-from apps.api.routes import approvals, copilot, fleet, models, pipeline
+from apps.api.routes import approvals, copilot, fleet, models, pipeline, work_orders
 from apps.api.settings import get_settings
 
 log = logging.getLogger("thor.main")
@@ -136,3 +136,4 @@ app.include_router(pipeline.router)
 app.include_router(approvals.router)
 app.include_router(models.router)
 app.include_router(copilot.router)
+app.include_router(work_orders.router)

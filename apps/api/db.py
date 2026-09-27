@@ -4,8 +4,8 @@ Runs on SQLite (default, for local dev and tests) and PostgreSQL + TimescaleDB (
 On Postgres, `telemetry` is converted to a hypertable at init. All JSON columns hold serialized
 Pydantic models from `apps/api/schemas.py`.
 
-`decision_contracts` and `approvals` are insert-only. There is deliberately no update helper
-for them -- see CLAUDE.md section 7.
+`decision_contracts`, `approvals` and `work_order_events` are insert-only. There is deliberately
+no update helper for them -- see CLAUDE.md section 7.
 """
 
 from __future__ import annotations
@@ -45,6 +45,8 @@ from apps.api.schemas import (
     Asset,
     DecisionContract,
     TelemetryRow,
+    WorkOrder,
+    WorkOrderEvent,
 )
 from apps.api.settings import get_settings
 
@@ -152,6 +154,25 @@ approvals = Table(
     Column("approver", String(128), nullable=False),
     Column("note", Text, nullable=False, default=""),
     Column("decided_at", DateTime(timezone=True), nullable=False),
+)
+
+work_order_events = Table(
+    "work_order_events",
+    metadata,
+    Column("event_id", String(64), primary_key=True),
+    Column(
+        "contract_id",
+        String(64),
+        ForeignKey("decision_contracts.contract_id"),
+        nullable=False,
+        index=True,
+    ),
+    Column("asset_id", String(32), nullable=False, index=True),
+    Column("status", String(16), nullable=False),
+    Column("plant_ts", DateTime(timezone=True), nullable=False),
+    Column("recorded_at", DateTime(timezone=True), nullable=False),
+    Column("source", String(32), nullable=False, default="cmms-sim"),
+    Column("note", Text, nullable=False, default=""),
 )
 
 model_registry = Table(
@@ -601,6 +622,112 @@ def open_contract_by_asset(engine: Engine | None = None) -> dict[str, str]:
     for asset_id, contract_id in rows:
         if asset_id not in out and contract_id not in decided:
             out[asset_id] = contract_id
+    return out
+
+
+# --------------------------------------------------------------------------------------
+# Work orders (derived from approvals; progress events are insert-only)
+# --------------------------------------------------------------------------------------
+
+
+def insert_work_order_event(ev: WorkOrderEvent, engine: Engine | None = None) -> None:
+    engine = engine or get_engine()
+    with engine.begin() as conn:
+        conn.execute(insert(work_order_events).values(**ev.model_dump()))
+
+
+def list_work_order_events(
+    contract_id: str | None = None, engine: Engine | None = None
+) -> list[WorkOrderEvent]:
+    """Progress events oldest first (optionally for one contract)."""
+    engine = engine or get_engine()
+    q = select(work_order_events).order_by(
+        work_order_events.c.plant_ts, work_order_events.c.recorded_at
+    )
+    if contract_id:
+        q = q.where(work_order_events.c.contract_id == contract_id)
+    with engine.connect() as conn:
+        rows = conn.execute(q).mappings().all()
+    return [WorkOrderEvent(**dict(r)) for r in rows]
+
+
+def _as_utc(dt: datetime) -> datetime:
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
+def list_work_orders(asset_id: str | None = None, engine: Engine | None = None) -> list[WorkOrder]:
+    """Approved maintain_now / maintain_later contracts with the plant's reported status.
+
+    Inputs: optional asset filter. Output: WorkOrder list, newest approval first. Rejected
+    contracts and run_to_failure recommendations are not work orders -- nothing is handed to
+    the plant for them. Derived on every call; nothing here is stored beyond the approvals and
+    the events.
+    """
+    engine = engine or get_engine()
+    q = (
+        select(
+            approvals.c.contract_id,
+            approvals.c.approver,
+            approvals.c.decided_at,
+            decision_contracts.c.payload,
+        )
+        .select_from(
+            approvals.join(
+                decision_contracts, approvals.c.contract_id == decision_contracts.c.contract_id
+            )
+        )
+        .where(approvals.c.decision == "approved")
+        .order_by(approvals.c.decided_at.desc())
+    )
+    if asset_id:
+        q = q.where(decision_contracts.c.asset_id == asset_id)
+    with engine.connect() as conn:
+        rows = conn.execute(q).all()
+    if not rows:
+        return []
+    events_by_contract: dict[str, list[WorkOrderEvent]] = {}
+    for ev in list_work_order_events(engine=engine):
+        events_by_contract.setdefault(ev.contract_id, []).append(ev)
+    out: list[WorkOrder] = []
+    for contract_id, approver, decided_at, payload in rows:
+        dc = DecisionContract.model_validate(payload)
+        if dc.recommendation == "run_to_failure":
+            continue
+        started = completed = None
+        for ev in events_by_contract.get(contract_id, []):
+            plant_ts = _as_utc(ev.plant_ts)  # SQLite hands back naive datetimes
+            if ev.status == "in_progress" and started is None:
+                started = plant_ts
+            elif ev.status == "completed":
+                completed = plant_ts
+                if started is None:
+                    started = plant_ts
+        status = "completed" if completed else "in_progress" if started else "scheduled"
+        out.append(
+            WorkOrder(
+                contract_id=contract_id,
+                asset_id=dc.asset_id,
+                recommendation=dc.recommendation,  # type: ignore[arg-type]
+                window_start=dc.window_start,
+                window_end=dc.window_end,
+                planned_downtime_h=float(
+                    dc.cost_comparison.assumptions.get("downtime_planned_h", 3.0)
+                ),
+                approved_at=_as_utc(decided_at),
+                approver=approver,
+                status=status,  # type: ignore[arg-type]
+                started_ts=started,
+                completed_ts=completed,
+            )
+        )
+    return out
+
+
+def work_order_by_asset(engine: Engine | None = None) -> dict[str, WorkOrder]:
+    """asset_id -> its most recently approved work order (any status)."""
+    out: dict[str, WorkOrder] = {}
+    for wo in list_work_orders(engine=engine):
+        out.setdefault(wo.asset_id, wo)
     return out
 
 

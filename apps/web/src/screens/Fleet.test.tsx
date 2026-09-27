@@ -21,6 +21,7 @@ const fleet: FleetAsset[] = [
     last_ts: "2026-09-13T10:00:00Z",
     open_contract_id: "dc_MTR-042_20260913100000",
     stage: null,
+    work_order: null,
   },
   {
     asset: {
@@ -38,6 +39,37 @@ const fleet: FleetAsset[] = [
     last_ts: "2026-09-13T10:00:00Z",
     open_contract_id: null,
     stage: "production",
+    work_order: null,
+  },
+  {
+    asset: {
+      asset_id: "MTR-021",
+      name: "Boiler feed pump",
+      site: "Plant A",
+      line: "Line 2",
+      asset_type: "induction_motor",
+      rated_kw: 110,
+      criticality: "high",
+    },
+    health_score: 40,
+    failure_probability: null,
+    regime: "R2",
+    last_ts: "2026-09-13T09:40:00Z",
+    open_contract_id: null,
+    stage: "production",
+    work_order: {
+      contract_id: "dc_MTR-021_20260913090000",
+      asset_id: "MTR-021",
+      recommendation: "maintain_now",
+      window_start: "2025-08-27T02:00:00Z",
+      window_end: "2025-08-27T05:00:00Z",
+      planned_downtime_h: 3,
+      approved_at: "2026-09-13T09:05:00Z",
+      approver: "engineer@plant",
+      status: "in_progress",
+      started_ts: "2025-08-27T02:00:00Z",
+      completed_ts: null,
+    },
   },
 ];
 
@@ -127,5 +159,18 @@ describe("Fleet screen", () => {
     }
     expect(localStorage.getItem("thor.fleet.spriteStyle")).toBe("pixel");
     localStorage.removeItem("thor.fleet.spriteStyle");
+  });
+
+  it("shows a motor under an approved work order as offline, not as failing", async () => {
+    render(
+      <MemoryRouter>
+        <Fleet />
+      </MemoryRouter>,
+    );
+    const offline = await screen.findByRole("img", { name: /^MTR-021: no prediction, offline for maintenance/ });
+    expect(offline).toHaveClass("stopped");
+    expect(offline).not.toHaveClass("vibrating");
+    expect(screen.getByText("offline · in maintenance")).toBeInTheDocument();
+    expect(screen.getByText(/1 work order ·/)).toBeInTheDocument();
   });
 });

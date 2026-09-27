@@ -6,6 +6,11 @@ across all assets and publishes each one as `TelemetryRow.model_dump_json()` to
 `REPLAY_SPEED=600` replays ten minutes of plant time per second. When the sequence ends it
 starts again from the beginning (unless `--once`).
 
+While streaming, the replay also acts as the plant's CMMS for approved work orders (see
+`streaming/replay/work_orders.py`): at the approved window the motor goes offline for the
+planned downtime and then streams its healthy baseline again. `--no-work-orders` (or
+`REPLAY_WORK_ORDERS=0`) disables that.
+
 If the broker is unreachable after 10 connection attempts, rows are POSTed in batches to
 `{CONTROL_PLANE_URL}/ingest` instead. `--once --speed 0` bulk-loads everything via HTTP as
 fast as possible (local dev + tests).
@@ -32,6 +37,7 @@ import pandas as pd
 from paho.mqtt import client as mqtt
 
 from data.simulator.generate import TelemetryRow, generate_fleet, write_outputs
+from streaming.replay.work_orders import RepairSimulator, WorkOrderClient
 
 log = logging.getLogger("thor.replay")
 
@@ -198,6 +204,7 @@ def publish_http(
 def main() -> None:
     """CLI entrypoint. Env: REPLAY_SPEED, MQTT_BROKER_URL, CONTROL_PLANE_URL."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # the work-order poll would log every 3 s
     host_default, port_default = parse_broker_url(
         os.getenv("MQTT_BROKER_URL", "mqtt://localhost:1883")
     )
@@ -213,6 +220,12 @@ def main() -> None:
     )
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH)
     parser.add_argument("--asset", default=None, help="replay only this asset id")
+    parser.add_argument(
+        "--no-work-orders",
+        action="store_true",
+        default=os.getenv("REPLAY_WORK_ORDERS", "1").strip().lower() in {"0", "false", "no"},
+        help="do not execute approved work orders (motors never come back online)",
+    )
     parser.add_argument(
         "--start-fraction",
         type=float,
@@ -236,6 +249,10 @@ def main() -> None:
     transport = args.transport
     if transport == "auto" and args.speed <= 0:
         transport = "http"
+    repairs: RepairSimulator | None = None
+    if not args.no_work_orders and args.speed > 0:
+        repairs = RepairSimulator(df, WorkOrderClient(args.control_plane))
+        log.info("simulated CMMS on: executing approved work orders from %s", args.control_plane)
 
     first_pass = True
     while True:
@@ -249,7 +266,7 @@ def main() -> None:
                 args.start_fraction * 100,
             )
         first_pass = False
-        rows = iter_rows(play)
+        rows = repairs.apply(iter_rows(play)) if repairs else iter_rows(play)
         try:
             if transport == "http":
                 n = publish_http(

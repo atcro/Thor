@@ -415,6 +415,27 @@ export interface GraphState {
 // API request/response shapes (02)
 // ---------------------------------------------------------------------------
 
+export type WorkOrderStatus = "scheduled" | "in_progress" | "completed";
+
+/**
+ * An approved maintain_* Decision Contract handed to the plant, with the plant-reported
+ * progress. Derived by the API from approvals + insert-only work-order events; Thor never
+ * executes the work itself.
+ */
+export interface WorkOrder {
+  contract_id: string;
+  asset_id: string;
+  recommendation: "maintain_now" | "maintain_later";
+  window_start: ISODate | null;
+  window_end: ISODate | null;
+  planned_downtime_h: number;
+  approved_at: ISODate;
+  approver: string;
+  status: WorkOrderStatus;
+  started_ts: ISODate | null;
+  completed_ts: ISODate | null;
+}
+
 export interface FleetAsset {
   asset: Asset;
   health_score: number;
@@ -423,6 +444,8 @@ export interface FleetAsset {
   last_ts: ISODate | null;
   open_contract_id: string | null;
   stage: ModelStage | null;
+  /** Newest approved work order for this asset (plant-reported status), if any. */
+  work_order: WorkOrder | null;
 }
 
 export interface PipelineRunRequest {
@@ -520,6 +543,7 @@ export interface AssetDetail {
   latest: TelemetryRow | null;
   prediction: number | null;
   contracts: DecisionContract[];
+  work_orders: WorkOrder[];
   runs: RunSummary[];
 }
 

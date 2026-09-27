@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import type { ExplanationSource, ModelStage, PipelineStage } from "../api/types";
-import { fmtNum, healthTone, STAGE_LABEL, stageTone, type Tone } from "../lib/format";
+import type { ExplanationSource, ModelStage, PipelineStage, WorkOrder, WorkOrderStatus } from "../api/types";
+import { fmtDateTime, fmtNum, healthTone, STAGE_LABEL, stageTone, type Tone } from "../lib/format";
 
 // ---------------------------------------------------------------------------
 // Panel
@@ -223,5 +223,31 @@ export function BarH({ value, color }: { value: number; color?: string }) {
     <div className="bar-h">
       <i style={{ width: `${w}%`, background: color }} />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Work order (plant-side execution of an approved Decision Contract)
+// ---------------------------------------------------------------------------
+
+export const WORK_ORDER_WORD: Record<WorkOrderStatus, string> = {
+  scheduled: "work order scheduled",
+  in_progress: "offline · in maintenance",
+  completed: "back in service",
+};
+
+/** Plant-reported status of the work order behind an approved contract. Thor only displays it. */
+export function WorkOrderPill({ wo }: { wo: WorkOrder }) {
+  const tone: Tone = wo.status === "completed" ? "good" : wo.status === "in_progress" ? "warn" : "info";
+  const title =
+    wo.status === "scheduled"
+      ? `Approved by ${wo.approver}. Plant window ${fmtDateTime(wo.window_start)} → ${fmtDateTime(wo.window_end)} (plant time). Executed by the plant CMMS, not by Thor.`
+      : wo.status === "in_progress"
+        ? `Taken offline by plant maintenance at ${fmtDateTime(wo.started_ts)} (plant time); ${wo.planned_downtime_h} h planned downtime.`
+        : `Returned to service by plant maintenance at ${fmtDateTime(wo.completed_ts)} (plant time).`;
+  return (
+    <Pill tone={tone} title={title}>
+      {WORK_ORDER_WORD[wo.status]}
+    </Pill>
   );
 }

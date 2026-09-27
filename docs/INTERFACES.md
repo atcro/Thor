@@ -75,6 +75,13 @@ Reads `data/simulator/out/telemetry.parquet` (generates it if missing), sleeps
 sequence ends. Also expose `python -m streaming.replay.replay --once --speed 0` = bulk-load
 everything via HTTP as fast as possible (used for local dev and tests).
 
+`streaming/replay/work_orders.py` makes the replay double as the plant's CMMS: `RepairSimulator`
+polls `GET /work-orders`, drops that asset's rows for the contract's planned downtime once plant
+time reaches the approved window (motor offline), then streams the asset's own healthy baseline
+(pre-fault rows in the same regime and hour) with `health = 1.0`, reporting `in_progress` /
+`completed` via `POST /work-orders/{id}/events`. `--no-work-orders` / `REPLAY_WORK_ORDERS=0` turns
+it off. Maintenance windows are computed in plant time (`orchestrator.plant_now()`), not wall clock.
+
 ### `apps/api/routes/telemetry.py`
 ```python
 router = APIRouter()
@@ -311,7 +318,7 @@ index (best effort), start the MQTT subscriber. Mount routers. `GET /health`.
 ```
 apps/api/routes/fleet.py
   GET /fleet                        -> list[FleetAsset]  (health_score = 100*(1 - p_fail) if a prediction exists else derived from latest health/vibration z-score)
-  GET /assets/{asset_id}            -> {asset, latest: TelemetryRow|null, prediction: float|null, contracts: list[DecisionContract], runs: list[run summaries]}
+  GET /assets/{asset_id}            -> {asset, latest: TelemetryRow|null, prediction: float|null, contracts: list[DecisionContract], work_orders: list[WorkOrder], runs: list[run summaries]}
   GET /system/health                -> {db: ok, mqtt: bool, mlflow: bool, edge: bool, n_telemetry_rows, last_ingest_ts}
 apps/api/routes/pipeline.py
   POST /pipeline/run   body PipelineRunRequest -> PipelineRunResponse
@@ -331,6 +338,9 @@ apps/api/routes/models.py
   POST /models/drift/check  body {asset_id} -> DriftReport
 apps/api/routes/copilot.py
   POST /copilot/chat  body CopilotRequest -> CopilotResponse
+apps/api/routes/work_orders.py     (handoff to the plant CMMS -- Thor only records what the plant reports back)
+  GET  /work-orders?asset_id=&active=      -> list[WorkOrder]  (approved maintain_now/maintain_later contracts + plant-reported status; derived, never stored)
+  POST /work-orders/{contract_id}/events   body {status: in_progress|completed, plant_ts, source, note} -> WorkOrder  (insert-only event; 404 unless approved, 409 out of order)
 ```
 
 ---

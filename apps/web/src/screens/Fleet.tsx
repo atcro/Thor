@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { getFleet, getSystemHealth } from "../api/client";
 import type { FleetAsset } from "../api/types";
 import { MotorSprite, spriteParams, TIER_WORD, type SpriteStyle } from "../components/MotorSprite";
-import { Dot, HealthPill, Loaded, ModelStageChip, Panel, Pill, RegimeBadge } from "../components/ui";
+import { Dot, HealthPill, Loaded, ModelStageChip, Panel, Pill, RegimeBadge, WorkOrderPill } from "../components/ui";
 import { usePolling } from "../hooks/usePolling";
 import { fmtDateTime, fmtInt, fmtPct, fmtRel, fmtShort, probTone } from "../lib/format";
 
@@ -91,6 +91,7 @@ function AssetCard({ item, style }: { item: FleetAsset; style: SpriteStyle }) {
           </Pill>
         )}
         {item.stage && <ModelStageChip stage={item.stage} />}
+        {item.work_order && <WorkOrderPill wo={item.work_order} />}
       </div>
       <div className="foot">
         <span title={fmtDateTime(item.last_ts)}>last sample {fmtShort(item.last_ts)}</span>
@@ -171,6 +172,7 @@ export function Fleet() {
   const sorted = useMemo(() => (fleet.data ? sortByRisk(fleet.data) : []), [fleet.data]);
   const nRisk = sorted.filter((a) => (a.failure_probability ?? 0) >= 0.4 || a.health_score < 60).length;
   const nOpen = sorted.filter((a) => a.open_contract_id).length;
+  const nWork = sorted.filter((a) => a.work_order && a.work_order.status !== "completed").length;
 
   return (
     <div>
@@ -179,7 +181,7 @@ export function Fleet() {
           <h1>Fleet</h1>
           <div className="sub">
             {fleet.data
-              ? `${sorted.length} assets · ${nRisk} at risk · ${nOpen} open contract${nOpen === 1 ? "" : "s"} · sorted by failure risk`
+              ? `${sorted.length} assets · ${nRisk} at risk · ${nOpen} open contract${nOpen === 1 ? "" : "s"} · ${nWork} work order${nWork === 1 ? "" : "s"} · sorted by failure risk`
               : "Loading fleet…"}
           </div>
         </div>

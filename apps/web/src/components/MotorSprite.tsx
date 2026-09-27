@@ -67,9 +67,16 @@ export function spriteParams(item: FleetAsset): SpriteParams {
   const tier = riskTier(p);
   const atRisk = (p ?? 0) >= 0.4 || item.health_score < 60;
   const heat = tier === "high" ? clamp01(0.5 + ((p as number) - 0.4) / 1.2) : 0;
-  const shake = tier === "high" ? 0.5 + heat * 1.3 : 0;
-  const spinSec = item.regime ? (SPIN_SEC[item.regime] ?? 0.6) : null;
-  const regimeWord = item.regime ? (REGIME_WORD[item.regime] ?? item.regime) : "regime unknown";
+  // A motor the plant has taken offline for an approved work order stands still: no spin, no
+  // shake, whatever the (stale) last prediction says.
+  const offline = item.work_order?.status === "in_progress";
+  const shake = tier === "high" && !offline ? 0.5 + heat * 1.3 : 0;
+  const spinSec = offline ? null : item.regime ? (SPIN_SEC[item.regime] ?? 0.6) : null;
+  const regimeWord = offline
+    ? "offline for maintenance"
+    : item.regime
+      ? (REGIME_WORD[item.regime] ?? item.regime)
+      : "regime unknown";
   const pWord = p === null || p === undefined ? "no prediction" : `p(fail) ${fmtPct(p)}`;
   return {
     tier,

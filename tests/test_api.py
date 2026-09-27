@@ -245,3 +245,73 @@ def test_public_state_strips_row_regime() -> None:
         "stage": "queued",
         "data_quality": None,
     }
+
+
+def _decided_contract(engine: Any, asset_id: str, recommendation: str, decision: str = "approved") -> str:
+    """Insert one contract and its decision row directly; the gate route itself is covered above."""
+    from datetime import UTC, datetime
+
+    from apps.api.schemas import Approval
+    from tests.test_orchestrator import make_bundle, make_contract
+
+    bundle = make_bundle(asset_id)
+    bundle = bundle.model_copy(
+        update={"cost": bundle.cost.model_copy(update={"recommended": recommendation})}
+    )
+    dc = make_contract(bundle, run_id="run_wo", text="t", source="template")
+    db.insert_decision_contract(dc, engine=engine)
+    db.insert_approval(
+        Approval(
+            approval_id=f"ap_{dc.contract_id}",
+            contract_id=dc.contract_id,
+            decision=decision,  # type: ignore[arg-type]
+            approver="engineer@plant",
+            decided_at=datetime.now(UTC),
+        ),
+        engine=engine,
+    )
+    return dc.contract_id
+
+
+def test_work_orders_follow_approvals_and_plant_reports(client: TestClient) -> None:
+    """Approved maintain_* contracts become work orders; the plant reports progress, insert-only."""
+    engine = db.get_engine()
+    assert client.get("/work-orders").json() == []
+    wo_id = _decided_contract(engine, "MTR-042", "maintain_later")
+    _decided_contract(engine, "MTR-001", "run_to_failure")  # nothing to hand to the plant
+    _decided_contract(engine, "MTR-002", "maintain_now", decision="rejected")  # not approved
+    orders = client.get("/work-orders").json()
+    assert [o["contract_id"] for o in orders] == [wo_id]
+    assert orders[0]["status"] == "scheduled" and orders[0]["planned_downtime_h"] == 3.0
+    assert orders[0]["window_start"] is not None and orders[0]["approver"] == "engineer@plant"
+
+    fleet = {a["asset"]["asset_id"]: a for a in client.get("/fleet").json()}
+    assert fleet["MTR-042"]["work_order"]["status"] == "scheduled"
+    assert fleet["MTR-001"]["work_order"] is None and fleet["MTR-002"]["work_order"] is None
+
+    ev = {"status": "in_progress", "plant_ts": "2025-08-27T02:00:00Z"}
+    assert client.post("/work-orders/dc_nope/events", json=ev).status_code == 404
+    r = client.post(f"/work-orders/{wo_id}/events", json=ev)
+    assert r.status_code == 200 and r.json()["status"] == "in_progress"
+    assert r.json()["started_ts"].startswith("2025-08-27T02:00:00")
+    # repeats and backwards moves are refused: the reporter can replay idempotently
+    ev["plant_ts"] = "2025-08-27T02:10:00Z"
+    assert client.post(f"/work-orders/{wo_id}/events", json=ev).status_code == 409
+    done = {"status": "completed", "plant_ts": "2025-08-27T05:00:00Z"}
+    r = client.post(f"/work-orders/{wo_id}/events", json=done)
+    assert r.status_code == 200 and r.json()["status"] == "completed"
+    assert r.json()["completed_ts"].startswith("2025-08-27T05:00:00")
+    assert client.post(f"/work-orders/{wo_id}/events", json=done).status_code == 409
+
+    assert client.get("/work-orders?active=true").json() == []
+    detail = client.get("/assets/MTR-042").json()
+    assert detail["work_orders"][0]["status"] == "completed"
+    assert fleet_status(client, "MTR-042") == "completed"
+    assert len(db.list_work_order_events(wo_id, engine=engine)) == 2  # both reports kept
+
+
+def fleet_status(client: TestClient, asset_id: str) -> str | None:
+    for a in client.get("/fleet").json():
+        if a["asset"]["asset_id"] == asset_id:
+            return a["work_order"]["status"] if a["work_order"] else None
+    return None

@@ -198,6 +198,13 @@ a full Playwright e2e suite.
    100% reproducible via MQTT replay. The API seeds the first 80% of the history; the replay
    streams the rest. Only *completed* failures produce training labels — an in-progress
    degradation is treated as unknown future, never as a known outcome.
+   **After an approval, the plant acts, not Thor.** The replay doubles as a simulated CMMS
+   (`streaming/replay/work_orders.py`): once plant time reaches the approved window it takes the
+   motor offline for the contract's planned downtime (no rows) and then streams that motor's own
+   healthy baseline again. The API only records the plant's progress reports as insert-only
+   work-order events (`GET/POST /work-orders`) and shows them on the Fleet card and in Asset 360.
+   Rejected contracts and `run_to_failure` change nothing. Maintenance windows are computed in
+   plant time (latest telemetry `ts`), never wall clock, so the window lands inside the replay.
 2. **Credibility check — AI4I 2020 (UCI).** Run the same pipeline against a real public
    benchmark and report honest metrics. This is what proves the methodology isn't cherry-picked
    to the synthetic story.

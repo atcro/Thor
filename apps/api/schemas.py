@@ -375,6 +375,52 @@ class Approval(BaseModel):
     decided_at: datetime
 
 
+WorkOrderStatus = Literal["scheduled", "in_progress", "completed"]
+
+
+class WorkOrderEvent(BaseModel):
+    """One insert-only progress report from the plant side.
+
+    Thor hands an approved Decision Contract to the plant's CMMS and never executes the work
+    itself; the plant (in the demo: the replay's simulated CMMS) reports back when the motor is
+    taken offline and when it is back in service. `plant_ts` is plant time (the replayed
+    telemetry clock), `recorded_at` is wall clock.
+    """
+
+    event_id: str
+    contract_id: str
+    asset_id: str
+    status: Literal["in_progress", "completed"]
+    plant_ts: datetime
+    recorded_at: datetime
+    source: str = "cmms-sim"
+    note: str = ""
+
+
+class WorkOrderEventRequest(BaseModel):
+    status: Literal["in_progress", "completed"]
+    plant_ts: datetime
+    source: str = "cmms-sim"
+    note: str = ""
+
+
+class WorkOrder(BaseModel):
+    """Derived view (never stored): an approved maintain_now / maintain_later contract plus the
+    plant's reported progress. `status` is `scheduled` until the plant reports otherwise."""
+
+    contract_id: str
+    asset_id: str
+    recommendation: Literal["maintain_now", "maintain_later"]
+    window_start: datetime | None
+    window_end: datetime | None
+    planned_downtime_h: float
+    approved_at: datetime
+    approver: str
+    status: WorkOrderStatus
+    started_ts: datetime | None = None
+    completed_ts: datetime | None = None
+
+
 # --------------------------------------------------------------------------------------
 # 08 — MLOps
 # --------------------------------------------------------------------------------------
@@ -494,6 +540,8 @@ class FleetAsset(BaseModel):
     last_ts: datetime | None
     open_contract_id: str | None
     stage: ModelStage | None
+    #: Newest approved work order for this asset (plant-reported status), if any.
+    work_order: WorkOrder | None = None
 
 
 class PipelineRunRequest(BaseModel):

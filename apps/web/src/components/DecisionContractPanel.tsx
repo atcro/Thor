@@ -178,7 +178,7 @@ export function DecisionContractPanel({
             <h3 style={{ marginBottom: 6 }}>Cost comparison</h3>
             <CostTable contract={contract} />
             <div className="row" style={{ marginTop: 10, gap: 10 }}>
-              <span className="muted small">Recommended window</span>
+              <span className="muted small">Recommended window (plant time)</span>
               <span className="mono">
                 {contract.window_start ? fmtDateTime(contract.window_start) : "—"} → {contract.window_end ? fmtDateTime(contract.window_end) : "—"}
               </span>

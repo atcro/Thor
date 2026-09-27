@@ -74,6 +74,7 @@ def compute_fleet(engine: Engine | None = None) -> list[FleetAsset]:
     latest = db.latest_telemetry(engine)
     preds = db.latest_predictions(engine)
     open_contracts = db.open_contract_by_asset(engine)
+    work_orders = db.work_order_by_asset(engine)
     stage = _registry_stage(engine)
     vib_mean = vib_std = 0.0
     latest_by_asset: dict[str, dict[str, Any]] = {}
@@ -100,6 +101,7 @@ def compute_fleet(engine: Engine | None = None) -> list[FleetAsset]:
                 last_ts=last_ts,
                 open_contract_id=open_contracts.get(a.asset_id),
                 stage=stage,
+                work_order=work_orders.get(a.asset_id),
             )
         )
     out.sort(key=lambda f: f.health_score)
@@ -114,7 +116,7 @@ def get_fleet() -> list[FleetAsset]:
 
 @router.get("/assets/{asset_id}")
 def get_asset(asset_id: str) -> dict[str, Any]:
-    """Asset 360: asset, latest telemetry row, latest prediction, contracts and run summaries."""
+    """Asset 360: asset, latest telemetry row, latest prediction, contracts, work orders, runs."""
     engine = db.get_engine()
     asset = next((a for a in db.list_assets(engine) if a.asset_id == asset_id), None)
     if asset is None:
@@ -125,6 +127,7 @@ def get_asset(asset_id: str) -> dict[str, Any]:
         latest = TelemetryRow.model_validate(_clean_row(latest_df.iloc[-1].to_dict()))
     prediction = db.latest_predictions(engine).get(asset_id)
     contracts = db.list_decision_contracts(asset_id=asset_id, engine=engine)
+    work_orders = db.list_work_orders(asset_id=asset_id, engine=engine)
     runs = []
     for r in db.list_runs(asset_id=asset_id, engine=engine):
         s = run_summary(r["state"])
@@ -136,6 +139,7 @@ def get_asset(asset_id: str) -> dict[str, Any]:
         "latest": latest,
         "prediction": float(prediction) if prediction is not None else None,
         "contracts": contracts,
+        "work_orders": work_orders,
         "runs": runs,
     }
 

@@ -1080,6 +1080,25 @@ def _validate(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
         append_event(gs, gs.stage, f"model registration skipped: {e}", tool="register_model")
 
 
+def plant_now(asset_id: str, engine: Engine | None) -> datetime:
+    """Plant time for cost and window calculations: the asset's latest telemetry timestamp.
+
+    The replay is time-accelerated history, so a wall-clock "now" would put the maintenance
+    window months outside the data the charts show and the plant could never reach it. Falls
+    back to wall clock only when the asset has no telemetry at all.
+    """
+    try:
+        df = db.read_telemetry(asset_id=asset_id, limit=1, engine=engine)
+        if not df.empty:
+            ts = pd.Timestamp(df["ts"].max())
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("UTC")
+            return ts.to_pydatetime()
+    except Exception as e:  # noqa: BLE001 - a clock fallback must never fail the run
+        log.warning("plant_now(%s) fell back to wall clock: %s", asset_id, e)
+    return datetime.now(UTC)
+
+
 def _explain(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
     if gs.validation is None or gs.data_quality is None:
         raise RuntimeError("explain called without validation / data quality")
@@ -1118,7 +1137,7 @@ def _explain(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
             gs, gs.stage, f"manual retrieval unavailable: {e}", tool="retrieve_manual_context"
         )
     settings = get_settings()
-    now = datetime.now(UTC)
+    now = plant_now(gs.asset_id, engine)
     p_now = float(exp.failure_probability)
     # A model that has not demonstrated early warning gets a conservative 12 h hazard scale
     # rather than a degenerate curve that jumps to 100% at the first planned window.
