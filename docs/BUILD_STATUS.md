@@ -173,6 +173,88 @@ characters with a marker, and per-call token usage logged and returned as
 **Housekeeping:** `streaming/__init__.py` had been dragged to the repo root (empty file);
 restored. Raw datasets live in `data/external/` (ignored). `evals/bolt/out/` is ignored.
 
+## Session 2026-09-26 -- runtime performance (uncommitted at time of writing)
+
+Symptom: `docker compose up` worked but every screen crawled. Cause, from `docker logs
+thor-timescale-1` + `EXPLAIN ANALYZE`: the Fleet poll (every 5 s) called
+`db.latest_telemetry()` / `db.latest_predictions()`, which did `SELECT *` of the whole table
+into pandas. The volume held 103,680 telemetry rows and **7,336,327 prediction rows** -- the
+replay loops forever and the edge re-scored every row on every pass, so predictions were
+~70x duplicated. The edge also POSTed one `/predictions` request per telemetry row (~70 req/s
+at REPLAY_SPEED=1800), which starved the connection pool (edge logged `timed out`).
+
+Fixes:
+- `db._latest_rows_query()`: newest row per *registered* asset via a correlated `max(ts)`
+  from `assets` -- one backward index probe per asset, size-independent (telemetry 16 ms ->
+  1.3 ms; predictions full read 810 ms -> 0.5 ms, measured on the live volume).
+- `ux_predictions_key` UNIQUE (asset_id, ts, model_version, source) + `ON CONFLICT DO NOTHING`
+  in `insert_predictions()`. `db._ensure_predictions_key()` dedupes an old volume once at
+  startup (7.34M -> 103,680 rows in 6 s), so no `docker compose down -v` is needed.
+- `POST /predictions` accepts a JSON array; the edge poster drains its queue into batches
+  (`EDGE_POST_BATCH_ROWS=500`, `EDGE_POST_INTERVAL_S=0.5`). Live: 5,496 predictions in 114
+  requests over 82 s (~48 rows/request, ~1.4 req/s).
+- Pending-contract lookups (`/fleet`, `/approvals/pending`, Bolt pending tool) no longer do
+  one approvals query per contract (`db.list_pending_decision_contracts`,
+  `db.open_contract_by_asset`).
+- Manual RAG index is reused across restarts when the chunk count matches (field history
+  already did this); new `model-cache:/root/.cache` volume keeps chromadb's 80 MB ONNX
+  embedder from being re-downloaded on every start.
+- `usePolling` skips ticks while the tab is hidden and refreshes on return.
+
+Verified live after `docker compose build api edge web` + `up -d`: `/fleet` 14-19 ms over 10
+calls, `/assets/MTR-042` 30 ms, `/approvals/pending` 10 ms, no 4xx/5xx in the api log,
+predictions count flat at 103,680 across a replay pass. `pytest`: 170 passed;
+`npm run build` + `npm run test`: pass. New test:
+`test_predictions_batch_post_and_latest_per_asset`.
+
+**Demo dry run (same session, live stack, LLM mode).** Fixed `.env` plumbing first: with
+`-f infra/docker-compose.yml` (or the root `include:` shim) `${OPENAI_API_KEY}` interpolates
+from `infra/.env`, which does not exist, so the api silently ran in template mode. The api
+service now takes `env_file: ../.env` (required: false) and the LLM lines are gone from
+`environment`. Then the six-step demo script end to end via the API: Fleet ranks MTR-042 first
+(p 0.77, health 22.8); `POST /pipeline/run` MTR-042 (n_trials=6) reached `awaiting_approval`
+in ~75 s -- quality 100, three families (RF/XGB/LGBM) with IMS components, champion lightgbm
+v81290 on held-out-asset validation (leakage passed), SHAP top drivers vib_kurt_mean /
+vib_rms_mean / vib_crest_mean, 3 cited manual passages, cost options maintain_now 13,500 vs
+maintain_later 74,993 vs run_to_failure 61,892 (configurable assumptions), 3 h window,
+explanation_source=llm quoting only retrieved passages. Approval via
+`/approvals/{id}/decision` promoted v81290 -> production (previous archived), wrote the ONNX,
+edge switched to v81290 in ~25 s; second approval -> 409. `/models/drift/check` returns PSI
+per feature. Bolt (gpt-5-mini): "Why is MTR-042 at risk?" 9.8 s, cites contract + manual
+section + FMUCD precedent; "How long do similar bearing repairs usually take?" 11.7 s,
+FMUCD median 4.0 h + manual 3-4 h; "Approve the maintenance action." 3.7 s, refuses and
+points to the UI.
+
+**Video polish (same session).** `draft_explanation()` now sends the LLM a rounded evidence
+payload (`_bundle_payload_for_llm`: probabilities 3 dp, other values 2 dp, whole currency,
+timestamps to the minute, plus a `plain_language` line per SHAP driver from
+`describe_feature`) and the prompt asks for percentages, thousands separators and plain
+driver names -- the contract text went from "P(failure) 0.8774509803921566 ... feature_value
+9.053775" to "87.7% ... vibration kurtosis is 9.1 (a healthy bearing sits near 3)". Verified on
+a fresh live run (f4d1288ae09a4547). Headless-Edge screenshot pass of all five screens against
+the running stack found and fixed: the Asset 360 run stepper overflowing its panel (now wraps),
+"seen 392d ago" / "ingest 392d ago" stamps (telemetry is dated Aug 2025; header, Fleet cards
+and system panel now show plant time), and Copilot suggestion chips that did not match the
+demo questions. Studio and ModelOps needed nothing.
+
+**Screen-update performance + demo reset (same session).** Measured every screen call: all
+under 51 KB and 50 ms except `GET /pipeline/{run}` at 545 KB, 96% of it
+`data_quality.regimes.row_regime` (one label per telemetry row) that no screen renders, polled
+every 2 s by Asset 360 and 3 s by the Studio and pushed by the WebSocket. `graph_state.
+public_state()` now strips it at the API boundary (stored state untouched; a resumed run still
+has it). Live after rebuild: 4.8 KB at training, 28.7 KB at the gate. Sprite paint cost cut
+without changing the look: fan spin and shaft dash use stepped animations (16 and 6 repaints per
+cycle instead of ~60/s) and `.asset-card` uses `content-visibility: auto` so off-screen cards do
+not paint or animate. `apps/api/Dockerfile` installs dependencies from pyproject against stub
+package dirs before copying sources: a code-only api rebuild is ~4 s (was ~15 min).
+`scripts/demo_reset.sh` / `.ps1` drop the TimescaleDB volume (+ models + MLflow unless
+`--keep-models`), keep the Chroma/embedding caches, and restart: 39 s to a healthy api with
+82,994 rows seeded, replay streaming the last 20% (~5 min per pass). At the reset point MTR-021
+leads the Fleet (health ~28, fails live ~70 s in, then reads healthy), MTR-042 is second (~66)
+and degrades through the pass; no card has a p(fail) until the first approval deploys a model.
+Fresh run after reset: gate in 102 s, p(fail) 0.538 (earlier in the degradation than the
+end-of-timeline 0.877), still maintain_now. `pytest`: 171 passed; web build + tests pass.
+
 ## Not verified in this session (2026-09-13)
 
 - **LLM mode** — no `ANTHROPIC_API_KEY` was configured, so every run used the deterministic

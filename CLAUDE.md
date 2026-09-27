@@ -213,6 +213,7 @@ npm --prefix apps/web run dev    # frontend only
 pytest                            # all Python tests
 ruff check .                      # lint
 npm --prefix apps/web run build && npm --prefix apps/web run test  # frontend build + smoke tests
+scripts/demo_reset.sh   # (or .\scripts\demo_reset.ps1) wipe DB/model volumes, reseed 80%, replay the rest live
 ```
 
 ## 11. Code style
