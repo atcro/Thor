@@ -158,3 +158,19 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
 - `docker compose build` from the repo root: images `thor-main-api`, `thor-main-prep`,
   `thor-main-edge`, `thor-main-replay`, `thor-main-web` built (exit 0); `docker compose config
   --quiet` valid. Commit `81bb49d` holds the docs. Fresh-context re-audit in progress.
+
+## 2026-10-11 15:45 — re-audit and fixes
+
+- Fresh-context audit: verified defects 1–7 against code and its own `pytest` run (212 passed +
+  1 environmental: `test_env_hygiene` needs git on PATH; 213 with the §16 PATH refresh) and
+  `ruff` clean. Flags fixed here: 49 files had been rewritten with CRLF line endings by the
+  patch scripts (restored to the baseline LF in this commit; `git diff -w --ignore-cr-at-eol`
+  is the real diff), the compose stack now has a one-shot `prep` job beside the seven services
+  (CLAUDE.md wording), the reset scripts no longer claim a second parity re-check (parity is
+  proven once, at validation, on the same export path `deploy_edge` uses). Noted, not changed:
+  a registry row registered without any parity record (`parity_passed: None`) is promotable;
+  the pipeline always records one, and a recorded failure is refused. The analyze run's light
+  data-quality profile reclusters one motor's recent rows for display only; features use the
+  production baseline.
+- **Tests run after the fixes:** full `pytest` → 213 passed in 59 s; `ruff check .` clean; web
+  build + 4 vitest passed. Images rebuilt with `docker compose build`.

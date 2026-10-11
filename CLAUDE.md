@@ -75,7 +75,7 @@ flowchart TD
     MQTT -.direct stream.-> EDGE
 ```
 
-**Thor vs. Bolt, in one breath.** *Thor* is the whole system above: seven Compose services and
+**Thor vs. Bolt, in one breath.** *Thor* is the whole system above: seven Compose services (plus a one-shot `prep` job) and
 one governed pipeline — MQTT telemetry into a FastAPI control plane and TimescaleDB, a
 LangGraph orchestrator (the only Claude caller, and only to route and to phrase) driving five
 deterministic toolboxes (regime-aware profiling, Optuna over RF/XGBoost/LightGBM ranked by the

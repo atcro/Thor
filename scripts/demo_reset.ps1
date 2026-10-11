@@ -9,8 +9,8 @@
   approvals, registry rows) and, unless -KeepModels is given, the model + MLflow volumes too,
   then starts the stack again. On start-up the api reseeds the first 80% of the synthetic
   history, the one-shot `prep` service trains + validates a champion (MTR-042 held out),
-  approves its promotion as demo-prep@thor, exports it for the edge, re-checks parity and
-  scores the fleet; only then do the replay and the edge start, streaming the remaining 20%
+  approves its promotion as demo-prep@thor (parity was proven at validation), exports it for the
+  edge and scores the fleet; only then do the replay and the edge start, streaming the remaining 20%
   live. The Chroma index and embedding-model cache volumes are always kept.
 
   Expect 2-3 minutes for the prep step on first start (DEMO_PREP_TRIALS in .env sets the Optuna
@@ -38,7 +38,7 @@ foreach ($v in $vols) {
 
 Write-Host "==> starting stack (api seeds 80%, prep trains + promotes, then replay + edge start)"
 docker compose up -d
-Write-Host "==> following the prep service (train, validate, promote, export, parity, score)"
+Write-Host "==> following the prep service (train, validate incl. parity, promote, export, score)"
 docker compose logs -f --no-log-prefix prep
 $prepExit = docker compose ps -a --format json prep | ConvertFrom-Json | Select-Object -First 1 -ExpandProperty ExitCode
 if ($prepExit -ne 0) { throw "demo prep failed with exit code $prepExit; see 'docker compose logs prep'" }
