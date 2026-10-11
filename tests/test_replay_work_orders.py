@@ -103,6 +103,42 @@ def test_maintain_now_without_window_starts_at_the_next_row(fleet: pd.DataFrame)
     assert all(r.health == 1.0 for r in mine)
 
 
+def test_execute_at_approval_starts_before_the_window_and_says_so(fleet: pd.DataFrame) -> None:
+    """Demo mode: the outage starts at the next row after approval even though the contract's
+    window is later; the in_progress report carries a note naming the scheduled window."""
+
+    class Recorder:
+        def __init__(self) -> None:
+            self.reports: list[tuple[str, str, str]] = []
+
+        def fetch(self):
+            return None
+
+        def report(self, contract_id, status, plant_ts, note=""):
+            self.reports.append((contract_id, status, note))
+            return True
+
+    play = _tail(fleet, 0.6)
+    window = _window(play, 0.9)  # far in the future in plant time
+    rec = Recorder()
+    sim = RepairSimulator(fleet, client=rec, execute_at="approval")  # type: ignore[arg-type]
+    sim.load([WorkOrder("dc_demo", ASSET, window_start=window, planned_downtime_h=3.0)])
+    out = list(sim.apply(iter_rows(play)))
+    first_ts = play.loc[play["asset_id"] == ASSET, "ts"].min().to_pydatetime()
+    assert sim.events[0][1:] == ("in_progress", first_ts)  # not at `window`
+    assert sim.events[1][1] == "completed" and sim.events[1][2] >= first_ts + timedelta(hours=3)
+    assert rec.reports[0][1] == "in_progress" and "demo CMMS" in rec.reports[0][2]
+    assert window.isoformat() in rec.reports[0][2]
+    assert rec.reports[1][2] == ""  # the completed report carries no note
+    mine = [r for r in out if r.asset_id == ASSET]
+    assert mine and mine[0].ts >= first_ts + timedelta(hours=3) and all(r.health == 1.0 for r in mine)
+    # the faithful mode is unchanged: the same order waits for its window
+    sim_w = RepairSimulator(fleet, execute_at="window")
+    sim_w.load([WorkOrder("dc_w", ASSET, window_start=window, planned_downtime_h=3.0)])
+    list(sim_w.apply(iter_rows(play)))
+    assert sim_w.events[0][1:] == ("in_progress", window)
+
+
 def test_load_merges_without_rolling_back_progress(fleet: pd.DataFrame) -> None:
     sim = RepairSimulator(fleet)
     t = datetime(2025, 1, 3, tzinfo=UTC)

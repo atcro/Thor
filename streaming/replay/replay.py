@@ -7,9 +7,10 @@ across all assets and publishes each one as `TelemetryRow.model_dump_json()` to
 starts again from the beginning (unless `--once`).
 
 While streaming, the replay also acts as the plant's CMMS for approved work orders (see
-`streaming/replay/work_orders.py`): at the approved window the motor goes offline for the
-planned downtime and then streams its healthy baseline again. `--no-work-orders` (or
-`REPLAY_WORK_ORDERS=0`) disables that.
+`streaming/replay/work_orders.py`): the motor goes offline for the planned downtime and then
+streams its healthy baseline again -- at the approval (`--work-order-execute approval`, the
+demo default, so the audience sees it within seconds) or at the approved window (`window`).
+`--no-work-orders` (or `REPLAY_WORK_ORDERS=0`) disables that.
 
 If the broker is unreachable after 10 connection attempts, rows are POSTed in batches to
 `{CONTROL_PLANE_URL}/ingest` instead. `--once --speed 0` bulk-loads everything via HTTP as
@@ -249,6 +250,12 @@ def main() -> None:
         help="do not execute approved work orders (motors never come back online)",
     )
     parser.add_argument(
+        "--work-order-execute",
+        choices=["approval", "window"],
+        default=os.getenv("REPLAY_WORK_ORDER_EXECUTE", "approval"),
+        help="simulated CMMS starts an approved work order at approval (demo) or at its window",
+    )
+    parser.add_argument(
         "--start-fraction",
         type=float,
         default=float(os.getenv("REPLAY_START_FRACTION", "0.80")),
@@ -273,7 +280,9 @@ def main() -> None:
         transport = "http"
     repairs: RepairSimulator | None = None
     if not args.no_work_orders and args.speed > 0:
-        repairs = RepairSimulator(df, WorkOrderClient(args.control_plane))
+        repairs = RepairSimulator(
+            df, WorkOrderClient(args.control_plane), execute_at=args.work_order_execute
+        )
         log.info("simulated CMMS on: executing approved work orders from %s", args.control_plane)
 
     first_pass = True

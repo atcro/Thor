@@ -141,6 +141,9 @@ services:
       MQTT_BROKER_URL: mqtt://mqtt:1883
       REPLAY_SPEED: ${REPLAY_SPEED:-1800}
       REPLAY_START_FRACTION: ${REPLAY_START_FRACTION:-0.80}
+      # approval = the simulated CMMS executes an approved work order at the next replayed row
+      # (demo-visible within seconds); window = at the contract's scheduled window.
+      REPLAY_WORK_ORDER_EXECUTE: ${REPLAY_WORK_ORDER_EXECUTE:-approval}
       CONTROL_PLANE_URL: http://api:8000
     depends_on:
       mqtt:

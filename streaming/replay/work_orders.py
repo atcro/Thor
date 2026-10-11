@@ -12,6 +12,13 @@ plant, so the replay plays that part:
    from that asset's pre-fault history in the same regime and hour of day (no invented numbers),
    ground-truth `health` is 1.0, `failure_within_h` is unknown, and `completed` is reported.
 
+Execution timing (`execute_at`): "window" is the faithful behaviour above. "approval" (the
+demo default, env REPLAY_WORK_ORDER_EXECUTE) starts the outage at the next replayed row after
+the approval instead of waiting for the window, so the audience sees the motor go offline and
+come back healthy within seconds; the contract still records the scheduled window, and the
+`in_progress` event's note says the plant executed early for the demo. A real CMMS would do
+the work in the approved slot (or sooner, at the plant's discretion); the gap is the plant's.
+
 Rejected contracts and run_to_failure recommendations are not work orders, so nothing happens.
 Reports go to `POST /work-orders/{contract_id}/events` (insert-only on the API side); a failed
 report is logged and retried on the next transition, never fatal to the stream.
@@ -181,6 +188,8 @@ class RepairSimulator:
     client: WorkOrderClient | None = None
     poll_interval_s: float = DEFAULT_POLL_S
     clock: Callable[[], float] = time.monotonic
+    #: "window" = start at the contract's window; "approval" = start at the next row (demo).
+    execute_at: str = "window"
     events: list[tuple[str, str, datetime]] = field(default_factory=list)
     _orders: dict[str, WorkOrder] = field(default_factory=dict)
     _by_asset: dict[str, WorkOrder] = field(default_factory=dict)
@@ -215,13 +224,13 @@ class RepairSimulator:
             self._last_poll = now
             self.refresh()
 
-    def _report(self, wo: WorkOrder, status: str, ts: datetime) -> None:
+    def _report(self, wo: WorkOrder, status: str, ts: datetime, note: str = "") -> None:
         self.events.append((wo.contract_id, status, ts))
         log.info(
             "work order %s (%s) -> %s at plant time %s", wo.contract_id, wo.asset_id, status, ts
         )
         if self.client is not None:
-            self.client.report(wo.contract_id, status, ts)
+            self.client.report(wo.contract_id, status, ts, note)
 
     # -- rows -----------------------------------------------------------------------------
 
@@ -250,10 +259,17 @@ class RepairSimulator:
             return row
         ts = row.ts
         if wo.status == "scheduled":
-            if wo.window_start is not None and ts < wo.window_start:
+            early = self.execute_at == "approval"
+            if not early and wo.window_start is not None and ts < wo.window_start:
                 return row
             wo.status, wo.started_ts = "in_progress", ts
-            self._report(wo, "in_progress", ts)
+            note = ""
+            if early and wo.window_start is not None and ts < wo.window_start:
+                note = (
+                    "demo CMMS: executed at approval; the approved window was "
+                    f"{wo.window_start.isoformat()} (a real plant would act in its slot)"
+                )
+            self._report(wo, "in_progress", ts, note)
         if wo.status == "in_progress":
             started = wo.started_ts or ts
             if ts < started + timedelta(hours=wo.planned_downtime_h):

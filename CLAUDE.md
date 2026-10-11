@@ -156,6 +156,10 @@ a full Playwright e2e suite.
    motor offline for the contract's planned downtime (no rows) and then streams that motor's own
    healthy baseline again. The API only records the plant's progress reports as insert-only
    work-order events (`GET/POST /work-orders`) and shows them on the Fleet card and in Asset 360.
+   For the demo the simulated CMMS executes at the approval, not at the window
+   (`REPLAY_WORK_ORDER_EXECUTE=approval`, the default; `window` is the faithful mode), so the
+   motor visibly goes offline and comes back healthy within seconds of the click; the event note
+   records the scheduled window the plant would really have used.
    Rejected contracts and `run_to_failure` change nothing. Maintenance windows are computed in
    plant time (latest telemetry `ts`), never wall clock, so the window lands inside the replay.
 2. **Credibility check — AI4I 2020 (UCI).** Run the same pipeline against a real public
