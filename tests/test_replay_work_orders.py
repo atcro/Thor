@@ -13,7 +13,7 @@ import httpx
 import pandas as pd
 import pytest
 
-from streaming.replay.replay import iter_rows
+from streaming.replay.replay import iter_rows, shift_pass
 from streaming.replay.work_orders import (
     HealthyBaseline,
     RepairSimulator,
@@ -39,6 +39,21 @@ def _tail(df: pd.DataFrame, frac: float) -> pd.DataFrame:
 def _window(play: pd.DataFrame, frac: float) -> datetime:
     t0, t1 = play["ts"].min(), play["ts"].max()
     return (t0 + (t1 - t0) * frac).to_pydatetime()
+
+
+def test_shift_pass_keeps_plant_time_moving(fleet: pd.DataFrame) -> None:
+    """Pass k starts one sampling step after pass k-1 ended, with the same rows otherwise."""
+    p0 = shift_pass(fleet, 0)
+    assert p0 is fleet
+    p1 = shift_pass(fleet, 1)
+    assert p1["ts"].min() == fleet["ts"].max() + STEP
+    assert (p1["ts"] - fleet["ts"]).nunique() == 1  # one uniform shift
+    assert p1[["asset_id", "vibration_rms"]].equals(fleet[["asset_id", "vibration_rms"]])
+    p2 = shift_pass(fleet, 2)
+    assert p2["ts"].min() == p1["ts"].max() + STEP
+    # rows of consecutive passes never share (asset_id, ts), so none is dropped on insert
+    keys = pd.concat([fleet[["asset_id", "ts"]], p1[["asset_id", "ts"]]])
+    assert not keys.duplicated().any()
 
 
 def test_passthrough_without_orders(fleet: pd.DataFrame) -> None:

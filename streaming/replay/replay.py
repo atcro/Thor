@@ -4,7 +4,9 @@ Reads `data/simulator/out/telemetry.parquet` (generating it if missing), orders 
 across all assets and publishes each one as `TelemetryRow.model_dump_json()` to
 `telemetry/{asset_id}`. Between rows it sleeps `(next_ts - ts) / speed` seconds, so
 `REPLAY_SPEED=600` replays ten minutes of plant time per second. When the sequence ends it
-starts again from the beginning (unless `--once`).
+plays the same story again with timestamps shifted by one full timeline (`shift_pass`), so
+plant time keeps moving and the fleet never freezes at the end of the history (unless
+`--once`).
 
 While streaming, the replay also acts as the plant's CMMS for approved work orders (see
 `streaming/replay/work_orders.py`): the motor goes offline for the planned downtime and then
@@ -88,6 +90,26 @@ def load_telemetry(path: Path = DEFAULT_PARQUET) -> pd.DataFrame:
     df = pd.read_parquet(path)
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     return df
+
+
+def shift_pass(df: pd.DataFrame, k: int) -> pd.DataFrame:
+    """The telemetry for replay pass `k` (0 = the recorded timeline itself).
+
+    Plant time must keep moving: a row whose (asset_id, ts) already exists in the database is
+    ignored on insert, so replaying the same timestamps a second time would freeze the fleet at
+    the end of the history and hide everything that happens afterwards (a repair, a new
+    degradation). Pass k therefore shifts every timestamp by k full timelines (span + one
+    sampling step), so pass 1 starts right where pass 0 ended and the story repeats in new
+    plant time. Output: a copy with shifted `ts` (k = 0 returns the frame unchanged).
+    """
+    if k <= 0 or df.empty:
+        return df
+    ts = pd.to_datetime(df["ts"], utc=True)
+    t0, t1 = ts.min(), ts.max()
+    steps = ts.sort_values().diff().dropna()
+    step = steps[steps > pd.Timedelta(0)].median() if len(steps) else pd.Timedelta(minutes=10)
+    span = (t1 - t0) + step
+    return df.assign(ts=ts + k * span)
 
 
 def iter_rows(df: pd.DataFrame) -> Iterator[TelemetryRow]:
@@ -285,10 +307,10 @@ def main() -> None:
         )
         log.info("simulated CMMS on: executing approved work orders from %s", args.control_plane)
 
-    first_pass = True
+    pass_no = 0
     while True:
-        play = df
-        if first_pass and 0.0 < args.start_fraction < 1.0 and args.speed > 0:
+        play = shift_pass(df, pass_no)
+        if pass_no == 0 and 0.0 < args.start_fraction < 1.0 and args.speed > 0:
             t0, t1 = df["ts"].min(), df["ts"].max()
             play = df.loc[df["ts"] > t0 + (t1 - t0) * args.start_fraction]
             log.info(
@@ -296,7 +318,14 @@ def main() -> None:
                 play["ts"].min(),
                 args.start_fraction * 100,
             )
-        first_pass = False
+        elif pass_no > 0:
+            log.info(
+                "pass %d: timeline shifted so plant time keeps moving (%s -> %s)",
+                pass_no,
+                play["ts"].min(),
+                play["ts"].max(),
+            )
+        pass_no += 1
         rows = repairs.apply(iter_rows(play)) if repairs else iter_rows(play)
         try:
             if transport == "http":
