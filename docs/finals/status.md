@@ -23,3 +23,18 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
   `orchestrator._finalize`, open promotion requests only for passed validation, gate
   `lifecycle.request_promotion`/`promote` on `validation_passed`, fix `reject_promotion` call in
   `routes/approvals.py`; add tests; commit.
+
+## 2026-10-11 13:45 UTC-5 — fix group 1 done: governance (defects 1, 2)
+
+- **Baseline:** `pytest` at `1c4475f`: 180 passed in 48 s (full suite, e2e included).
+- **Commit:** `e797f21` "Separate maintenance approval from model promotion and gate promotion
+  on validation".
+- **Files:** `apps/api/orchestrator.py` (`_validate`, `_finalize`), `apps/api/routes/approvals.py`
+  (`decide_promotion_db`, `feature_spec_for_version`), `agents/mlops/lifecycle.py`
+  (`validation_failures`, `PromotionBlocked`, `_assert_promotable`), `CLAUDE.md` §6,
+  tests in `test_orchestrator.py`, `test_api.py`, `test_mlops.py`, `test_e2e_pipeline.py`.
+- **Tests run:** `pytest tests/test_mlops.py tests/test_orchestrator.py tests/test_api.py
+  tests/test_e2e_pipeline.py` → 41 passed (after fixing two new tests); `ruff check .` clean.
+- **Next:** fix 3 (ground truth): strip `health`/`failure_within_h`/`regime` at the replay's
+  publish boundary, `health_score: None` when no prediction, infer `regime` from rpm/load with
+  the production baseline, scrub asset/telemetry/copilot responses, isolation test, web types.

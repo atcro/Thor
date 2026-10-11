@@ -46,6 +46,26 @@ DEFAULT_PARQUET = REPO_ROOT / "data" / "simulator" / "out" / "telemetry.parquet"
 DEFAULT_TOPIC_FMT = "telemetry/{asset_id}"
 DEFAULT_BATCH = 500
 
+#: Simulator-only fields. They exist in the parquet for training labels and offline evaluation
+#: and are removed at the publish boundary: a real plant cannot observe its own remaining
+#: life, and the control plane, fleet view, Bolt, Decision Contracts and edge never see them.
+#: `regime` is the simulator's label; the control plane infers the regime from rpm/load.
+PUBLIC_EXCLUDE: frozenset[str] = frozenset({"health", "failure_within_h", "regime"})
+
+
+def public_record(row: TelemetryRow) -> dict:
+    """The JSON-safe dict of a row as the plant publishes it: observable sensors only.
+
+    Input: a TelemetryRow (may carry simulator ground truth). Output: dict without any key in
+    `PUBLIC_EXCLUDE` (the keys are absent, not null).
+    """
+    return row.model_dump(mode="json", exclude=PUBLIC_EXCLUDE)
+
+
+def public_payload(row: TelemetryRow) -> str:
+    """`public_record` serialised for MQTT."""
+    return row.model_dump_json(exclude=PUBLIC_EXCLUDE)
+
 
 def parse_broker_url(url: str) -> tuple[str, int]:
     """'mqtt://host:1883' -> ('host', 1883). Missing port defaults to 1883."""
@@ -125,8 +145,9 @@ def publish_mqtt(
 
     Inputs: TelemetryRow iterable (time-ordered), broker host/port, speed factor (0 = no
     sleeping), topic format, optional pre-connected client. Sleeps (ts - prev_ts)/speed between
-    rows. Output: number of rows published. Raises ConnectionError if the broker cannot be
-    reached (caller falls back to HTTP).
+    rows. Every payload is `public_payload(row)`: simulator ground truth and the simulator's
+    regime label never go on the wire. Output: number of rows published. Raises
+    ConnectionError if the broker cannot be reached (caller falls back to HTTP).
     """
     own_client = client is None
     if client is None:
@@ -136,7 +157,7 @@ def publish_mqtt(
     try:
         for row in rows:
             _sleep_between(prev_ts, row.ts, speed)
-            client.publish(topic_fmt.format(asset_id=row.asset_id), row.model_dump_json(), qos=0)
+            client.publish(topic_fmt.format(asset_id=row.asset_id), public_payload(row), qos=0)
             prev_ts = row.ts
             n += 1
             if n % 5000 == 0:
@@ -160,7 +181,8 @@ def publish_http(
     """POST rows in batches to `{base_url}/ingest`.
 
     Inputs: rows, control-plane base URL, speed (0 = as fast as possible, else each batch is
-    delayed by its time span / speed), batch size, retry policy. Output: rows sent.
+    delayed by its time span / speed), batch size, retry policy. Rows are sent as
+    `public_record(row)` (observable sensors only). Output: rows sent.
     Raises ConnectionError when a batch cannot be delivered after `max_retries` attempts.
     """
     own = client is None
@@ -174,7 +196,7 @@ def publish_http(
         nonlocal sent
         if not batch:
             return
-        payload = [r.model_dump(mode="json") for r in batch]
+        payload = [public_record(r) for r in batch]
         for attempt in range(1, max_retries + 1):
             try:
                 resp = http.post(url, json=payload)

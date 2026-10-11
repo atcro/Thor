@@ -7,13 +7,13 @@ import { Dot, HealthPill, Loaded, ModelStageChip, Panel, Pill, RegimeBadge, Work
 import { usePolling } from "../hooks/usePolling";
 import { fmtDateTime, fmtInt, fmtPct, fmtRel, fmtShort, probTone } from "../lib/format";
 
-/** Sort by failure risk desc; assets without a prediction sort by health asc afterwards. */
+/** Sort by failure risk desc; assets without a prediction ("no prediction yet") come last. */
 function sortByRisk(list: FleetAsset[]): FleetAsset[] {
   return [...list].sort((a, b) => {
     const pa = a.failure_probability ?? -1;
     const pb = b.failure_probability ?? -1;
     if (pb !== pa) return pb - pa;
-    return a.health_score - b.health_score;
+    return a.asset.asset_id.localeCompare(b.asset.asset_id);
   });
 }
 
@@ -170,7 +170,8 @@ export function Fleet() {
     saveStyle(s);
   };
   const sorted = useMemo(() => (fleet.data ? sortByRisk(fleet.data) : []), [fleet.data]);
-  const nRisk = sorted.filter((a) => (a.failure_probability ?? 0) >= 0.4 || a.health_score < 60).length;
+  const nRisk = sorted.filter((a) => (a.failure_probability ?? 0) >= 0.4 || (a.health_score ?? 100) < 60).length;
+  const nUnscored = sorted.filter((a) => a.health_score === null || a.health_score === undefined).length;
   const nOpen = sorted.filter((a) => a.open_contract_id).length;
   const nWork = sorted.filter((a) => a.work_order && a.work_order.status !== "completed").length;
 
@@ -181,7 +182,7 @@ export function Fleet() {
           <h1>Fleet</h1>
           <div className="sub">
             {fleet.data
-              ? `${sorted.length} assets · ${nRisk} at risk · ${nOpen} open contract${nOpen === 1 ? "" : "s"} · ${nWork} work order${nWork === 1 ? "" : "s"} · sorted by failure risk`
+              ? `${sorted.length} assets · ${nRisk} at risk · ${nUnscored} without a prediction yet · ${nOpen} open contract${nOpen === 1 ? "" : "s"} · ${nWork} work order${nWork === 1 ? "" : "s"} · sorted by failure risk`
               : "Loading fleet…"}
           </div>
         </div>

@@ -3,7 +3,7 @@
 Routes (mounted by apps/api/main.py):
 
     POST /ingest                               list[TelemetryRow] | TelemetryRow -> {"inserted": n}
-    GET  /assets/{asset_id}/telemetry          ?hours=24&limit=2000 -> list[TelemetryRow]
+    GET  /assets/{asset_id}/telemetry          ?hours=24&limit=2000 -> list[ObservedTelemetryRow]
     GET  /assets/{asset_id}/predictions        ?limit=500 -> list[{ts, failure_probability, model_version, source}]
     POST /predictions                          PredictionIn | list[PredictionIn] -> {"ok": true[, "inserted": n]}
 
@@ -32,7 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Engine
 
 from apps.api import db
-from apps.api.schemas import TelemetryRow
+from apps.api.schemas import ObservedTelemetryRow, TelemetryRow
 from apps.api.settings import get_settings
 
 log = logging.getLogger("thor.telemetry")
@@ -113,17 +113,18 @@ def ingest(
     return {"inserted": n}
 
 
-@router.get("/assets/{asset_id}/telemetry", response_model=list[TelemetryRow])
+@router.get("/assets/{asset_id}/telemetry", response_model=list[ObservedTelemetryRow])
 def get_asset_telemetry(
     asset_id: str,
     hours: float = Query(24.0, gt=0.0, le=24 * 365),
     limit: int = Query(2000, ge=1, le=100_000),
     engine: Engine = Depends(get_db_engine),
-) -> list[TelemetryRow]:
-    """Most recent `hours` of telemetry for one asset, oldest first, capped at `limit` rows.
+) -> list[ObservedTelemetryRow]:
+    """Most recent `hours` of observed telemetry for one asset, oldest first, capped at `limit`.
 
     The window is anchored on the asset's latest stored timestamp (not wall-clock now) so
-    replayed historical data is always visible. Output: [] for unknown assets.
+    replayed historical data is always visible. Rows are `ObservedTelemetryRow`: the eight
+    sensors only, never simulator ground truth. Output: [] for unknown assets.
     """
     latest = db.read_telemetry(asset_id=asset_id, limit=1, engine=engine)
     if latest.empty:
@@ -131,7 +132,7 @@ def get_asset_telemetry(
     end = latest["ts"].iloc[0].to_pydatetime()
     start = end - timedelta(hours=hours)
     df = db.read_telemetry(asset_id=asset_id, start=start, limit=limit, engine=engine)
-    return df_to_rows(df)
+    return [ObservedTelemetryRow.from_row(r) for r in df_to_rows(df)]
 
 
 @router.get("/assets/{asset_id}/predictions", response_model=list[PredictionOut])

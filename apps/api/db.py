@@ -448,20 +448,36 @@ def insert_prediction(
     )
 
 
-def latest_predictions(engine: Engine | None = None) -> dict[str, float]:
-    """asset_id -> most recent failure_probability (ties on ts broken by the newest row id).
+def latest_prediction_rows(engine: Engine | None = None) -> dict[str, dict[str, Any]]:
+    """asset_id -> newest prediction {failure_probability, ts, model_version, source}.
 
     One index probe per registered asset (see `_latest_rows_query`); the predictions table
-    grows by one row per telemetry message, so it must never be read whole.
+    grows by one row per telemetry message, so it must never be read whole. Ties on ts are
+    broken by the newest row id.
     """
     engine = engine or get_engine()
     q = _latest_rows_query(predictions).order_by(predictions.c.asset_id, predictions.c.id)
     with engine.connect() as conn:
         rows = conn.execute(q).mappings().all()
-    out: dict[str, float] = {}
+    out: dict[str, dict[str, Any]] = {}
     for r in rows:  # ordered by id, so the last write per asset wins
-        out[r["asset_id"]] = float(r["failure_probability"])
+        ts = r["ts"]
+        if isinstance(ts, datetime) and ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        out[r["asset_id"]] = {
+            "failure_probability": float(r["failure_probability"]),
+            "ts": ts,
+            "model_version": str(r["model_version"]),
+            "source": str(r["source"]),
+        }
     return out
+
+
+def latest_predictions(engine: Engine | None = None) -> dict[str, float]:
+    """asset_id -> most recent failure_probability (see `latest_prediction_rows`)."""
+    return {
+        k: float(v["failure_probability"]) for k, v in latest_prediction_rows(engine).items()
+    }
 
 
 # --------------------------------------------------------------------------------------

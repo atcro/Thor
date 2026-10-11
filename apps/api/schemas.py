@@ -31,8 +31,24 @@ SENSOR_COLUMNS: tuple[str, ...] = (
 )
 
 
+#: Simulator ground truth. Allowed ONLY as training labels and in offline evaluation. It is
+#: stripped at the replay's publish boundary and never appears in an operational response
+#: (fleet, asset, telemetry, copilot tools, Decision Contracts, edge) -- see
+#: `ObservedTelemetryRow` and tests/test_ground_truth_isolation.py.
+GROUND_TRUTH_COLUMNS: tuple[str, ...] = ("health", "failure_within_h")
+#: Columns the simulator writes that the plant could not observe directly. `regime` is a
+#: simulator label; operational responses carry an *inferred* regime (rpm/load vs the
+#: production model's regime centroids) instead.
+SIMULATOR_ONLY_COLUMNS: tuple[str, ...] = ("regime", *GROUND_TRUTH_COLUMNS)
+
+
 class TelemetryRow(BaseModel):
-    """One sensor sample for one asset — the unit that flows over MQTT and into TimescaleDB."""
+    """One sensor sample for one asset — the unit that flows into TimescaleDB.
+
+    The optional `regime` / `health` / `failure_within_h` fields exist for the historical
+    import (seed) that carries training labels. Live rows and every operational response use
+    `ObservedTelemetryRow`, which has no such fields.
+    """
 
     asset_id: str
     ts: datetime
@@ -51,6 +67,31 @@ class TelemetryRow(BaseModel):
     failure_within_h: float | None = Field(
         default=None, description="Simulator ground truth: hours to failure, null if none"
     )
+
+
+class ObservedTelemetryRow(BaseModel):
+    """A telemetry sample as the plant can observe it: id, time and the eight sensors.
+
+    This is the only telemetry shape that leaves the control plane (GET /assets/{id},
+    GET /assets/{id}/telemetry, Bolt's get_asset). It cannot carry simulator ground truth.
+    """
+
+    asset_id: str
+    ts: datetime
+    vibration_rms: float
+    vibration_kurtosis: float
+    vibration_crest: float
+    bearing_temp_c: float
+    motor_temp_c: float
+    current_a: float
+    rpm: float
+    load_pct: float
+
+    @classmethod
+    def from_row(cls, row: TelemetryRow | dict[str, Any]) -> ObservedTelemetryRow:
+        """Project a stored TelemetryRow (or dict) onto the observable fields only."""
+        data = row if isinstance(row, dict) else row.model_dump()
+        return cls(**{k: data[k] for k in cls.model_fields})
 
 
 class Asset(BaseModel):
@@ -533,9 +574,18 @@ class GraphState(BaseModel):
 
 
 class FleetAsset(BaseModel):
+    """One fleet-table row. Everything here is observable telemetry or an approved-model
+    prediction; simulator ground truth never reaches it."""
+
     asset: Asset
-    health_score: float
+    #: 100 * (1 - failure_probability) from the latest prediction; None = "no prediction yet".
+    health_score: float | None
     failure_probability: float | None
+    #: When the prediction was made (plant time of the scored window) and by which model.
+    prediction_ts: datetime | None = None
+    model_version: str | None = None
+    #: Operating regime inferred from the latest rpm/load against the production model's
+    #: regime centroids; None when no production model exists.
     regime: str | None
     last_ts: datetime | None
     open_contract_id: str | None

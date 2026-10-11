@@ -65,7 +65,7 @@ const REGIME_WORD: Record<string, string> = {
 export function spriteParams(item: FleetAsset): SpriteParams {
   const p = item.failure_probability;
   const tier = riskTier(p);
-  const atRisk = (p ?? 0) >= 0.4 || item.health_score < 60;
+  const atRisk = (p ?? 0) >= 0.4 || (item.health_score ?? 100) < 60;
   const heat = tier === "high" ? clamp01(0.5 + ((p as number) - 0.4) / 1.2) : 0;
   // A motor the plant has taken offline for an approved work order stands still: no spin, no
   // shake, whatever the (stale) last prediction says.

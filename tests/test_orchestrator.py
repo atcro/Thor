@@ -469,7 +469,7 @@ def install_fake_toolbox(monkeypatch: pytest.MonkeyPatch, orchestrator: Any) -> 
     monkeypatch.setattr(
         orchestrator,
         "tool_register_model",
-        lambda v, path, engine: make_registered(v.model_version),
+        lambda v, path, engine, feature_spec=None: make_registered(v.model_version),
     )
     monkeypatch.setattr(
         orchestrator,
@@ -811,7 +811,10 @@ def test_copilot_template_mode(engine: Any) -> None:
     r = ask("Which motors in the fleet are at risk?")
     assert r.source == "template"
     assert r.tool_calls and r.tool_calls[0]["name"] == "get_fleet"
-    assert "MTR-042" in r.reply and "4 assets" in r.reply
+    assert "none scored yet" in r.reply and "MTR-042" not in r.reply  # no prediction, no guess
+    db.insert_prediction("MTR-042", NOW, "v42", 0.6, engine=engine)
+    r = ask("Which motors in the fleet are at risk?")
+    assert "MTR-042" in r.reply and "4 assets" in r.reply and "1 scored" in r.reply
     r = ask("How is MTR-042 doing?")
     assert r.tool_calls[0]["name"] == "get_asset" and r.tool_calls[0]["args"] == {
         "asset_id": "MTR-042"

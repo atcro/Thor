@@ -51,7 +51,7 @@ const fleet: FleetAsset[] = [
       rated_kw: 110,
       criticality: "high",
     },
-    health_score: 40,
+    health_score: null,
     failure_probability: null,
     regime: "R2",
     last_ts: "2026-09-13T09:40:00Z",

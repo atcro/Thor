@@ -2,10 +2,15 @@
 
 GET /fleet, GET /assets/{asset_id}, GET /system/health. Everything here is deterministic
 read-only aggregation over the database; `compute_fleet()` is reused by the copilot tools.
+
+Ground-truth isolation (CLAUDE.md section 15): nothing here reads the simulator's `health`,
+`failure_within_h` or `regime` columns. Health comes from approved-model predictions only and
+the regime is inferred from rpm/load with the production model's centroids.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import socket
 from datetime import datetime
@@ -19,9 +24,10 @@ from sqlalchemy.engine import Engine
 
 from apps.api import db
 from apps.api.graph_state import run_summary
-from apps.api.schemas import FleetAsset, ModelStage, TelemetryRow
+from apps.api.schemas import FeatureSpec, FleetAsset, ModelStage, ObservedTelemetryRow
 from apps.api.settings import get_settings
 
+log = logging.getLogger("thor.routes.fleet")
 router = APIRouter(tags=["fleet"])
 
 
@@ -53,79 +59,139 @@ def _registry_stage(engine: Engine | None) -> ModelStage | None:
     return ModelStage(latest[0]) if latest else None
 
 
-def _health_score(
-    p_fail: float | None, health: float | None, vib: float | None, vib_mean: float, vib_std: float
-) -> float:
-    """100*(1-p) if a prediction exists; else 100*health; else 100 - clipped vibration z-score."""
-    if p_fail is not None:
-        return float(max(0.0, min(100.0, 100.0 * (1.0 - p_fail))))
-    if health is not None and not pd.isna(health):
-        return float(max(0.0, min(100.0, 100.0 * health)))
-    if vib is None or pd.isna(vib) or vib_std <= 0:
-        return 100.0
-    z = (vib - vib_mean) / vib_std
-    return float(100.0 - max(0.0, min(4.0, z)) * 12.5)
+def _health_score(p_fail: float | None) -> float | None:
+    """100 * (1 - p) when an approved-model prediction exists, else None ("no prediction yet").
+
+    There is deliberately no fallback: simulator ground truth (`health`) and ad-hoc vibration
+    heuristics are not health. A motor nobody has scored shows no score.
+    """
+    if p_fail is None:
+        return None
+    return float(max(0.0, min(100.0, 100.0 * (1.0 - float(p_fail)))))
+
+
+def production_spec(engine: Engine | None) -> FeatureSpec | None:
+    """FeatureSpec of the production model (None when there is none); never raises."""
+    try:
+        from agents.mlops.lifecycle import production_feature_spec
+
+        return production_feature_spec(engine=engine)
+    except Exception as e:  # noqa: BLE001 - toolbox absent or registry empty
+        log.debug("production feature spec unavailable: %s", e)
+        return None
+
+
+def infer_regimes(
+    rows: list[dict[str, Any]], spec: FeatureSpec | None
+) -> list[str | None]:
+    """Inferred regime per telemetry row from its rpm/load and the production baseline.
+
+    Uses the same nearest-centroid rule as the feature pipeline and the edge
+    (`agents.ml_architect.features.assign_regime_ids`). Output: one regime id or None per
+    row; all None when there is no production baseline. The simulator's `regime` column is
+    never consulted.
+    """
+    if not rows or spec is None or not spec.baseline:
+        return [None] * len(rows)
+    try:
+        from agents.ml_architect.features import assign_regime_ids
+
+        rpm = [float(r.get("rpm")) if r.get("rpm") is not None else float("nan") for r in rows]
+        load = [
+            float(r.get("load_pct")) if r.get("load_pct") is not None else float("nan")
+            for r in rows
+        ]
+        out = assign_regime_ids(rpm, load, spec.baseline)
+        return [o if (o is not None and not pd.isna(rpm[i])) else None for i, o in enumerate(out)]
+    except Exception as e:  # noqa: BLE001 - a display nicety must never fail the fleet call
+        log.warning("regime inference failed: %s", e)
+        return [None] * len(rows)
+
+
+def _ts_of(value: Any) -> datetime | None:
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
+    if isinstance(value, datetime):
+        return value
+    return None
 
 
 def compute_fleet(engine: Engine | None = None) -> list[FleetAsset]:
-    """Build the fleet table: one FleetAsset per registered asset, sorted by health ascending."""
+    """Build the fleet table: one FleetAsset per registered asset.
+
+    Health and failure probability come only from the latest approved-model prediction; the
+    regime is inferred from the latest rpm/load with the production model's centroids. Sorted
+    by health ascending (worst first); assets with no prediction yet come last.
+    """
     engine = engine or db.get_engine()
     assets = db.list_assets(engine)
     latest = db.latest_telemetry(engine)
-    preds = db.latest_predictions(engine)
+    preds = db.latest_prediction_rows(engine)
     open_contracts = db.open_contract_by_asset(engine)
     work_orders = db.work_order_by_asset(engine)
     stage = _registry_stage(engine)
-    vib_mean = vib_std = 0.0
+    spec = production_spec(engine)
     latest_by_asset: dict[str, dict[str, Any]] = {}
     if not latest.empty:
-        vib_mean = float(latest["vibration_rms"].mean())
-        vib_std = float(latest["vibration_rms"].std(ddof=0) or 0.0)
         latest_by_asset = {r["asset_id"]: r for r in latest.to_dict("records")}
+    ordered = [latest_by_asset.get(a.asset_id) for a in assets]
+    regimes = infer_regimes([r for r in ordered if r is not None], spec)
+    regime_by_asset: dict[str, str | None] = {}
+    i = 0
+    for a, row in zip(assets, ordered, strict=True):
+        if row is not None:
+            regime_by_asset[a.asset_id] = regimes[i]
+            i += 1
     out: list[FleetAsset] = []
     for a in assets:
         row = latest_by_asset.get(a.asset_id)
         p = preds.get(a.asset_id)
-        health = row.get("health") if row else None
-        vib = row.get("vibration_rms") if row else None
-        regime = row.get("regime") if row else None
-        if isinstance(regime, float) and pd.isna(regime):
-            regime = None
-        last_ts = row["ts"].to_pydatetime() if row and isinstance(row["ts"], pd.Timestamp) else None
+        p_fail = float(p["failure_probability"]) if p else None
+        health = _health_score(p_fail)
         out.append(
             FleetAsset(
                 asset=a,
-                health_score=round(_health_score(p, health, vib, vib_mean, vib_std), 1),
-                failure_probability=float(p) if p is not None else None,
-                regime=regime,
-                last_ts=last_ts,
+                health_score=round(health, 1) if health is not None else None,
+                failure_probability=p_fail,
+                prediction_ts=_ts_of(p["ts"]) if p else None,
+                model_version=p["model_version"] if p else None,
+                regime=regime_by_asset.get(a.asset_id),
+                last_ts=_ts_of(row["ts"]) if row else None,
                 open_contract_id=open_contracts.get(a.asset_id),
                 stage=stage,
                 work_order=work_orders.get(a.asset_id),
             )
         )
-    out.sort(key=lambda f: f.health_score)
+    out.sort(key=lambda f: (f.health_score is None, f.health_score or 0.0, f.asset.asset_id))
     return out
 
 
 @router.get("/fleet", response_model=list[FleetAsset])
 def get_fleet() -> list[FleetAsset]:
-    """Fleet overview sorted by risk (lowest health score first)."""
+    """Fleet overview sorted by risk (lowest health score first; unscored assets last)."""
     return compute_fleet(db.get_engine())
 
 
 @router.get("/assets/{asset_id}")
 def get_asset(asset_id: str) -> dict[str, Any]:
-    """Asset 360: asset, latest telemetry row, latest prediction, contracts, work orders, runs."""
+    """Asset 360: asset, latest observed sample, latest prediction, contracts, work orders, runs.
+
+    `latest` is an `ObservedTelemetryRow` (no simulator fields); `regime` is inferred from it
+    with the production baseline; `prediction` / `prediction_ts` / `model_version` come from
+    the newest approved-model prediction (all None when nothing has scored this asset yet).
+    """
     engine = db.get_engine()
     asset = next((a for a in db.list_assets(engine) if a.asset_id == asset_id), None)
     if asset is None:
         raise HTTPException(status_code=404, detail=f"unknown asset {asset_id}")
     latest_df = db.read_telemetry(asset_id=asset_id, limit=1, engine=engine)
-    latest: TelemetryRow | None = None
+    latest: ObservedTelemetryRow | None = None
+    regime: str | None = None
     if not latest_df.empty:
-        latest = TelemetryRow.model_validate(_clean_row(latest_df.iloc[-1].to_dict()))
-    prediction = db.latest_predictions(engine).get(asset_id)
+        rec = _clean_row(latest_df.iloc[-1].to_dict())
+        latest = ObservedTelemetryRow.from_row(rec)
+        regime = infer_regimes([rec], production_spec(engine))[0]
+    pred = db.latest_prediction_rows(engine).get(asset_id)
     contracts = db.list_decision_contracts(asset_id=asset_id, engine=engine)
     work_orders = db.list_work_orders(asset_id=asset_id, engine=engine)
     runs = []
@@ -134,10 +200,15 @@ def get_asset(asset_id: str) -> dict[str, Any]:
         s["created_at"] = r["created_at"]
         s["updated_at"] = r["updated_at"]
         runs.append(s)
+    p_fail = float(pred["failure_probability"]) if pred else None
     return {
         "asset": asset,
         "latest": latest,
-        "prediction": float(prediction) if prediction is not None else None,
+        "regime": regime,
+        "prediction": p_fail,
+        "prediction_ts": _ts_of(pred["ts"]) if pred else None,
+        "model_version": pred["model_version"] if pred else None,
+        "health_score": _health_score(p_fail),
         "contracts": contracts,
         "work_orders": work_orders,
         "runs": runs,

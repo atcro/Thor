@@ -317,7 +317,7 @@ index (best effort), start the MQTT subscriber. Mount routers. `GET /health`.
 ### Routes
 ```
 apps/api/routes/fleet.py
-  GET /fleet                        -> list[FleetAsset]  (health_score = 100*(1 - p_fail) if a prediction exists else derived from latest health/vibration z-score)
+  GET /fleet                        -> list[FleetAsset]  (health_score = 100*(1 - p_fail) from the latest approved-model prediction, else null = "no prediction yet"; regime inferred from rpm/load with the production baseline; never simulator ground truth)
   GET /assets/{asset_id}            -> {asset, latest: TelemetryRow|null, prediction: float|null, contracts: list[DecisionContract], work_orders: list[WorkOrder], runs: list[run summaries]}
   GET /system/health                -> {db: ok, mqtt: bool, mlflow: bool, edge: bool, n_telemetry_rows, last_ingest_ts}
 apps/api/routes/pipeline.py

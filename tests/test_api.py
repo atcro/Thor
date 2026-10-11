@@ -60,10 +60,11 @@ def test_fleet_and_asset(client: TestClient) -> None:
     assert r.status_code == 200
     fleet = r.json()
     assert len(fleet) == 4
-    assert fleet[0]["asset"]["asset_id"] == "MTR-042"  # lowest health first
-    assert fleet[0]["health_score"] < fleet[-1]["health_score"]
-    assert fleet[-1]["health_score"] == 100.0
-    assert fleet[0]["regime"] == "R2" and fleet[0]["failure_probability"] is None
+    # No approved-model prediction yet -> no health score and no regime (the seeded rows carry
+    # simulator ground truth, which must never be used as a fallback).
+    assert [f["asset"]["asset_id"] for f in fleet] == ["MTR-001", "MTR-002", "MTR-003", "MTR-042"]
+    assert all(f["health_score"] is None and f["failure_probability"] is None for f in fleet)
+    assert all(f["regime"] is None for f in fleet)
     assert fleet[0]["stage"] is None and fleet[0]["open_contract_id"] is None
 
     r = client.get("/assets/MTR-042")
@@ -79,10 +80,14 @@ def test_fleet_uses_prediction_when_present(client: TestClient) -> None:
     from datetime import UTC, datetime
 
     db.insert_prediction("MTR-001", datetime.now(UTC), "v42", 0.25, engine=db.get_engine())
-    fleet = {f["asset"]["asset_id"]: f for f in client.get("/fleet").json()}
+    fleet_list = client.get("/fleet").json()
+    fleet = {f["asset"]["asset_id"]: f for f in fleet_list}
     assert fleet["MTR-001"]["failure_probability"] == 0.25
     assert fleet["MTR-001"]["health_score"] == 75.0
-    assert client.get("/assets/MTR-001").json()["prediction"] == 0.25
+    assert fleet["MTR-001"]["model_version"] == "v42"
+    assert fleet_list[0]["asset"]["asset_id"] == "MTR-001"  # scored assets sort first
+    detail = client.get("/assets/MTR-001").json()
+    assert detail["prediction"] == 0.25 and detail["health_score"] == 75.0
 
 
 def test_pipeline_run_to_approval(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -282,6 +287,9 @@ def test_models_routes_empty_and_promotion_404(client: TestClient) -> None:
 
 
 def test_copilot_template_mode_over_http(client: TestClient) -> None:
+    from datetime import UTC, datetime
+
+    db.insert_prediction("MTR-042", datetime.now(UTC), "v42", 0.6, engine=db.get_engine())
     r = client.post(
         "/copilot/chat",
         json={"messages": [{"role": "user", "content": "Which assets are at risk in the fleet?"}]},

@@ -91,8 +91,9 @@ def test_get_telemetry_window_and_limit(client: TestClient, demo_rows: list[Tele
     assert ts == sorted(ts)
     assert ts[-1] == demo_rows[-1].ts
     assert ts[-1] - ts[0] <= timedelta(hours=24)
-    row = TelemetryRow.model_validate(body[-1])
-    assert row.asset_id == "MTR-042" and row.regime in {"R1", "R2", "R3"}
+    assert body[-1]["asset_id"] == "MTR-042"
+    # observable sensors only: the simulator's regime / health / failure_within_h never leave
+    assert not {"regime", "health", "failure_within_h"} & set(body[-1])
     r = client.get("/assets/MTR-042/telemetry", params={"hours": 24, "limit": 10})
     assert len(r.json()) == 10
     assert datetime.fromisoformat(r.json()[-1]["ts"]) == demo_rows[-1].ts

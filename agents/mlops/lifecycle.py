@@ -31,6 +31,7 @@ from apps.api.schemas import (
     Approval,
     ChampionComparison,
     EdgeDeployment,
+    FeatureSpec,
     ModelStage,
     PromotionRequest,
     RegisteredModel,
@@ -128,10 +129,22 @@ def validation_failures(validation: ValidationReport) -> list[str]:
     return reasons
 
 
-def _registry_payload(validation: ValidationReport, artifact_path: Path) -> dict[str, Any]:
+def _registry_payload(
+    validation: ValidationReport, artifact_path: Path, feature_spec: FeatureSpec | None = None
+) -> dict[str, Any]:
     ims = validation.ims
+    spec = (
+        {
+            "features": list(feature_spec.features),
+            "window_rows": int(feature_spec.window_rows),
+            "baseline": feature_spec.baseline,
+        }
+        if feature_spec is not None
+        else None
+    )
     return {
         "artifact_path": str(artifact_path),
+        "feature_spec": spec,
         "asset_id": validation.asset_id,
         "champion_id": validation.champion_id,
         "validation_passed": validation.passed,
@@ -207,13 +220,17 @@ def register_model(
     artifact_path: Path,
     name: str = DEFAULT_MODEL_NAME,
     engine: Engine | None = None,
+    feature_spec: FeatureSpec | None = None,
 ) -> RegisteredModel:
     """Insert the validated champion into `model_registry` at stage=candidate.
 
     Inputs: the 06 `ValidationReport` (version = `model_version`, family/IMS from the
-    champion), the joblib `artifact_path` of the (calibrated) champion, and the registry
-    `name`. Output: `RegisteredModel`. Re-registering an existing (name, version) returns the
-    stored row unchanged. Also calls `mlflow.register_model` best-effort.
+    champion), the joblib `artifact_path` of the (calibrated) champion, the registry
+    `name`, and optionally the `FeatureSpec` the model was trained with (features, window,
+    regime baseline) which is stored in the row payload so the edge export, the fleet's
+    regime inference and "Run analysis" can reuse the production model without a run state.
+    Output: `RegisteredModel`. Re-registering an existing (name, version) returns the stored
+    row unchanged. Also calls `mlflow.register_model` best-effort.
     """
     engine = engine or db.get_engine()
     version = validation.model_version
@@ -234,7 +251,7 @@ def register_model(
                 dataset_version=_dataset_version(validation),
                 registered_at=db.now_utc(),
                 onnx_path=None,
-                payload=_registry_payload(validation, artifact_path),
+                payload=_registry_payload(validation, artifact_path, feature_spec),
             )
         )
         row = _fetch_row(conn, name, version)
@@ -282,6 +299,32 @@ def get_production_model(
             .first()
         )
     return _row_to_model(row) if row is not None else None
+
+
+def production_feature_spec(
+    name: str = DEFAULT_MODEL_NAME, engine: Engine | None = None
+) -> FeatureSpec | None:
+    """FeatureSpec (features, window_rows, regime baseline) stored with the production row.
+
+    Output: the spec, or None when there is no production model or it was registered
+    without one. Deterministic read; this is what operational paths (fleet regime, Run
+    analysis, edge export) use so they depend on the *approved* model only.
+    """
+    engine = engine or db.get_engine()
+    prod = get_production_model(name, engine=engine)
+    if prod is None:
+        return None
+    with engine.connect() as conn:
+        row = _fetch_row(conn, prod.name, prod.version)
+    spec = (row.get("payload") or {}).get("feature_spec") if row is not None else None
+    if not spec:
+        return None
+    return FeatureSpec(
+        features=list(spec.get("features") or []),
+        window_rows=int(spec.get("window_rows") or 12),
+        description=f"production model {prod.version}",
+        baseline=spec.get("baseline"),
+    )
 
 
 def list_models(engine: Engine | None = None) -> list[RegisteredModel]:

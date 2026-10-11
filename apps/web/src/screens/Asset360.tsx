@@ -303,7 +303,9 @@ export function Asset360() {
 
   const latest = detail.data?.latest ?? null;
   const currentP = detail.data?.prediction ?? run.state?.contract?.failure_probability ?? null;
-  const health = latest?.health !== null && latest?.health !== undefined ? latest.health * 100 : currentP !== null ? 100 * (1 - currentP) : null;
+  // Health comes only from an approved-model prediction (the API's health_score, or the
+  // contract's probability for a just-finished run). No prediction -> "no prediction yet".
+  const health = detail.data?.health_score ?? (currentP !== null ? 100 * (1 - currentP) : null);
   const contract = run.state?.contract ?? null;
   const approval = run.state?.approval ?? localApproval;
   const runActive = run.state !== null && !isTerminal(run.state.stage);
@@ -317,7 +319,7 @@ export function Asset360() {
         <div>
           <div className="row" style={{ gap: 10 }}>
             <h1 className="mono">{assetId}</h1>
-            <RegimeBadge regime={latest?.regime ?? null} />
+            <RegimeBadge regime={detail.data?.regime ?? null} />
             <HealthPill score={health} />
             {currentP !== null && (
               <Pill tone={probTone(currentP)}>p(fail) {fmtPct(currentP)}</Pill>

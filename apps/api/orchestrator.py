@@ -56,6 +56,7 @@ from apps.api.schemas import (
     MaintenanceWindow,
     ManualPassage,
     ModelStage,
+    ObservedTelemetryRow,
     PipelineStage,
     PromotionRequest,
     RegimeReport,
@@ -672,12 +673,15 @@ def tool_create_decision_contract(
 
 
 def tool_register_model(
-    validation: ValidationReport, artifact_path: Path, engine: Engine | None
+    validation: ValidationReport,
+    artifact_path: Path,
+    engine: Engine | None,
+    feature_spec: FeatureSpec | None = None,
 ) -> RegisteredModel:
-    """08: `agents.mlops.lifecycle.register_model(validation, artifact_path, engine=engine)`."""
+    """08: `agents.mlops.lifecycle.register_model(validation, artifact_path, engine, feature_spec)`."""
     from agents.mlops.lifecycle import register_model
 
-    return register_model(validation, artifact_path, engine=engine)
+    return register_model(validation, artifact_path, engine=engine, feature_spec=feature_spec)
 
 
 def tool_compare_champion(challenger: RegisteredModel, engine: Engine | None) -> ChampionComparison:
@@ -1054,7 +1058,7 @@ def _validate(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
     try:
         if artifact is None:
             raise RuntimeError("no champion artifact path")
-        rm = tool_register_model(v, Path(artifact), engine)
+        rm = tool_register_model(v, Path(artifact), engine, gs.candidates.features)
         append_event(
             gs,
             gs.stage,
@@ -1474,21 +1478,32 @@ def _fleet_rows(engine: Engine | None) -> list[dict[str, Any]]:
                 "site": fa.asset.site,
                 "line": fa.asset.line,
                 "criticality": fa.asset.criticality,
-                "health_score": round(fa.health_score, 1),
+                "health_score": (
+                    round(fa.health_score, 1) if fa.health_score is not None else None
+                ),
                 "failure_probability": fa.failure_probability,
+                "prediction_ts": fa.prediction_ts.isoformat() if fa.prediction_ts else None,
+                "model_version": fa.model_version,
                 "regime": fa.regime,
                 "open_contract_id": fa.open_contract_id,
                 "model_stage": fa.stage.value if fa.stage else None,
             }
         )
-    rows.sort(key=lambda r: r["health_score"])
+    # compute_fleet already orders worst-first with unscored assets last; keep that order
     return rows
 
 
 def copilot_get_fleet(engine: Engine | None = None) -> dict[str, Any]:
-    """Tool: fleet overview sorted by risk (lowest health first)."""
+    """Tool: fleet overview sorted by risk (lowest health first; assets with no approved-model
+    prediction yet have health_score None and are listed last, never in highest_risk)."""
     rows = _fleet_rows(engine)
-    return {"n_assets": len(rows), "assets": rows, "highest_risk": rows[:3]}
+    scored = [r for r in rows if r["health_score"] is not None]
+    return {
+        "n_assets": len(rows),
+        "n_scored": len(scored),
+        "assets": rows,
+        "highest_risk": scored[:3],
+    }
 
 
 def copilot_get_asset(asset_id: str, engine: Engine | None = None) -> dict[str, Any]:
@@ -1501,8 +1516,11 @@ def copilot_get_asset(asset_id: str, engine: Engine | None = None) -> dict[str, 
     latest_row = None
     if not latest.empty:
         rec = latest.iloc[-1].to_dict()
+        # Observable sensors only: simulator ground truth never reaches Bolt.
         latest_row = {
-            k: (v.isoformat() if isinstance(v, pd.Timestamp) else v) for k, v in rec.items()
+            k: (v.isoformat() if isinstance(v, pd.Timestamp) else v)
+            for k, v in rec.items()
+            if k in ObservedTelemetryRow.model_fields
         }
     contracts = [
         {
@@ -1757,7 +1775,8 @@ COPILOT_TOOLS: list[dict[str, Any]] = [
         "name": "get_fleet",
         "description": (
             "Fleet overview: every asset with health score, failure probability, regime and "
-            "open contract, sorted by risk."
+            "open contract, sorted by risk. health_score is null for assets no approved model "
+            "has scored yet (say 'no prediction yet'; never guess a health)."
         ),
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
@@ -1900,6 +1919,8 @@ def _result_summary(result: dict[str, Any]) -> str:
         return f"{result['n_assets']} assets{tail}"
     if "asset" in result:
         a = result["asset"]
+        if a["health_score"] is None:
+            return f"{a['asset_id']} no prediction yet"
         return f"{a['asset_id']} health {a['health_score']}, p_fail {a['failure_probability']}"
     if "contracts" in result and "promotions" in result:
         return (
@@ -1917,13 +1938,25 @@ def _result_summary(result: dict[str, Any]) -> str:
 def _template_fleet_text(fleet: dict[str, Any]) -> str:
     if not fleet["assets"]:
         return "The fleet has no assets yet -- seed the simulator output first."
-    lines = [f"Fleet: {fleet['n_assets']} assets. Highest risk right now:"]
+    n_scored = fleet.get("n_scored", len(fleet["highest_risk"]))
+    if not fleet["highest_risk"]:
+        return (
+            f"Fleet: {fleet['n_assets']} assets, none scored yet by an approved model -- "
+            "health is unknown until the edge or Run analysis produces a prediction."
+        )
+    lines = [
+        f"Fleet: {fleet['n_assets']} assets ({n_scored} scored by the approved model). "
+        "Highest risk right now:"
+    ]
     for r in fleet["highest_risk"]:
         p = ""
         if r["failure_probability"] is not None:
             p = f", failure probability {r['failure_probability']:.2f}"
         oc = f", open contract {r['open_contract_id']}" if r["open_contract_id"] else ""
         lines.append(f"- {r['asset_id']} ({r['name']}): health {r['health_score']}{p}{oc}")
+    unscored = fleet["n_assets"] - n_scored
+    if unscored:
+        lines.append(f"{unscored} asset(s) have no prediction yet.")
     return "\n".join(lines)
 
 
@@ -1931,11 +1964,14 @@ def _template_asset_text(res: dict[str, Any]) -> str:
     if "error" in res:
         return str(res["error"])
     a = res["asset"]
-    p = ""
-    if a["failure_probability"] is not None:
-        p = f", failure probability {a['failure_probability']:.2f}"
+    if a["health_score"] is None:
+        health = "no prediction yet"
+    else:
+        health = f"health {a['health_score']}"
+        if a["failure_probability"] is not None:
+            health += f", failure probability {a['failure_probability']:.2f}"
     text = (
-        f"{a['asset_id']} ({a['name']}, {a['site']}/{a['line']}): health {a['health_score']}{p}, "
+        f"{a['asset_id']} ({a['name']}, {a['site']}/{a['line']}): {health}, "
         f"regime {a['regime'] or 'unknown'}."
     )
     if res["contracts"]:

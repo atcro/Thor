@@ -9,7 +9,12 @@
 
 export type ISODate = string;
 
-export interface TelemetryRow {
+/**
+ * A telemetry sample as the plant can observe it: id, time and the eight sensors. This is the
+ * only telemetry shape the API returns; simulator ground truth (health, failure_within_h) and
+ * the simulator's regime label never reach the UI.
+ */
+export interface ObservedTelemetryRow {
   asset_id: string;
   ts: ISODate;
   vibration_rms: number;
@@ -20,10 +25,10 @@ export interface TelemetryRow {
   current_a: number;
   rpm: number;
   load_pct: number;
-  regime?: string | null;
-  health?: number | null;
-  failure_within_h?: number | null;
 }
+
+/** Rows accepted by POST /ingest (same observable shape). */
+export type TelemetryRow = ObservedTelemetryRow;
 
 export type Criticality = "low" | "medium" | "high";
 
@@ -438,8 +443,13 @@ export interface WorkOrder {
 
 export interface FleetAsset {
   asset: Asset;
-  health_score: number;
+  /** 100 * (1 - failure_probability) from the latest approved-model prediction; null = no prediction yet. */
+  health_score: number | null;
   failure_probability: number | null;
+  /** Plant time of the scored window and the model that scored it (null without a prediction). */
+  prediction_ts?: ISODate | null;
+  model_version?: string | null;
+  /** Operating regime inferred from rpm/load against the production model's centroids; null without a production model. */
   regime: string | null;
   last_ts: ISODate | null;
   open_contract_id: string | null;
@@ -540,8 +550,14 @@ export interface RunSummary {
 /** GET /assets/:id */
 export interface AssetDetail {
   asset: Asset;
-  latest: TelemetryRow | null;
+  latest: ObservedTelemetryRow | null;
+  /** Inferred from the latest rpm/load with the production baseline; null without a production model. */
+  regime: string | null;
   prediction: number | null;
+  prediction_ts: ISODate | null;
+  model_version: string | null;
+  /** null = no prediction yet (never derived from anything but a prediction). */
+  health_score: number | null;
   contracts: DecisionContract[];
   work_orders: WorkOrder[];
   runs: RunSummary[];

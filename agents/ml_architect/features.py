@@ -17,6 +17,7 @@ to build the baseline (normalisation), never as a model input.
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -181,6 +182,26 @@ def _assign_regime(
         axis=-1,
     )
     return np.argmin(d, axis=-1)
+
+
+def assign_regime_ids(
+    rpm: np.ndarray | list[float], load: np.ndarray | list[float], baseline: dict[str, Any]
+) -> list[str | None]:
+    """Regime id ("R1".."Rk") of each (rpm, load) pair by nearest centroid in `baseline`.
+
+    Input: rpm and load_pct arrays of equal length and a baseline from `baseline_for` (its
+    `_regime_centroids` entry holds the centroids and scales). Output: one regime id per pair,
+    or None entries when the baseline has no centroids. This is the same rule the feature
+    pipeline and the edge use, exposed so the fleet view shows an *inferred* regime instead
+    of the simulator's label.
+    """
+    ids = _regime_ids(baseline) if baseline else []
+    rpm_a = np.asarray(rpm, dtype=float)
+    load_a = np.asarray(load, dtype=float)
+    if not ids:
+        return [None] * len(rpm_a)
+    idx = _assign_regime(rpm_a, load_a, baseline)
+    return [ids[int(i)] for i in np.atleast_1d(idx)]
 
 
 def _regime_stat(

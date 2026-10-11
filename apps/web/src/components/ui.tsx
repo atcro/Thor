@@ -46,10 +46,17 @@ export function Pill({ tone = "neutral", children, title }: { tone?: Tone; child
 
 export function HealthPill({ score }: { score: number | null | undefined }) {
   const tone = healthTone(score);
+  if (score === null || score === undefined) {
+    return (
+      <Pill tone="neutral" title="No approved-model prediction for this motor yet">
+        no prediction yet
+      </Pill>
+    );
+  }
   return (
-    <Pill tone={tone} title="Health score (0-100)">
+    <Pill tone={tone} title="Health score (0-100) = 100 × (1 − calibrated failure probability)">
       <span className="dot" style={{ background: "currentColor", width: 6, height: 6 }} />
-      {score === null || score === undefined ? "—" : fmtNum(score, 0)}
+      {fmtNum(score, 0)}
     </Pill>
   );
 }
