@@ -9,24 +9,40 @@ import { EmptyState, ErrorState, HealthPill, Loaded, LoadingState, Panel, Pill, 
 import { usePolling } from "../hooks/usePolling";
 import { STAGE_LABEL, fmtNum, fmtPct, fmtRel, fmtShort, fmtTime, probTone } from "../lib/format";
 
-const STEPS: { stage: PipelineStage; label: string }[] = [
-  { stage: "profiling", label: "Profiling" },
-  { stage: "training", label: "Training" },
-  { stage: "validating", label: "Validating" },
+type Step = { stage: PipelineStage; label: string };
+
+/** An analyze run reuses the production model: no training step exists to show. */
+const ANALYZE_STEPS: Step[] = [
+  { stage: "profiling", label: "Load production model" },
   { stage: "explaining", label: "Explaining" },
   { stage: "awaiting_approval", label: "Awaiting approval" },
   { stage: "approved", label: "Decision" },
 ];
 
-const STAGE_INDEX: Record<PipelineStage, number> = {
+/** A train run ends when the champion is registered; promotion is decided in ModelOps. */
+const TRAIN_STEPS: Step[] = [
+  { stage: "profiling", label: "Profiling + split" },
+  { stage: "training", label: "Training" },
+  { stage: "validating", label: "Validating" },
+  { stage: "trained", label: "Registered" },
+];
+
+const ANALYZE_INDEX: Partial<Record<PipelineStage, number>> = {
+  queued: -1,
+  profiling: 0,
+  explaining: 1,
+  awaiting_approval: 2,
+  approved: 3,
+  rejected: 3,
+  failed: 99,
+};
+
+const TRAIN_INDEX: Partial<Record<PipelineStage, number>> = {
   queued: -1,
   profiling: 0,
   training: 1,
   validating: 2,
-  explaining: 3,
-  awaiting_approval: 4,
-  approved: 5,
-  rejected: 5,
+  trained: 3,
   failed: 99,
 };
 
@@ -118,27 +134,31 @@ function useRunState(runId: string | null) {
 
 function StageStepper({ state }: { state: GraphState | null }) {
   const stage = state?.stage;
+  const train = state?.mode === "train";
+  const steps = train ? TRAIN_STEPS : ANALYZE_STEPS;
+  const index = train ? TRAIN_INDEX : ANALYZE_INDEX;
   const failed = stage === "failed";
   const rejected = stage === "rejected";
-  const done = stage === "approved" || rejected;
+  const done = stage === "approved" || rejected || stage === "trained";
   // On failure, the step that was running is the last non-failed stage in the event log.
   const failedAt = failed
     ? [...(state?.events ?? [])].reverse().find((e) => e.stage !== "failed" && e.stage !== "queued")?.stage
     : undefined;
-  const idx = failed ? (failedAt ? STAGE_INDEX[failedAt] : 0) : stage ? STAGE_INDEX[stage] : -1;
+  const idx = failed ? (failedAt ? (index[failedAt] ?? 0) : 0) : stage ? (index[stage] ?? -1) : -1;
+  const last = steps.length - 1;
   return (
     <div className="stepper">
-      {STEPS.map((s, i) => {
+      {steps.map((s, i) => {
         let cls = "step";
         if (i < idx) cls += " done";
         else if (i === idx) cls += failed ? " failed" : done ? " done" : " active";
-        const label = i === 5 && rejected ? "Rejected" : i === 5 && stage === "approved" ? "Approved" : s.label;
+        const label = i === last && rejected ? "Rejected" : i === last && stage === "approved" ? "Approved" : s.label;
         const glyph = i < idx || (i === idx && done) ? "✓" : i === idx && failed ? "!" : String(i + 1);
         return (
           <div className={cls} key={s.stage}>
             <span className="node">{glyph}</span>
             <span className="txt">{label}</span>
-            {i < STEPS.length - 1 && <span className="bar" />}
+            {i < last && <span className="bar" />}
           </div>
         );
       })}
@@ -259,7 +279,7 @@ export function Asset360() {
     setLaunching(true);
     setLaunchErr(null);
     try {
-      const res = await runPipeline({ asset_id: assetId });
+      const res = await runPipeline({ asset_id: assetId, mode: "analyze" });
       setRunId(res.run_id);
     } catch (e) {
       setLaunchErr(e instanceof Error ? e.message : String(e));
@@ -402,7 +422,7 @@ export function Asset360() {
             actions={
               run.state ? (
                 <span className="small muted mono">
-                  {run.state.run_id} · {run.transport === "ws" ? "live ws" : run.transport === "poll" ? "poll 2s" : "…"} · llm calls {run.state.llm_calls}
+                  {run.state.run_id} · {run.state.mode ?? "train"}{run.state.model_ref ? ` · model ${run.state.model_ref.version}` : ""} · {run.transport === "ws" ? "live ws" : run.transport === "poll" ? "poll 2s" : "…"} · llm calls {run.state.llm_calls}
                 </span>
               ) : undefined
             }
@@ -418,7 +438,7 @@ export function Asset360() {
               <LoadingState label="Connecting to run…" />
             ) : (
               <EmptyState>
-                No analysis run for this asset yet. <b>Run analysis</b> profiles the fleet, trains three candidates, validates a champion and drafts a Decision Contract for approval.
+                No analysis run for this asset yet. <b>Run analysis</b> scores this motor with the approved production model, explains the score with SHAP, compares maintenance costs and drafts a Decision Contract for approval, in seconds. Training is a separate action in AutoML Studio.
               </EmptyState>
             )}
           </Panel>

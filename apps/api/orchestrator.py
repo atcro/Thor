@@ -4,7 +4,11 @@ Governed architecture: the LLM plans (one routing call) and explains (one drafti
 every number comes from the deterministic toolboxes under `agents/`; a human approves every
 consequential action through the Human Approval Gate (09).
 
-Graph: profile -> train -> validate -> explain -> await_approval -(interrupt)-> finalize.
+Graph nodes: profile, train, validate, explain, await_approval -(interrupt)-> finalize.
+Two run modes share them (`next_node_for`): a `train` run goes profile -> train -> validate
+and ends at `trained` (champion registered; promotion is a separate ModelOps decision); an
+`analyze` run ("Run analysis") loads the PRODUCTION model in the profile step and goes
+explain -> await_approval -> finalize in seconds, never training anything.
 `GraphState` is persisted to `pipeline_runs` after every node so the UI can poll progress.
 
 All toolbox calls go through the module-level `tool_*` wrappers below. They import the agent
@@ -57,6 +61,7 @@ from apps.api.schemas import (
     LeadTimeReport,
     MaintenanceWindow,
     ManualPassage,
+    ModelRef,
     ModelStage,
     ObservedTelemetryRow,
     ParityReport,
@@ -64,6 +69,7 @@ from apps.api.schemas import (
     PromotionRequest,
     RegimeReport,
     RegisteredModel,
+    RunMode,
     TaskSpec,
     ValidationReport,
     WhatIfResult,
@@ -85,22 +91,40 @@ NODE_NAMES: tuple[str, ...] = (
     "finalize",
 )
 
-# stage after a node finished -> the only allowed next node
-STAGE_TO_NEXT: dict[PipelineStage, str] = {
+# stage after a node finished -> the only allowed next node, per run mode.
+# train:   profile -> train -> validate -> (trained) END. No contract: promotion is ModelOps'.
+# analyze: profile (= load the production model) -> explain -> await_approval -> finalize.
+TRAIN_NEXT: dict[PipelineStage, str] = {
     PipelineStage.queued: "profile",
     PipelineStage.profiling: "train",
     PipelineStage.training: "validate",
-    PipelineStage.validating: "explain",
+    PipelineStage.validating: END,
+    PipelineStage.trained: END,
+    PipelineStage.failed: END,
+}
+ANALYZE_NEXT: dict[PipelineStage, str] = {
+    PipelineStage.queued: "profile",
+    PipelineStage.profiling: "explain",
     PipelineStage.explaining: "await_approval",
     PipelineStage.awaiting_approval: "finalize",
     PipelineStage.approved: END,
     PipelineStage.rejected: END,
     PipelineStage.failed: END,
 }
+#: Kept for callers that read it; the train table. `route()` picks per `GraphState.mode`.
+STAGE_TO_NEXT: dict[PipelineStage, str] = TRAIN_NEXT
+
+
+def next_node_for(state: GraphState) -> str:
+    """The single legal next node for `state` given its mode (END when terminal)."""
+    table = ANALYZE_NEXT if state.mode == "analyze" else TRAIN_NEXT
+    return table.get(state.stage, END)
+
 
 TERMINAL_STAGES: frozenset[PipelineStage] = frozenset(
     {
         PipelineStage.awaiting_approval,
+        PipelineStage.trained,
         PipelineStage.approved,
         PipelineStage.rejected,
         PipelineStage.failed,
@@ -109,9 +133,11 @@ TERMINAL_STAGES: frozenset[PipelineStage] = frozenset(
 
 ROUTE_SYSTEM_PROMPT = (
     "You are the planner of Thor, a governed predictive-maintenance pipeline. "
-    "Given the current pipeline stage, call the tool `choose_next_node` exactly once with the "
-    "next node to run. The only legal order is profile -> train -> validate -> explain -> "
-    "await_approval -> finalize; validate and await_approval can never be skipped."
+    "Given the current pipeline stage and run mode, call the tool `choose_next_node` exactly "
+    "once with the next node to run. A train run follows profile -> train -> validate and "
+    "stops (promotion is a separate human decision). An analyze run reuses the approved "
+    "production model: profile -> explain -> await_approval -> finalize. validate and "
+    "await_approval can never be skipped in their respective modes."
 )
 
 EXPLANATION_SYSTEM_PROMPT = (
@@ -747,6 +773,24 @@ def _parity_inputs(
     return x, windows
 
 
+def tool_production_bundle(
+    engine: Engine | None,
+) -> tuple[ModelRef, FeatureSpec, ValidationReport] | None:
+    """08: `agents.mlops.lifecycle.production_bundle(engine)` -- the approved model an analyze
+    run reuses (ref, feature spec with baseline, validation report), or None."""
+    from agents.mlops.lifecycle import production_bundle
+
+    return production_bundle(engine=engine)
+
+
+def tool_score_asset(asset_id: str, engine: Engine | None, horizon_h: float) -> Any:
+    """Store the production model's prediction for `asset_id` (source "api") so the fleet
+    view reflects the analysis immediately. Returns the ScoreResult (never raises)."""
+    from apps.api.scoring import score_assets
+
+    return score_assets([asset_id], engine=engine, source="api", horizon_h=horizon_h)
+
+
 def tool_register_model(
     validation: ValidationReport,
     artifact_path: Path,
@@ -865,6 +909,7 @@ def _llm_choose_next_node(state: GraphState, allowed: list[str]) -> str | None:
     summary = {
         "run_id": state.run_id,
         "asset_id": state.asset_id,
+        "mode": state.mode,
         "current_stage": state.stage.value,
         "completed": [e.tool for e in state.events if e.tool in NODE_NAMES],
         "allowed_next": allowed,
@@ -914,13 +959,14 @@ def _llm_route_done(state: GraphState) -> bool:
 def route(state: GraphState) -> str:
     """Return the next node name (or END) for `state`.
 
-    Deterministic transitions: profile -> train -> validate -> explain -> await_approval ->
-    finalize -> END. With an API key configured, ONE Claude tool-choice call per run is made at
-    the first routing decision; its choice is accepted only if it equals the single legal
-    transition (it can never skip validate or await_approval), otherwise it is ignored. The
-    call is recorded as a `route_llm` event and counted in `state.llm_calls` (mutated in place).
+    Deterministic transitions per mode (`next_node_for`): train = profile -> train ->
+    validate -> END; analyze = profile -> explain -> await_approval -> finalize -> END. With an
+    API key configured, ONE Claude tool-choice call per run is made at the first routing
+    decision; its choice is accepted only if it equals the single legal transition (it can
+    never skip validate or await_approval), otherwise it is ignored. The call is recorded as a
+    `route_llm` event and counted in `state.llm_calls` (mutated in place).
     """
-    nxt = STAGE_TO_NEXT.get(state.stage, END)
+    nxt = next_node_for(state)
     if nxt == END or not _llm_enabled() or _llm_route_done(state):
         return nxt
     choice: str | None = None
@@ -1019,16 +1065,40 @@ def _champion_artifact_from(v: ValidationReport, cs: CandidateSet | None) -> str
 
 
 def _champion_artifact(gs: GraphState) -> str | None:
-    """Champion artifact path of the run's validation report (None before validation)."""
+    """Artifact to explain with: the production artifact in analyze mode, else the run's
+    validated champion (None before validation)."""
+    if gs.mode == "analyze" and gs.model_ref is not None:
+        return gs.model_ref.artifact_path
     if gs.validation is None:
         return None
     return _champion_artifact_from(gs.validation, gs.candidates)
+
+
+ANALYZE_RECENT_H = 72.0
 
 
 def _telemetry(h: RunHandle, engine: Engine | None) -> pd.DataFrame:
     df = h.cache.get("df")
     if df is None:
         df = db.read_telemetry(engine=engine)
+        h.cache["df"] = df
+    return df
+
+
+def _telemetry_recent(h: RunHandle, engine: Engine | None, asset_id: str) -> pd.DataFrame:
+    """Observable telemetry of the whole fleet for the last ANALYZE_RECENT_H plant hours.
+
+    Used by analyze runs: enough rows for every motor's feature window and a fleet-wide SHAP
+    background, fetched in well under a second. Simulator ground truth and the simulator's
+    regime label are dropped before anything downstream sees the frame.
+    """
+    df = h.cache.get("df")
+    if df is None:
+        from apps.api.scoring import observed_only
+
+        end = plant_now(asset_id, engine)
+        df = db.read_telemetry(start=end - pd.Timedelta(hours=ANALYZE_RECENT_H), engine=engine)
+        df = observed_only(df)
         h.cache["df"] = df
     return df
 
@@ -1040,6 +1110,22 @@ def _features_for(
     fdf = h.cache.get("features_df")
     spec = h.cache.get("spec")
     if fdf is not None and spec is not None:
+        return fdf, spec
+    if gs.mode == "analyze":
+        spec = h.cache.get("spec")
+        if spec is None:
+            bundle = tool_production_bundle(engine)
+            if bundle is None:
+                raise RuntimeError("no production model to analyse with")
+            spec = bundle[1]
+        fdf, _ = tool_build_features(
+            _telemetry_recent(h, engine, gs.asset_id),
+            None,
+            h.horizon_h,
+            window_rows=spec.window_rows,
+            baseline=spec.baseline,
+        )
+        h.cache["features_df"], h.cache["spec"] = fdf, spec
         return fdf, spec
     regimes = gs.data_quality.regimes if gs.data_quality else None
     # After a restart the recorded baseline is reused as-is (nothing is refitted); before
@@ -1067,6 +1153,9 @@ def _latest_features(features_df: pd.DataFrame, spec: FeatureSpec, asset_id: str
 
 
 def _profile(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
+    if gs.mode == "analyze":
+        _load_production(gs, h, engine)
+        return
     df = _telemetry(h, engine)
     if df.empty:
         raise RuntimeError("no telemetry rows in the database")
@@ -1105,6 +1194,53 @@ def _profile(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
             f"Data Quality Contract blocks training (score={dq.quality_score:.1f}, "
             f"n_rows={dq.n_rows}, n_assets={dq.n_assets})"
         )
+
+
+def _load_production(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
+    """analyze mode's first step: reuse the approved model instead of training one.
+
+    Loads the production row (artifact, feature spec with its regime baseline, validation
+    report) into the run, builds the asset's features from recent observable telemetry with
+    that baseline (nothing refitted), and records a light Data Quality Contract over the
+    asset's recent rows. Raises RuntimeError when there is no production model.
+    """
+    bundle = tool_production_bundle(engine)
+    if bundle is None:
+        raise RuntimeError(
+            "no production model: train one (AutoML Studio) and approve its promotion "
+            "(ModelOps) first"
+        )
+    ref, spec, report = bundle
+    gs.model_ref = ref
+    gs.validation = report
+    h.cache["spec"] = spec
+    append_event(
+        gs,
+        gs.stage,
+        f"reusing production model {ref.name} {ref.version} ({report.champion_family}, "
+        f"IMS {report.ims.total:.3f}, lead time median {report.lead_time.median_h:.1f} h); "
+        "nothing is trained in an analyze run",
+        tool="load_production_model",
+        payload={"model_version": ref.version, "stage": ref.stage.value},
+    )
+    df = _telemetry_recent(h, engine, gs.asset_id)
+    own = df[df["asset_id"] == gs.asset_id]
+    if own.empty:
+        raise RuntimeError(f"no recent telemetry for {gs.asset_id}")
+    if len(own) < spec.window_rows:
+        raise RuntimeError(
+            f"{gs.asset_id} has {len(own)} recent rows; {spec.window_rows} needed for a window"
+        )
+    dq = tool_profile_dataset(own, gs.asset_id)
+    gs.data_quality = dq
+    append_event(
+        gs,
+        gs.stage,
+        f"recent data quality {dq.quality_score:.1f}/100 over {dq.n_rows} rows of "
+        f"{gs.asset_id} (last {ANALYZE_RECENT_H:g} h, observable sensors only)",
+        tool="profile_dataset",
+        payload={"quality_score": dq.quality_score, "n_rows": dq.n_rows},
+    )
 
 
 def _train(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
@@ -1223,6 +1359,7 @@ def _validate(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
     except Exception as e:
         log.warning("model registration skipped: %s", e)
         append_event(gs, gs.stage, f"model registration skipped: {e}", tool="register_model")
+        _finish_training(gs)
         return
     if not v.passed:
         reasons = _validation_failure_reasons(v)
@@ -1233,6 +1370,7 @@ def _validate(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
             tool="validate",
             payload={"validation_passed": False, "reasons": reasons},
         )
+        _finish_training(gs)
         return
     try:
         comparison = tool_compare_champion(rm, engine)
@@ -1249,6 +1387,19 @@ def _validate(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
     except Exception as e:
         log.warning("promotion request skipped: %s", e)
         append_event(gs, gs.stage, f"promotion request skipped: {e}", tool="request_promotion")
+    _finish_training(gs)
+
+
+def _finish_training(gs: GraphState) -> None:
+    """A train run ends here: the champion is registered; nothing is deployed or decided."""
+    gs.stage = PipelineStage.trained
+    append_event(
+        gs,
+        gs.stage,
+        "training run complete: champion registered as a candidate. Promotion is a separate "
+        "ModelOps decision; Run analysis on an asset uses the production model.",
+        tool="finish_training",
+    )
 
 
 def _validation_failure_reasons(v: ValidationReport) -> list[str]:
@@ -1304,6 +1455,22 @@ def _explain(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
         tool="explain",
         payload={"failure_probability": exp.failure_probability},
     )
+    if gs.mode == "analyze":
+        # The same calibrated probability becomes this asset's current prediction (source
+        # "api"), so the Dashboard reflects the analysis without waiting for the edge.
+        try:
+            res = tool_score_asset(gs.asset_id, engine, h.horizon_h)
+            if res.scored:
+                append_event(
+                    gs,
+                    gs.stage,
+                    f"prediction stored for {gs.asset_id}: p={res.scored[0].failure_probability:.3f} "
+                    f"({res.model_version}, source api)",
+                    tool="score_asset",
+                    payload={"failure_probability": res.scored[0].failure_probability},
+                )
+        except Exception as e:  # noqa: BLE001 - the contract does not depend on this row
+            log.warning("could not store the analysis prediction: %s", e)
     passages: list[ManualPassage] = []
     try:
         passages = tool_retrieve_manual_context(exp)
@@ -1495,7 +1662,12 @@ def _execute(run_id: str) -> None:
         if raw is None:
             raise RuntimeError(f"run {run_id} not persisted")
         _graph().invoke({"state": raw, "next": "profile"}, _config(run_id))
-        h.status = "paused"
+        gs_after = get_run(run_id, h.engine)
+        h.status = (
+            "paused"
+            if gs_after is not None and gs_after.stage == PipelineStage.awaiting_approval
+            else "done"
+        )
     except Exception as e:
         log.exception("run %s crashed", run_id)
         h.status = "failed"
@@ -1512,19 +1684,28 @@ def _execute(run_id: str) -> None:
 
 
 def start_run(
-    asset_id: str, horizon_h: float = 48.0, n_trials: int = 6, engine: Engine | None = None
+    asset_id: str,
+    horizon_h: float = 48.0,
+    n_trials: int = 6,
+    engine: Engine | None = None,
+    mode: RunMode = "analyze",
 ) -> GraphState:
     """Create a run for `asset_id`, persist stage=queued and execute the graph in a daemon thread.
 
-    Returns immediately with the queued GraphState (training takes ~1 minute of CPU).
+    `mode="analyze"` (default) reuses the production model: explain, cost, Decision Contract,
+    approval gate -- seconds. `mode="train"` runs profile -> split -> AutoML -> validate ->
+    register and ends at `trained` (~1-2 minutes of CPU); promotion is then a ModelOps decision.
+    Returns immediately with the queued GraphState.
     """
     run_id = new_run_id()
-    gs = GraphState(run_id=run_id, asset_id=asset_id)
+    gs = GraphState(run_id=run_id, asset_id=asset_id, mode=mode)
     append_event(
         gs,
         gs.stage,
-        f"run queued (horizon {horizon_h}h, {n_trials} trials/family)",
+        f"{mode} run queued (horizon {horizon_h}h"
+        + (f", {n_trials} trials/family)" if mode == "train" else ", production model)"),
         tool="start_run",
+        payload={"mode": mode},
     )
     _persist(gs, engine)
     with _RUNS_LOCK:

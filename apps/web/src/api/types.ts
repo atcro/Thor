@@ -112,6 +112,40 @@ export interface FeatureSpec {
   window_rows: number;
   regime_normalized: boolean;
   description: string;
+  /** Assets the baseline was fitted on (the training group). */
+  fit_assets?: string[] | null;
+}
+
+/** The seeded asset-level split a run used (apps/api/schemas.py AssetSplit). */
+export interface AssetSplit {
+  seed: number;
+  train: string[];
+  validation: string[];
+  calibration: string[];
+  test: string[];
+  forced_test: string[];
+  positives: Record<string, string[]>;
+  notes: string[];
+}
+
+export interface GateCheck {
+  name: string;
+  passed: boolean;
+  value?: number | null;
+  threshold?: number | null;
+  detail: string;
+}
+
+export interface ParityReport {
+  passed: boolean;
+  n_rows: number;
+  max_abs_diff_probability: number;
+  tolerance_probability: number;
+  n_windows: number;
+  max_abs_diff_features?: number | null;
+  tolerance_features: number;
+  calibration_method: string;
+  notes: string[];
 }
 
 export interface IndustrialModelScore {
@@ -144,6 +178,7 @@ export interface CandidateSet {
   candidates: CandidateModel[];
   mlflow_experiment: string;
   ranked: string[];
+  split?: AssetSplit | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +252,10 @@ export interface ValidationReport {
   passed: boolean;
   notes: string[];
   thresholds?: Thresholds;
+  split?: AssetSplit | null;
+  gate?: GateCheck[];
+  test_metrics?: Record<string, number>;
+  parity?: ParityReport | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -397,13 +436,26 @@ export type PipelineStage =
   | "profiling"
   | "training"
   | "validating"
+  | "trained"
   | "explaining"
   | "awaiting_approval"
   | "approved"
   | "rejected"
   | "failed";
 
-export const TERMINAL_STAGES: readonly PipelineStage[] = ["approved", "rejected", "failed"];
+export const TERMINAL_STAGES: readonly PipelineStage[] = ["trained", "approved", "rejected", "failed"];
+
+/** analyze = reuse the production model (seconds); train = explicit AutoML run ending at "trained". */
+export type RunMode = "analyze" | "train";
+
+export interface ModelRef {
+  name: string;
+  version: string;
+  stage: ModelStage;
+  artifact_path?: string | null;
+  registered_at?: ISODate | null;
+  ims_total?: number | null;
+}
 
 export interface StageEvent {
   ts: ISODate;
@@ -417,6 +469,10 @@ export interface GraphState {
   run_id: string;
   asset_id: string;
   stage: PipelineStage;
+  mode?: RunMode;
+  /** analyze runs: the production model that was reused. */
+  model_ref?: ModelRef | null;
+  split?: AssetSplit | null;
   events: StageEvent[];
   data_quality?: DataQualityContract | null;
   candidates?: CandidateSet | null;
@@ -474,11 +530,13 @@ export interface PipelineRunRequest {
   asset_id: string;
   horizon_h?: number;
   n_trials?: number;
+  mode?: RunMode;
 }
 
 export interface PipelineRunResponse {
   run_id: string;
   stage: PipelineStage;
+  mode?: RunMode;
 }
 
 export interface DecisionRequest {
@@ -550,6 +608,8 @@ export interface RunSummary {
   run_id: string;
   asset_id: string;
   stage: PipelineStage;
+  mode?: RunMode;
+  model_version_used?: string | null;
   created_at?: ISODate | null;
   updated_at?: ISODate | null;
   contract_id?: string | null;

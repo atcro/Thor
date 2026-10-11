@@ -1,6 +1,7 @@
-"""P0 end-to-end: ingest -> profile -> train 3 candidates -> validate -> champion -> SHAP ->
-cost recommendation -> human approval -> Decision Contract logged; then, as a SEPARATE
-decision, model promotion through ModelOps -> edge ONNX.
+"""P0 end-to-end, the demo flow: an explicit train run (ingest -> profile -> seeded split ->
+3 candidates -> validate -> parity -> register), promotion as its own ModelOps decision ->
+edge ONNX, fleet scoring, then Run analysis reusing the production model (SHAP -> cost ->
+Decision Contract -> human approval -> work order) in seconds.
 
 No toolbox is faked. Uses the conftest synthetic fleet (8 motors, 2 degrading) and the real
 manuals under data/manuals with the offline hashed embedding so no network is needed.
@@ -8,6 +9,7 @@ manuals under data/manuals with the offline hashed embedding so no network is ne
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Iterator
@@ -24,7 +26,7 @@ from tests.conftest import make_synthetic_fleet
 
 REPO = Path(__file__).resolve().parents[1]
 TARGET = "MTR-003"  # degrading asset in the training set (onset at 55% of horizon)
-TERMINAL = {"awaiting_approval", "approved", "rejected", "failed"}
+TERMINAL = {"awaiting_approval", "trained", "approved", "rejected", "failed"}
 
 
 @pytest.fixture
@@ -94,14 +96,24 @@ def _poll(client: TestClient, run_id: str, timeout: float = 240.0) -> dict[str, 
 def test_p0_chain_end_to_end(client: TestClient) -> None:
     fleet = client.get("/fleet").json()
     assert len(fleet) == 8
+    assert all(f["health_score"] is None for f in fleet)  # nothing scored yet, no guessing
 
-    r = client.post("/pipeline/run", json={"asset_id": TARGET, "horizon_h": 48, "n_trials": 2})
+    # Run analysis before any model exists is refused; nothing trains behind the scenes.
+    r = client.post("/pipeline/run", json={"asset_id": TARGET})
+    assert r.status_code == 409, r.text
+    assert client.post("/pipeline/score", json={}).status_code == 409
+
+    # --- 1. explicit training run: profile -> split -> AutoML -> validate -> register -------
+    r = client.post(
+        "/pipeline/run",
+        json={"asset_id": TARGET, "horizon_h": 48, "n_trials": 2, "mode": "train"},
+    )
     assert r.status_code == 200, r.text
-    run_id = r.json()["run_id"]
-
-    state = _poll(client, run_id)
+    train_run = r.json()["run_id"]
+    state = _poll(client, train_run)
     events = "\n".join(f"  [{e['stage']}] {e['tool']}: {e['message']}" for e in state["events"])
-    assert state["stage"] == "awaiting_approval", f"{state.get('error')}\n{events}"
+    assert state["stage"] == "trained", f"{state.get('error')}\n{events}"
+    assert state["contract"] is None  # a train run drafts no decision
 
     # 04 -> 05 -> 06
     assert state["data_quality"]["trainable"] is True
@@ -116,6 +128,8 @@ def test_p0_chain_end_to_end(client: TestClient) -> None:
     assert state["validation"]["split"] == split
     assert state["validation"]["backtest"][0]["test_assets"] == split["test"]
     assert state["validation"]["test_metrics"]["n_assets"] == len(split["test"])
+    assert state["data_quality"]["regimes"]["fit_assets"] == split["train"]
+    assert state["candidates"]["features"]["fit_assets"] == split["train"]
     # edge-vs-centre parity was checked on real held-out vectors and raw windows, and passed
     parity = state["validation"]["parity"]
     assert parity["passed"] is True and parity["n_rows"] > 0 and parity["n_windows"] > 0, parity
@@ -125,16 +139,67 @@ def test_p0_chain_end_to_end(client: TestClient) -> None:
     assert set(gate) == {"leakage", "test_failure_events", "recall", "lead_time", "edge_parity"}
     assert state["validation"]["passed"] is True, gate
     assert state["validation"]["thresholds"] == {"classification": 0.5, "early_warning": 0.3, "sustained_rows": 3}
+    version = state["validation"]["model_version"]
+
+    # 08: registered as a candidate only; promotion is pending for a human
+    models = client.get("/models").json()
+    assert [m["stage"] for m in models] == ["candidate"], events
+    assert not list(Path(get_settings().models_dir).glob("*.onnx")), events
+    pending = client.get("/approvals/pending").json()["promotions"]
+    assert len(pending) == 1 and pending[0]["status"] == "pending"
+    assert client.post("/pipeline/run", json={"asset_id": TARGET}).status_code == 409
+
+    # --- 2. promotion: its own decision, its own approver, through ModelOps ---------------
+    p = client.post(
+        f"/promotions/{pending[0]['promotion_id']}/decision",
+        json={"decision": "approved", "approver": "mlops@plant", "note": "e2e"},
+    )
+    assert p.status_code == 200, p.text
+    assert p.json()["detail"]["promoted"]["stage"] == "production", p.text
+    assert "edge" in p.json()["detail"], p.text
+    assert any(m["stage"] == "production" for m in client.get("/models").json())
+    onnx_files = list(Path(get_settings().models_dir).glob("*.onnx"))
+    assert onnx_files and onnx_files[0].with_suffix(".json").exists()
+    sidecar = json.loads(onnx_files[0].with_suffix(".json").read_text(encoding="utf-8"))
+    assert sidecar["calibration"]["method"] in {"sigmoid", "isotonic", "none"}
+    assert "_regime_centroids" in sidecar["baseline"]
+
+    # --- 3. fleet scoring with the approved model: every motor gets an honest health -------
+    sc = client.post("/pipeline/score", json={})
+    assert sc.status_code == 200, sc.text
+    assert sc.json()["model_version"] == version and len(sc.json()["scored"]) == 8
+    fleet = client.get("/fleet").json()
+    assert all(f["health_score"] is not None and f["model_version"] == version for f in fleet)
+    assert all(f["regime"] in {"R1", "R2", "R3"} for f in fleet)  # inferred, not the label
+
+    # --- 4. Run analysis: reuse the production model; seconds, not a retrain --------------
+    t0 = time.time()
+    r = client.post("/pipeline/run", json={"asset_id": TARGET, "horizon_h": 48})
+    assert r.status_code == 200, r.text
+    run_id = r.json()["run_id"]
+    assert r.json()["mode"] == "analyze"
+    state = _poll(client, run_id)
+    took = time.time() - t0
+    events = "\n".join(f"  [{e['stage']}] {e['tool']}: {e['message']}" for e in state["events"])
+    assert state["stage"] == "awaiting_approval", f"{state.get('error')}\n{events}"
+    assert took < 60, f"analysis took {took:.0f}s; it must not retrain\n{events}"
+    assert state["mode"] == "analyze" and state["model_ref"]["version"] == version
+    assert state["candidates"] is None and state["split"] is None
+    tools = [e["tool"] for e in state["events"]]
+    assert "train_candidates" not in tools and "load_production_model" in tools
+    assert len(client.get("/models").json()) == 1  # no new registry rows
 
     # 07
     contract = state["contract"]
-    assert contract["asset_id"] == TARGET
+    assert contract["asset_id"] == TARGET and contract["model_version"] == version
     assert 0.0 <= contract["failure_probability"] <= 1.0
     assert len(contract["top_features"]) >= 3
     assert contract["explanation_source"] == "template"
     assert contract["cost_comparison"]["recommended"] == contract["recommendation"]
     assert len(contract["manual_context"]) >= 1, "RAG returned no passages"
     assert "plant-cost assumptions" in contract["explanation_text"]
+    preds = client.get(f"/assets/{TARGET}/predictions").json()
+    assert any(p["source"] == "api" and p["model_version"] == version for p in preds)
 
     # 09: present evidence, then record the decision
     ev = client.get(f"/approvals/{contract['contract_id']}").json()
@@ -159,27 +224,9 @@ def test_p0_chain_end_to_end(client: TestClient) -> None:
     events = "\n".join(f"  [{e['stage']}] {e['tool']}: {e['message']}" for e in state["events"])
     assert state["stage"] == "approved", events
 
-    # 08: the maintenance approval did NOT promote or deploy anything (CLAUDE.md section 7).
-    models = client.get("/models").json()
-    assert models and all(m["stage"] == "candidate" for m in models), events
-    assert not list(Path(get_settings().models_dir).glob("*.onnx")), events
-    pending = client.get("/approvals/pending").json()["promotions"]
-    assert len(pending) == 1 and pending[0]["status"] == "pending"
-
-    # Promotion is its own decision with its own approver, through the ModelOps path.
-    p = client.post(
-        f"/promotions/{pending[0]['promotion_id']}/decision",
-        json={"decision": "approved", "approver": "mlops@plant", "note": "e2e"},
-    )
-    assert p.status_code == 200, p.text
-    assert p.json()["detail"]["promoted"]["stage"] == "production", p.text
-    assert "edge" in p.json()["detail"], p.text
-    models = client.get("/models").json()
-    assert any(m["stage"] == "production" for m in models)
-    onnx_files = list(Path(get_settings().models_dir).glob("*.onnx"))
-    assert onnx_files
-    sidecar = onnx_files[0].with_suffix(".json")
-    assert sidecar.exists()
+    # the maintenance approval changed nothing in the registry
+    assert [m["stage"] for m in client.get("/models").json()] == ["production"]
+    assert client.get("/work-orders").json()[0]["contract_id"] == contract["contract_id"]
 
     # contract immutability: stored payload hash unchanged after approval
     stored = client.get(f"/approvals/{contract['contract_id']}").json()

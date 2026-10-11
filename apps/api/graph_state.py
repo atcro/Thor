@@ -79,6 +79,8 @@ def run_summary(state: dict[str, Any] | GraphState) -> dict[str, Any]:
         "run_id": gs.run_id,
         "asset_id": gs.asset_id,
         "stage": gs.stage.value,
+        "mode": gs.mode,
+        "model_version_used": gs.model_ref.version if gs.model_ref else None,
         "error": gs.error,
         "contract_id": gs.contract.contract_id if gs.contract else None,
         "model_version": gs.validation.model_version if gs.validation else None,

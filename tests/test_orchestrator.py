@@ -39,6 +39,7 @@ from apps.api.schemas import (
     MaintenanceWindow,
     ManualPassage,
     MissingnessReport,
+    ModelRef,
     ModelStage,
     ParityReport,
     PipelineStage,
@@ -395,14 +396,59 @@ class FakeModel:
         return np.column_stack([1 - p, p])
 
 
-def install_fake_toolbox(monkeypatch: pytest.MonkeyPatch, orchestrator: Any) -> dict[str, Any]:
-    """Monkeypatch every `orchestrator.tool_*` seam with fast fakes; returns a call log."""
+def make_model_ref(version: str = "v42") -> ModelRef:
+    return ModelRef(
+        name="thor-bearing-classifier",
+        version=version,
+        stage=ModelStage.production,
+        artifact_path="/tmp/thor-test/cand_lightgbm_calibrated.joblib",
+        registered_at=NOW,
+        ims_total=0.8,
+    )
+
+
+def install_fake_toolbox(
+    monkeypatch: pytest.MonkeyPatch, orchestrator: Any, production: bool = True
+) -> dict[str, Any]:
+    """Monkeypatch every `orchestrator.tool_*` seam with fast fakes; returns a call log.
+
+    `production=True` fakes a promoted model (so analyze runs work); False fakes an empty
+    registry (analyze runs must fail fast).
+    """
     calls: dict[str, Any] = {
         "promote": [],
         "deploy_edge": [],
         "contracts": [],
         "request_promotion": [],
+        "score_asset": [],
     }
+    monkeypatch.setattr(
+        orchestrator,
+        "tool_production_bundle",
+        lambda engine: (make_model_ref(), make_spec(), make_validation()) if production else None,
+    )
+
+    def fake_score(asset_id: str, engine: Any, horizon_h: float) -> Any:
+        from datetime import UTC, datetime
+
+        from apps.api.scoring import ScoredAsset, ScoreResult
+
+        calls["score_asset"].append(asset_id)
+        db.insert_prediction(asset_id, datetime.now(UTC), "v42", 0.78, source="api", engine=engine)
+        return ScoreResult(
+            model_version="v42",
+            scored=[
+                ScoredAsset(
+                    asset_id=asset_id,
+                    ts=datetime.now(UTC),
+                    failure_probability=0.78,
+                    model_version="v42",
+                )
+            ],
+            skipped={},
+        )
+
+    monkeypatch.setattr(orchestrator, "tool_score_asset", fake_score)
 
     monkeypatch.setattr(
         orchestrator,
@@ -593,22 +639,38 @@ def test_only_orchestrator_reads_api_key() -> None:
 def test_route_is_deterministic_without_key(engine: Any) -> None:
     from apps.api import orchestrator
 
-    gs = GraphState(run_id="r1", asset_id="MTR-042")
+    # train: profile -> train -> validate -> END (promotion is a separate decision)
+    gs = GraphState(run_id="r1", asset_id="MTR-042", mode="train")
     order = []
     for stage in (
         PipelineStage.queued,
         PipelineStage.profiling,
         PipelineStage.training,
         PipelineStage.validating,
-        PipelineStage.explaining,
-        PipelineStage.awaiting_approval,
+        PipelineStage.trained,
     ):
         gs.stage = stage
         order.append(orchestrator.route(gs))
-    assert order == ["profile", "train", "validate", "explain", "await_approval", "finalize"]
-    gs.stage = PipelineStage.approved
+    assert order == ["profile", "train", "validate", orchestrator.END, orchestrator.END]
+    # analyze: profile (load production model) -> explain -> await_approval -> finalize -> END
+    ga = GraphState(run_id="r1a", asset_id="MTR-042", mode="analyze")
+    order = []
+    for stage in (
+        PipelineStage.queued,
+        PipelineStage.profiling,
+        PipelineStage.explaining,
+        PipelineStage.awaiting_approval,
+        PipelineStage.approved,
+    ):
+        ga.stage = stage
+        order.append(orchestrator.route(ga))
+    assert order == ["profile", "explain", "await_approval", "finalize", orchestrator.END]
+    # an analyze run can never reach train / validate; a train run never reaches the gate
+    ga.stage = PipelineStage.training
+    assert orchestrator.route(ga) == orchestrator.END
+    gs.stage = PipelineStage.explaining
     assert orchestrator.route(gs) == orchestrator.END
-    assert gs.llm_calls == 0
+    assert gs.llm_calls == 0 and ga.llm_calls == 0
 
 
 def test_route_ignores_llm_choice_that_skips_validate(
@@ -618,15 +680,17 @@ def test_route_ignores_llm_choice_that_skips_validate(
 
     monkeypatch.setattr(orchestrator, "_api_key", lambda: "sk-test")
     monkeypatch.setattr(orchestrator, "_llm_choose_next_node", lambda state, allowed: "finalize")
-    gs = GraphState(run_id="r2", asset_id="MTR-042", stage=PipelineStage.training)
+    gs = GraphState(run_id="r2", asset_id="MTR-042", stage=PipelineStage.training, mode="train")
     assert orchestrator.route(gs) == "validate"
     assert gs.llm_calls == 1
     ev = [e for e in gs.events if e.tool == "route_llm"]
     assert len(ev) == 1 and ev[0].payload["accepted"] is False
     # only ONE planning call per run: the second routing decision is deterministic
     gs.stage = PipelineStage.validating
-    assert orchestrator.route(gs) == "explain"
+    assert orchestrator.route(gs) == orchestrator.END
     assert gs.llm_calls == 1
+    ga = GraphState(run_id="r2a", asset_id="MTR-042", stage=PipelineStage.explaining, mode="analyze")
+    assert orchestrator.route(ga) == "await_approval"  # the LLM's "finalize" is ignored
 
 
 def test_route_survives_llm_exception(engine: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -637,7 +701,7 @@ def test_route_survives_llm_exception(engine: Any, monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(orchestrator, "_api_key", lambda: "sk-test")
     monkeypatch.setattr(orchestrator, "_llm_choose_next_node", boom)
-    gs = GraphState(run_id="r3", asset_id="MTR-042", stage=PipelineStage.profiling)
+    gs = GraphState(run_id="r3", asset_id="MTR-042", stage=PipelineStage.profiling, mode="train")
     assert orchestrator.route(gs) == "train"
     assert gs.events[-1].payload["error"].startswith("RuntimeError")
 
@@ -671,24 +735,57 @@ def test_draft_explanation_falls_back_on_llm_failure(
     assert orchestrator.draft_explanation(make_bundle()) == ("LLM prose", "llm")
 
 
+def test_train_run_registers_and_stops(engine: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """mode=train: profile (split first) -> train -> validate -> register -> `trained`.
+    No contract, no approval gate, no promotion: that is a ModelOps decision."""
+    from apps.api import orchestrator
+
+    calls = install_fake_toolbox(monkeypatch, orchestrator)
+    gs0 = orchestrator.start_run("MTR-042", 48.0, 2, engine=engine, mode="train")
+    assert gs0.stage == PipelineStage.queued and gs0.mode == "train"
+    gs = wait_for_stage(orchestrator, gs0.run_id, {"trained", "failed"}, engine)
+    assert gs.stage == PipelineStage.trained, gs.error
+    assert gs.data_quality and gs.candidates and gs.validation
+    assert gs.evidence is None and gs.contract is None and gs.model_ref is None
+    tools = [e.tool for e in gs.events]
+    for t in ("make_asset_split", "profile", "train", "validate", "register_model", "request_promotion"):
+        assert t in tools
+    assert "explain" not in tools and "await_approval" not in tools
+    assert gs.split is not None and "MTR-042" in gs.split.test and "MTR-042" not in gs.split.train
+    assert tools.index("make_asset_split") < tools.index("profile_dataset")
+    assert calls["request_promotion"] == ["v42"]
+    assert calls["promote"] == [] and calls["deploy_edge"] == []
+    with pytest.raises(ValueError):  # nothing to approve on a train run
+        orchestrator.resume(
+            gs0.run_id,
+            Approval(approval_id="x", decision="approved", approver="j", decided_at=datetime.now(UTC)),
+            engine=engine,
+        )
+
+
 def test_full_run_pauses_at_gate_and_resumes(engine: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """mode=analyze (default): reuse the production model -> explain -> contract -> gate."""
     from apps.api import orchestrator
 
     calls = install_fake_toolbox(monkeypatch, orchestrator)
     gs0 = orchestrator.start_run("MTR-042", 48.0, 2, engine=engine)
-    assert gs0.stage == PipelineStage.queued
+    assert gs0.stage == PipelineStage.queued and gs0.mode == "analyze"
     gs = wait_for_stage(orchestrator, gs0.run_id, {"awaiting_approval", "failed"}, engine)
     assert gs.stage == PipelineStage.awaiting_approval, gs.error
-    assert gs.data_quality and gs.candidates and gs.validation and gs.evidence and gs.contract
+    assert gs.data_quality and gs.validation and gs.evidence and gs.contract
+    assert gs.candidates is None and gs.split is None  # nothing was trained
+    assert gs.model_ref is not None and gs.model_ref.version == "v42"
+    assert gs.contract.model_version == "v42"
     assert gs.contract.explanation_source == "template"
     assert gs.llm_calls == 0
     assert db.contract_status(gs.contract.contract_id, engine=engine) == "pending"
     tools = [e.tool for e in gs.events]
-    for t in ("profile", "train", "validate", "explain", "await_approval", "request_promotion"):
+    for t in ("load_production_model", "profile_dataset", "explain", "score_asset", "await_approval"):
         assert t in tools
-    # the asset split was fixed before profiling and the analysed asset is held out of training
-    assert gs.split is not None and "MTR-042" in gs.split.test and "MTR-042" not in gs.split.train
-    assert tools.index("make_asset_split") < tools.index("profile_dataset")
+    for t in ("train_candidates", "validate", "register_model", "request_promotion"):
+        assert t not in tools
+    assert calls["score_asset"] == ["MTR-042"]
+    assert db.latest_predictions(engine=engine)["MTR-042"] == 0.78
 
     approval = Approval(
         approval_id="a1",
@@ -700,9 +797,8 @@ def test_full_run_pauses_at_gate_and_resumes(engine: Any, monkeypatch: pytest.Mo
     )
     out = orchestrator.resume(gs0.run_id, approval, engine=engine)
     assert out.stage == PipelineStage.approved
-    # Governance (CLAUDE.md section 7): a maintenance approval never promotes or deploys a
-    # model. The promotion request opened at validation stays pending for ModelOps.
-    assert calls["request_promotion"] == ["v42"]
+    # Governance (CLAUDE.md section 7): a maintenance approval never promotes or deploys a model.
+    assert calls["request_promotion"] == []
     assert calls["promote"] == []
     assert calls["deploy_edge"] == []
     assert any(e.payload and e.payload.get("promotes_model") is False for e in out.events)
@@ -735,25 +831,15 @@ def test_failed_validation_opens_no_promotion_request(
         )
 
     monkeypatch.setattr(orchestrator, "tool_validate", failed_validation)
-    gs0 = orchestrator.start_run("MTR-042", engine=engine)
-    gs = wait_for_stage(orchestrator, gs0.run_id, {"awaiting_approval", "failed"}, engine)
-    assert gs.stage == PipelineStage.awaiting_approval, gs.error
+    gs0 = orchestrator.start_run("MTR-042", engine=engine, mode="train")
+    gs = wait_for_stage(orchestrator, gs0.run_id, {"trained", "failed"}, engine)
+    assert gs.stage == PipelineStage.trained, gs.error
     assert calls["request_promotion"] == []
     tools = [e.tool for e in gs.events]
     assert "register_model" in tools and "request_promotion" not in tools
     blocked = [e for e in gs.events if e.payload and e.payload.get("reasons")]
     assert blocked and "promotion blocked" in blocked[0].message
     assert blocked[0].payload["reasons"]
-    # approving the maintenance contract still cannot promote anything
-    approval = Approval(
-        approval_id="a3",
-        contract_id=gs.contract.contract_id,
-        decision="approved",
-        approver="jane",
-        decided_at=datetime.now(UTC),
-    )
-    out = orchestrator.resume(gs0.run_id, approval, engine=engine)
-    assert out.stage == PipelineStage.approved
     assert calls["promote"] == [] and calls["deploy_edge"] == []
 
 
@@ -798,8 +884,8 @@ def test_node_failure_marks_run_failed(engine: Any, monkeypatch: pytest.MonkeyPa
         "tool_profile_dataset",
         lambda df, asset_id, fit_assets=None: make_dq(asset_id, trainable=False),
     )
-    gs0 = orchestrator.start_run("MTR-042", engine=engine)
-    gs = wait_for_stage(orchestrator, gs0.run_id, {"awaiting_approval", "failed"}, engine)
+    gs0 = orchestrator.start_run("MTR-042", engine=engine, mode="train")
+    gs = wait_for_stage(orchestrator, gs0.run_id, {"awaiting_approval", "trained", "failed"}, engine)
     assert gs.stage == PipelineStage.failed
     assert gs.error and "blocks training" in gs.error
     assert gs.candidates is None
@@ -817,9 +903,24 @@ def test_missing_toolbox_fails_run_gracefully(engine: Any, monkeypatch: pytest.M
         raise ImportError("No module named 'agents.ml_architect.features'")
 
     monkeypatch.setattr(orchestrator, "tool_build_features", missing)
-    gs0 = orchestrator.start_run("MTR-042", engine=engine)
-    gs = wait_for_stage(orchestrator, gs0.run_id, {"awaiting_approval", "failed"}, engine)
+    gs0 = orchestrator.start_run("MTR-042", engine=engine, mode="train")
+    gs = wait_for_stage(orchestrator, gs0.run_id, {"trained", "failed"}, engine)
     assert gs.stage == PipelineStage.failed and "train:" in (gs.error or "")
+
+
+def test_analyze_without_production_model_fails_fast(
+    engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run analysis never trains as a side effect: with no promoted model it stops at once."""
+    from apps.api import orchestrator
+
+    calls = install_fake_toolbox(monkeypatch, orchestrator, production=False)
+    gs0 = orchestrator.start_run("MTR-042", engine=engine)  # analyze
+    gs = wait_for_stage(orchestrator, gs0.run_id, {"awaiting_approval", "failed"}, engine)
+    assert gs.stage == PipelineStage.failed
+    assert "no production model" in (gs.error or "")
+    assert gs.candidates is None and calls["request_promotion"] == []
+    assert "train_candidates" not in [e.tool for e in gs.events]
 
 
 def test_copilot_template_mode(engine: Any) -> None:

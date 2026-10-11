@@ -99,6 +99,7 @@ export const STAGE_LABEL: Record<PipelineStage, string> = {
   profiling: "Profiling",
   training: "Training",
   validating: "Validating",
+  trained: "Model registered",
   explaining: "Explaining",
   awaiting_approval: "Awaiting approval",
   approved: "Approved",
@@ -115,6 +116,7 @@ export const OPTION_LABEL: Record<MaintenanceOption, string> = {
 export function stageTone(stage: PipelineStage | null | undefined): Tone {
   switch (stage) {
     case "approved":
+    case "trained":
       return "good";
     case "awaiting_approval":
       return "bad";

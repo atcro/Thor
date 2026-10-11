@@ -108,11 +108,22 @@ def check_drift(req: DriftCheckRequest) -> DriftReport:
         from agents.mlops.drift import detect_drift
     except ImportError as e:
         raise HTTPException(status_code=503, detail=f"drift toolbox unavailable: {e}") from e
-    df = db.read_telemetry(engine=engine)
-    if df.empty or req.asset_id not in set(df["asset_id"]):
+    df = db.read_telemetry(asset_id=req.asset_id, engine=engine)
+    if df.empty:
         raise HTTPException(status_code=404, detail=f"no telemetry for {req.asset_id}")
     try:
-        features_df, spec = build_feature_pipeline(df, None)
+        from agents.mlops.lifecycle import production_feature_spec
+        from apps.api.scoring import observed_only
+
+        prod_spec = production_feature_spec(engine=engine)
+        # Observable columns only, normalised with the production model's own baseline when
+        # one exists (never refitted on the asset being checked).
+        features_df, spec = build_feature_pipeline(
+            observed_only(df),
+            None,
+            window_rows=prod_spec.window_rows if prod_spec else 12,
+            baseline=prod_spec.baseline if prod_spec else None,
+        )
         sub = features_df[features_df["asset_id"] == req.asset_id].sort_values("ts")
         if len(sub) < 20:
             raise HTTPException(status_code=409, detail="not enough feature rows for drift check")

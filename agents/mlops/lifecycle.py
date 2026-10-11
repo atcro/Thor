@@ -32,6 +32,7 @@ from apps.api.schemas import (
     ChampionComparison,
     EdgeDeployment,
     FeatureSpec,
+    ModelRef,
     ModelStage,
     ParityReport,
     PromotionRequest,
@@ -139,6 +140,7 @@ def _registry_payload(
             "features": list(feature_spec.features),
             "window_rows": int(feature_spec.window_rows),
             "baseline": feature_spec.baseline,
+            "fit_assets": feature_spec.fit_assets,
         }
         if feature_spec is not None
         else None
@@ -152,6 +154,9 @@ def _registry_payload(
         "validation_failures": validation_failures(validation),
         "parity_passed": validation.parity.passed if validation.parity is not None else None,
         "parity": db.dump_model(validation.parity) if validation.parity is not None else None,
+        # The full report travels with the row so an analyze run (and the model card) can cite
+        # the lead time, calibration and gate of the model it reuses.
+        "validation": db.dump_model(validation),
         "metrics": {
             "ims_total": ims.total,
             "recall": ims.recall,
@@ -334,6 +339,47 @@ def production_feature_spec(
         description=f"production model {prod.version}",
         baseline=spec.get("baseline"),
     )
+
+
+def production_bundle(
+    name: str = DEFAULT_MODEL_NAME, engine: Engine | None = None
+) -> tuple[ModelRef, FeatureSpec, ValidationReport] | None:
+    """Everything an analyze run needs from the production row, or None when there is none.
+
+    Output: (ModelRef with the calibrated artifact path, the FeatureSpec it was trained with
+    -- features, window, regime baseline -- and its ValidationReport). Raises ValueError when
+    the production row predates the stored spec / report (retrain and re-promote it).
+    """
+    engine = engine or db.get_engine()
+    prod = get_production_model(name, engine=engine)
+    if prod is None:
+        return None
+    with engine.connect() as conn:
+        row = _fetch_row(conn, prod.name, prod.version)
+    payload = dict((row.get("payload") or {}) if row is not None else {})
+    spec = payload.get("feature_spec")
+    report = payload.get("validation")
+    if not spec or not report:
+        raise ValueError(
+            f"production model {prod.version} has no stored feature spec / validation report; "
+            "train and promote a model with the current pipeline"
+        )
+    ref = ModelRef(
+        name=prod.name,
+        version=prod.version,
+        stage=prod.stage,
+        artifact_path=payload.get("artifact_path"),
+        registered_at=prod.registered_at,
+        ims_total=prod.ims_total,
+    )
+    feature_spec = FeatureSpec(
+        features=list(spec.get("features") or []),
+        window_rows=int(spec.get("window_rows") or 12),
+        description=f"production model {prod.version}",
+        baseline=spec.get("baseline"),
+        fit_assets=spec.get("fit_assets"),
+    )
+    return ref, feature_spec, ValidationReport.model_validate(report)
 
 
 def list_models(engine: Engine | None = None) -> list[RegisteredModel]:

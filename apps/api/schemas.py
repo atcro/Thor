@@ -589,6 +589,17 @@ class ModelStage(StrEnum):
     archived = "archived"
 
 
+class ModelRef(BaseModel):
+    """Which approved model a run (or a prediction) used: the registry row, by value."""
+
+    name: str
+    version: str
+    stage: ModelStage
+    artifact_path: str | None = None
+    registered_at: datetime | None = None
+    ims_total: float | None = None
+
+
 class RegisteredModel(BaseModel):
     name: str
     version: str
@@ -650,11 +661,20 @@ class PipelineStage(StrEnum):
     profiling = "profiling"
     training = "training"
     validating = "validating"
+    #: Terminal stage of a `train` run: champion registered (promotion is a ModelOps decision).
+    trained = "trained"
     explaining = "explaining"
     awaiting_approval = "awaiting_approval"
     approved = "approved"
     rejected = "rejected"
     failed = "failed"
+
+
+#: `analyze` (the default for "Run analysis"): score, explain, cost and draft a Decision
+#: Contract for one asset with the current PRODUCTION model -- seconds, nothing is trained.
+#: `train`: profile -> split -> AutoML -> validate -> register; ends at `trained`. Promotion is
+#: then a separate ModelOps decision. Training never runs as a side effect of an analysis.
+RunMode = Literal["analyze", "train"]
 
 
 class StageEvent(BaseModel):
@@ -671,6 +691,9 @@ class GraphState(BaseModel):
     run_id: str
     asset_id: str
     stage: PipelineStage = PipelineStage.queued
+    mode: RunMode = "train"
+    #: analyze runs: the production model that was reused (never a freshly trained one).
+    model_ref: ModelRef | None = None
     events: list[StageEvent] = Field(default_factory=list)
     data_quality: DataQualityContract | None = None
     #: Fixed before profiling; every later stage fits only on `split.train`.
@@ -714,11 +737,16 @@ class PipelineRunRequest(BaseModel):
     asset_id: str
     horizon_h: float = 48.0
     n_trials: int = Field(default=6, ge=1, le=100, description="Optuna trials per family")
+    mode: RunMode = Field(
+        default="analyze",
+        description="analyze = reuse the production model (seconds); train = AutoML run",
+    )
 
 
 class PipelineRunResponse(BaseModel):
     run_id: str
     stage: PipelineStage
+    mode: RunMode = "train"
 
 
 class DecisionRequest(BaseModel):

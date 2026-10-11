@@ -99,7 +99,7 @@ def test_pipeline_run_to_approval(client: TestClient, monkeypatch: pytest.Monkey
     r = client.post("/pipeline/run", json={"asset_id": "MTR-042", "horizon_h": 48, "n_trials": 2})
     assert r.status_code == 200
     run_id = r.json()["run_id"]
-    assert r.json()["stage"] == "queued"
+    assert r.json()["stage"] == "queued" and r.json()["mode"] == "analyze"
 
     state = _poll(client, run_id, {"awaiting_approval", "failed"})
     assert state["stage"] == "awaiting_approval", state["error"]
@@ -140,8 +140,12 @@ def test_pipeline_run_to_approval(client: TestClient, monkeypatch: pytest.Monkey
     assert final["stage"] == "approved"
     assert final["approval"]["approver"] == "jane@plant"
     # the maintenance approval recorded the decision and nothing else
-    assert calls["request_promotion"] == ["v42"]
+    assert calls["request_promotion"] == []
     assert calls["promote"] == [] and calls["deploy_edge"] == []
+    # the analysis stored the production model's prediction: the fleet shows it at once
+    fleet = {f["asset"]["asset_id"]: f for f in client.get("/fleet").json()}
+    assert fleet["MTR-042"]["failure_probability"] == 0.78
+    assert fleet["MTR-042"]["model_version"] == "v42"
 
     r = client.post(f"/approvals/{contract_id}/decision", json=decision)
     assert r.status_code == 409
@@ -152,6 +156,27 @@ def test_pipeline_run_to_approval(client: TestClient, monkeypatch: pytest.Monkey
     asset = client.get("/assets/MTR-042").json()
     assert asset["contracts"][0]["contract_id"] == contract_id
     assert asset["runs"][0]["stage"] == "approved"
+
+
+def test_train_mode_and_analyze_without_model(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api import orchestrator
+
+    calls = install_fake_toolbox(monkeypatch, orchestrator, production=False)
+    # no production model -> Run analysis is refused, nothing is trained behind the scenes
+    r = client.post("/pipeline/run", json={"asset_id": "MTR-042"})
+    assert r.status_code == 409 and "no production model" in r.json()["detail"]
+    # an explicit train run registers a champion and stops at `trained`
+    r = client.post("/pipeline/run", json={"asset_id": "MTR-042", "mode": "train", "n_trials": 2})
+    assert r.status_code == 200 and r.json()["mode"] == "train"
+    state = _poll(client, r.json()["run_id"], {"trained", "failed"})
+    assert state["stage"] == "trained", state["error"]
+    assert state["contract"] is None and state["evidence"] is None
+    assert calls["request_promotion"] == ["v42"] and calls["promote"] == []
+    runs = client.get("/pipeline", params={"asset_id": "MTR-042"}).json()
+    assert runs[0]["mode"] == "train" and runs[0]["stage"] == "trained"
+    assert client.get("/approvals/pending").json()["contracts"] == []
 
 
 def _register_pending_promotion(engine: Any, version: str, passed: bool = True) -> str:

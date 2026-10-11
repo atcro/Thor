@@ -96,3 +96,24 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
   nearest-centroid regime from rpm/load); parity check (central vs edge calibrated probability
   on held-out feature vectors + raw windows) recorded in `ValidationReport.parity`, failing
   parity blocks `promote()`; fix `tests/test_edge.py` to the real format.
+
+## 2026-10-11 14:50 — fix group 5 done: edge parity (defect 5)
+
+- **Commit:** "Make the edge reproduce the centre and gate promotion on parity".
+- **Files:** `edge/features.py` (rewritten to the training baseline format, regime inferred from
+  rpm/load), `edge/inference.py` (`parse_calibration`, `apply_calibration`, calibrated
+  `predict_proba`), `edge/main.py` (no regime label), `agents/validation/checks.py`
+  (`calibration_transform`, `apply_calibration`, `CalibrationReport.transform`),
+  `agents/mlops/lifecycle.py` (`export_bundle`, `check_edge_parity`, parity in payload and in
+  `_assert_promotable`), `apps/api/schemas.py` (`ParityReport`, `ValidationReport.parity`),
+  `apps/api/orchestrator.py` (`tool_check_parity`, `_parity_inputs`, gate check `edge_parity`),
+  `CLAUDE.md` §3/§6; tests: `test_edge.py` (real format + exported calibration), `test_mlops.py`
+  (export, lying model fails, parity blocks promotion), `test_e2e_pipeline.py` (parity passed on
+  the real run), `test_orchestrator.py` (fake parity).
+- **Tests run:** full `pytest` → 206 passed in 58 s; `ruff check .` clean.
+- **Next:** fix 7 (analysis reuse): `PipelineRunRequest.mode` ("analyze" default / "train"),
+  analyze = load production model + baseline → features for the asset (no refit) → explain →
+  cost → contract → approval gate (seconds); train mode ends at a new `trained` stage after
+  registration (no contract); `POST /pipeline/run` 409 without a production model; fleet
+  scoring helper with the production model; Asset 360 "Run analysis", Studio/ModelOps "Train
+  new model"; drift check uses the production baseline.

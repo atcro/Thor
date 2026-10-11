@@ -24,6 +24,7 @@ router = APIRouter(tags=["pipeline"])
 WS_TERMINAL: frozenset[str] = frozenset(
     {
         PipelineStage.awaiting_approval.value,
+        PipelineStage.trained.value,
         PipelineStage.approved.value,
         PipelineStage.rejected.value,
         PipelineStage.failed.value,
@@ -38,12 +39,50 @@ class WhatIfRequest(BaseModel):
 
 @router.post("/pipeline/run", response_model=PipelineRunResponse)
 def start_pipeline(req: PipelineRunRequest) -> PipelineRunResponse:
-    """Queue a full AutoML run for one asset; returns immediately with the run id."""
+    """Queue a run for one asset; returns immediately with the run id.
+
+    mode=analyze (default, "Run analysis"): reuse the production model to explain, cost and
+    draft a Decision Contract -- 409 when no model has been promoted yet. mode=train: an
+    explicit AutoML run that ends at `trained`; promotion is then decided in ModelOps.
+    """
     engine = db.get_engine()
     if not any(a.asset_id == req.asset_id for a in db.list_assets(engine)):
         raise HTTPException(status_code=404, detail=f"unknown asset {req.asset_id}")
-    gs = orchestrator.start_run(req.asset_id, req.horizon_h, req.n_trials, engine=engine)
-    return PipelineRunResponse(run_id=gs.run_id, stage=gs.stage)
+    if req.mode == "analyze":
+        try:
+            bundle = orchestrator.tool_production_bundle(engine)
+        except Exception as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        if bundle is None:
+            raise HTTPException(
+                status_code=409,
+                detail="no production model: train one in AutoML Studio and approve its "
+                "promotion in ModelOps first",
+            )
+    gs = orchestrator.start_run(
+        req.asset_id, req.horizon_h, req.n_trials, engine=engine, mode=req.mode
+    )
+    return PipelineRunResponse(run_id=gs.run_id, stage=gs.stage, mode=gs.mode)
+
+
+class ScoreRequest(BaseModel):
+    asset_ids: list[str] | None = Field(default=None, description="None = every asset")
+
+
+@router.post("/pipeline/score")
+def score_fleet(req: ScoreRequest | None = None) -> dict[str, Any]:
+    """Score the latest window of every (or the given) asset with the production model.
+
+    Deterministic inference only -- no training, no decision. Writes `predictions` rows
+    with source "api". 409 when there is no production model.
+    """
+    from apps.api.scoring import score_assets
+
+    try:
+        res = score_assets(req.asset_ids if req else None, engine=db.get_engine())
+    except LookupError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return res.model_dump(mode="json")
 
 
 @router.get("/pipeline")

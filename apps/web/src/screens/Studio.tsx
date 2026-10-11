@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { getRun, listRuns } from "../api/client";
+import { getRun, listRuns, runPipeline } from "../api/client";
 import type { CandidateModel, GraphState, IndustrialModelScore, RunSummary } from "../api/types";
 import { TERMINAL_STAGES } from "../api/types";
 import { AXIS_TICK, CHART, ChartTip } from "../components/charts";
@@ -84,6 +84,41 @@ function CalibrationChart({ bins }: { bins: [number, number, number][] }) {
   );
 }
 
+function TrainForm({ onStarted }: { onStarted: (runId: string) => void }) {
+  const [assetId, setAssetId] = useState("MTR-042");
+  const [trials, setTrials] = useState(6);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const start = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await runPipeline({ asset_id: assetId.trim().toUpperCase(), mode: "train", n_trials: trials });
+      onStarted(res.run_id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="row wrap" style={{ alignItems: "flex-end", gap: 8 }} title="Explicit training run: profile, seeded asset split, Optuna over three families, validation gate, parity check, registration. Promotion is then a ModelOps decision.">
+      <label className="field">
+        asset held out
+        <input className="input mono" value={assetId} onChange={(e) => setAssetId(e.target.value)} style={{ width: 100 }} />
+      </label>
+      <label className="field">
+        trials / family
+        <input className="input mono" type="number" min={1} max={100} value={trials} onChange={(e) => setTrials(Number(e.target.value) || 1)} style={{ width: 70 }} />
+      </label>
+      <button className="btn steel" disabled={busy || !assetId.trim()} onClick={() => void start()}>
+        {busy ? "Starting…" : "Train new model"}
+      </button>
+      {err && <span className="small" style={{ color: "var(--ember-2)" }}>{err}</span>}
+    </div>
+  );
+}
+
 export function Studio() {
   const [params, setParams] = useSearchParams();
   const runs = usePolling(() => listRuns(), 5000, "runs");
@@ -125,14 +160,15 @@ export function Studio() {
           <h1>AutoML Studio</h1>
           <div className="sub">Every number here is computed by deterministic tool functions and logged to MLflow — the LLM only routes and explains.</div>
         </div>
-        <div className="row">
+        <div className="row wrap" style={{ gap: 12 }}>
+          <TrainForm onStarted={(runId) => { setParams({ run: runId }); void runs.refresh(); }} />
           <label className="field">
             run
             <select className="select mono" value={selected ?? ""} onChange={(e) => setParams({ run: e.target.value })} style={{ minWidth: 300 }}>
               {runOptions.length === 0 && <option value="">— no runs yet —</option>}
               {runOptions.map((r) => (
                 <option key={r.run_id} value={r.run_id}>
-                  {r.asset_id} · {r.run_id} · {STAGE_LABEL[r.stage] ?? r.stage} · {fmtRel(r.created_at)}
+                  {r.mode ?? "train"} · {r.asset_id} · {r.run_id} · {STAGE_LABEL[r.stage] ?? r.stage} · {fmtRel(r.created_at)}
                 </option>
               ))}
             </select>
@@ -143,7 +179,7 @@ export function Studio() {
 
       {runs.error && !runs.data && <ErrorState error={runs.error} onRetry={runs.refresh} />}
       {!runs.error && runs.data && runs.data.length === 0 && (
-        <EmptyState>No pipeline runs yet. Open an asset and press <b>Run analysis</b>.</EmptyState>
+        <EmptyState>No pipeline runs yet. Press <b>Train new model</b> here to train, validate and register a champion; approve its promotion in ModelOps; then <b>Run analysis</b> on an asset uses it.</EmptyState>
       )}
       {err && !state && <ErrorState error={err} />}
       {selected && !state && !err && <LoadingState label="Loading run…" />}
