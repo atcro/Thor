@@ -31,3 +31,8 @@ evals/bolt/out*/
 
 # local training artifacts written by runs outside Docker
 models/artifacts/
+
+# local scratch
+logs/
+*.bak
+*.bak-*

@@ -1,0 +1,190 @@
+# Prompt 0 — Correctness pass (send first, Sunday, Claude Fable 5.1, effort xhigh)
+
+Paste everything below the line into a fresh Claude Code session started in `C:\Thor-main`.
+Prompt A (Digital Twin) runs after this one finishes and builds on it.
+
+---
+
+We're a top-4 finalist in the ABB hackathon, presenting Thor in person on Tuesday: about 4 minutes
+of slides and 6 minutes of live demo, then judge Q&A with ABB engineers. Read `CLAUDE.md` first,
+especially §7 and §15. They are binding.
+
+**Why this session exists.** An external review, which we verified against the code, found
+defects that contradict claims we make on stage. Our pitch is "deterministic code computes,
+humans approve every consequential action, validation is asset-level and honest." Today, the code
+breaks that in several places. A technical judge who finds any one of these ends our credibility.
+Fix them before we add any visuals on top.
+
+The confirmed defects (file:line references were accurate as of today; re-verify before editing):
+
+1. **Approving a maintenance Decision Contract also promotes the model to production and deploys it
+   to the edge.** It reuses the maintenance approval for the model
+   (`apps/api/orchestrator.py` `_finalize`, ~1215-1239), and the promotion request is opened
+   automatically in `_validate` (~1068).
+   - Separately, `reject_promotion` in `apps/api/routes/approvals.py` (~176) is called without its
+     required `approval` argument, so rejecting a promotion always fails.
+2. **Validation failure doesn't block promotion.** `_validate` only logs "thresholds NOT met"
+   (~1057-1060) and requests promotion anyway. `request_promotion` and `promote` in
+   `agents/mlops/lifecycle.py` never check `validation_passed`.
+3. **Simulator ground truth reaches operational paths.**
+   - `streaming/replay/replay.py` publishes `health`, `failure_within_h` and `regime` on live MQTT.
+   - `apps/api/routes/fleet.py` `_health_score` (~56-63, 89) falls back to `100 * health` when a
+     motor has no prediction. That value drives the fleet sort, the UI, and Bolt's fleet tool
+     (`orchestrator.py` `_fleet_rows` and the copilot text answers).
+4. **Preprocessing leakage.**
+   - Regime clustering (`agents/data_agent/profiling.py` `detect_regime`) and the healthy baselines,
+     regime centroids and scales (`agents/ml_architect/features.py` `baseline_for`, via
+     `build_feature_pipeline`) are fitted on all assets *before* the asset-level split.
+   - Validation then calibrates on the held-out assets and measures lead time on the same rows
+     (`agents/validation/checks.py` ~556-568).
+5. **Central and edge probabilities disagree.**
+   - Central predictions use a `CalibratedClassifierCV` wrapper, but `lifecycle.py`
+     `_unwrap_estimator` (~502-525) strips it before ONNX export, and the sidecar says
+     `"calibration": "none"`.
+   - The edge's `select_baseline` (`edge/features.py` ~106-114) expects a baseline format training
+     doesn't produce. It silently falls back to a pooled baseline, so the z-score and residual
+     features differ from training.
+   - The edge also uses the simulator's `regime` label instead of inferring it.
+   - `tests/test_edge.py` uses the format the edge expects, so the mismatch goes unnoticed.
+6. **Thresholds 0.3 and 0.5 are mixed for the same metrics** across `automl.py`, `checks.py`,
+   `agents/reliability/cost.py` and the Asset 360 chart. Optuna ranks models by 0.3-based recall,
+   while the champion score and pass gate use 0.5-based backtest recall. Lead time is defined
+   differently in the two stages (first crossing vs three sustained rows). One code comment
+   contradicts its code.
+7. **"Run analysis" retrains everything.** Each run re-profiles the fleet and reruns Optuna,
+   backtests and calibration (60–100 s), because the graph always runs
+   profile → train → validate → explain. On stage that's a dead minute and a half.
+
+## What "done" looks like
+
+- **Two separate human decisions.**
+  - Maintenance approval only records the maintenance decision and lets the simulated work order
+    proceed. It never promotes or deploys a model.
+  - Model promotion is its own decision through the ModelOps path, with a named approver, and
+    works for both approve and reject.
+  - A model that failed validation cannot get a promotion request or reach production; the failure
+    reasons are recorded and visible.
+- **Ground truth stays behind the curtain.**
+  - Live MQTT and every operational response (fleet, asset, telemetry, Bolt tools, Decision
+    Contracts, edge) use only observable telemetry plus approved-model predictions.
+  - `health` and `failure_within_h` remain only for training labels and evaluation.
+  - A motor with no prediction shows "no prediction yet", never a simulator-derived score.
+  - Add a test that fails if those fields appear in an operational response.
+- **Leak-free validation.**
+  - Do the asset-level split first, then fit regimes, baselines and scales on training assets only.
+  - Calibration is fit on assets used for neither training nor final scoring.
+  - Final metrics come from untouched test assets.
+  - Keep it simple: a deterministic, seeded split recorded in the run, with positive examples in
+    each group where the 24-motor fleet allows. If 24 motors can't support four groups, choose
+    the most honest arrangement and document why.
+- **The edge agrees with the centre.**
+  - Calibration is exported as an explicit, serializable transform the edge applies (for example
+    sigmoid parameters or isotonic thresholds).
+  - The edge uses the same baseline format and infers regime from rpm and load the same way
+    training does.
+  - A parity check on real held-out feature vectors compares central and edge calibrated
+    probabilities within a stated tolerance, and failing parity blocks promotion.
+- **One meaning per threshold.** Named settings for the classification threshold and the
+  early-warning (alarm and lead-time) threshold, used consistently everywhere, including the UI
+  chart, and reported in validation output.
+- **Analysis reuses the approved model.** "Run analysis" on an asset uses the current production
+  model to explain, cost and draft a Decision Contract in seconds. Training stays as an explicit
+  separate action (AutoML Studio or ModelOps).
+- **A one-command demo preparation** (script plus documented steps):
+  - generate data, train and validate a real model, record the honest metrics;
+  - approve its promotion through the proper path, as part of prep;
+  - verify parity, seed 80% of history.
+  The live demo then shows inference, a Decision Contract and approval, not training. Make the
+  reset scripts (`scripts/demo_reset.ps1`, `.sh`) work with root-level `docker compose`; today
+  they target project `thor` while the team runs project `thor-main`.
+- **Training substance judges can inspect.** ABB engineers will ask how we trained the model.
+  Make the answer visible and traceable. Every number comes from the code and the actual run.
+  - `docs/finals/model-card.md` covers:
+    - data and labels (only completed failures produce labels);
+    - features (regime-aware and what each means);
+    - the asset split and which motors landed where;
+    - the Optuna search (model families, trials, what's tuned);
+    - how the champion is chosen (Industrial Model Score components and weights);
+    - calibration method and data;
+    - both thresholds and what they mean;
+    - final test metrics, and edge-vs-centre parity;
+    - that no LLM sits on the telemetry path (the edge scores deterministically);
+    - limitations (synthetic data, 24 motors, 10-minute aggregates, so no waveform or
+      frequency-domain analysis).
+  - **AutoML Studio shows it on screen,** extending the existing screen rather than redesigning it:
+    - which motors went to train, validation, calibration and test;
+    - the trials per family;
+    - the champion's score breakdown;
+    - the validation gate as a pass/fail checklist with reasons;
+    - the parity check result.
+  - **Rerun the AI4I 2020 public benchmark** (`data/benchmark/`) with the corrected methodology and
+    thresholds, and add its honest results to `metrics.md` and the model card. If it can't be made
+    consistent in reasonable time, report its current results clearly labelled with what differs.
+  - **Add a Bolt evaluation case** (`evals/bolt/`): a request like "Approve MTR-042" must be refused
+    with a pointer to the governed approval path. Bolt has no write tools.
+- **Honest numbers for the slides.** Write `docs/finals/metrics.md` with the old prototype metrics
+  (about 91.5% recall, 43.7 h lead time, 0.858 IMS) and the new leak-free metrics from this run,
+  side by side, with one paragraph on what changed and why. Never carry the old numbers forward
+  as current.
+
+## Constraints
+
+- **Scope:**
+  - Keep the 24 motors, the stack and the seven Compose services. MTR-042 stays the hero fault
+    and its timeline doesn't change.
+  - Don't build 120 motors, risk events, priority scoring, Decision Contract V2, maintenance
+    outcomes, or new Bolt tools. They're out of scope for Tuesday.
+  - Don't redesign the frontend. Change it only where an API change forces it, and for the
+    AutoML Studio additions above.
+- **Rules:** §7 holds. Keep changes surgical, with no rewrites or unrelated refactors. Existing API
+  call sites keep working unless a fix requires a change.
+- **Must keep passing:** `pytest`, `ruff check .`, `npm --prefix apps/web run build && npm --prefix
+  apps/web run test`, and `docker compose build`.
+  - Add tests: maintenance approval can't promote; a failed validation can't be promoted; parity
+    failure blocks promotion; ground-truth isolation; the split is leak-free and reproducible; one
+    meaning per threshold.
+  - Fix the edge parity test to use the format training actually produces.
+
+## How to work
+
+- **Checkpoint first.** The repo has no git history. Before any change, confirm `.env` is ignored,
+  run `git init`, and commit the current state as the baseline.
+- **Commit each fix separately** in imperative mood, so any one can be reverted.
+- **Fix in this order:** governance (1, 2), ground truth (3), thresholds (6), leakage (4),
+  edge parity (5), analysis reuse (7), demo prep, then the training-substance work (model card,
+  AutoML Studio view, AI4I rerun, Bolt eval case).
+- **Testing budget.** Test where it protects the demo or a claim we make on stage, not everywhere.
+  - After each change, run only the tests for the code you touched. Run the full `pytest`,
+    `ruff` and web suite at the end of each fix group, not after every edit.
+  - Run `docker compose build` once, at the end.
+  - The full training and validation pipeline is slow. Use a few Optuna trials for intermediate
+    checks, and run the full configuration only once, for the final metrics.
+  - Write tests only for the invariants listed in this brief. No exhaustive edge cases, no
+    snapshot tests, and no tests for styling.
+- **Time:** the team needs time for Prompt A today. If the AI4I rerun runs long, report where it
+  stands and move on.
+- **Check claims, not just code.** Every progress or status claim must point to a tool result
+  from this session. At the end, one fresh-context sub-agent re-audits the seven defects and the
+  "done" list against the code and the actual test output, and flags anything claimed but not
+  shown. Fix what it flags before the final report.
+- **Keep notes for later sessions.**
+  - Update `CLAUDE.md` where facts change: §6 contracts, §7 if wording needs tightening, §10
+    commands.
+  - Start `docs/finals/session-notes.md` with gotchas for the next sessions. Prompt A (Digital Twin)
+    runs right after you and needs to know how health and predictions now reach the UI.
+- **Progress log.** Keep `docs/finals/status.md` current; the team watches it to track progress
+  against their usage limits. After every milestone, append an entry with the time, the phase and
+  milestone, the files changed, the tests run with their actual results, and what's next. If
+  this session stops early (usage limit or model switch), a new session must be able to resume
+  from that file alone, so keep the "next" line specific.
+- **Work autonomously.** The team is not watching in real time. For reversible actions within this
+  brief, proceed without asking.
+- **Docker:** you may run `docker compose build`. Leave starting, stopping and resetting the stack to
+  the team: give them the commands.
+- **End-to-end checks:** when you need a running system, run it natively from the repo's `.venv`
+  (`uvicorn apps.api.main:app` on SQLite, plus the replay with `python -m streaming.replay.replay`)
+  rather than starting the Docker stack. Stop those processes when you're done.
+- **Final report.** Audit every claim against a tool result from this session.
+  - Lead with which of the seven defects are fixed and verified, then the new metrics, then
+    anything not fixed and why.
+  - End with the exact commands to rebuild, prepare and reset the demo.

@@ -6,6 +6,10 @@
 
 name: thor
 
+# Host ports bind to 127.0.0.1 only: the demo is used from this machine, and the DB (thor/thor)
+# and anonymous MQTT broker must not be reachable from shared Wi-Fi. Containers still talk to each
+# other over the compose network by service name.
+
 services:
   timescale:
     image: timescale/timescaledb:latest-pg16
@@ -14,7 +18,7 @@ services:
       POSTGRES_PASSWORD: thor
       POSTGRES_DB: thor
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - timescale-data:/var/lib/postgresql/data
     healthcheck:
@@ -26,8 +30,8 @@ services:
   mqtt:
     image: eclipse-mosquitto:2
     ports:
-      - "1883:1883"
-      - "9001:9001"
+      - "127.0.0.1:1883:1883"
+      - "127.0.0.1:9001:9001"
     volumes:
       - ../streaming/mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
     healthcheck:
@@ -44,7 +48,7 @@ services:
       --artifacts-destination /mlflow/artifacts
       --serve-artifacts
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5000:5000"
     volumes:
       - mlflow-data:/mlflow
 
@@ -71,7 +75,7 @@ services:
       - path: ../.env
         required: false
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - models:/models
       - chroma-data:/data/chroma
@@ -95,7 +99,7 @@ services:
       MODELS_DIR: /models
       CONTROL_PLANE_URL: http://api:8000
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     volumes:
       - models:/models
     depends_on:
@@ -124,7 +128,7 @@ services:
     environment:
       VITE_API_BASE_URL: http://localhost:8000
     ports:
-      - "5173:80"
+      - "127.0.0.1:5173:80"
     depends_on:
       api:
         condition: service_started

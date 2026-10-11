@@ -23,32 +23,10 @@ an MES in code comments, docs, or the submission.
 
 ## 2. Submission positioning — Theme 1 (Agentic Predictive Maintenance Studio)
 
-We submit under **Theme 1 only**. Use this language verbatim when drafting submission text;
-don't invent new claims.
+We submit under **Theme 1 only**. The verbatim one-liner, differentiators, rubric mapping, and
+tech-stack name-drops live in the `submission-positioning` skill (`.claude/skills/`) — load it
+and use its language verbatim whenever drafting submission text; don't invent new claims.
 
-- **One-liner:** "An agentic AutoML + MLOps platform that turns raw industrial sensor data into
-  a validated, explainable, human-approved predictive-maintenance decision."
-- **Differentiators to lead with** (most teams stop before any of these):
-  1. **Regime-aware fault detection** — clusters operating state (RPM/load/startup) first, so a
-     load change is never mistaken for a failure.
-  2. **Industrial Model Score** — champion selection weighted by recall, warning lead time,
-     calibration, and inference latency, not raw accuracy.
-  3. **Decision Contract** — an immutable, evidence-linked audit record for every recommendation
-     (provenance + explainability + auditability).
-  4. **Prescriptive, not just predictive** — compares cost of maintain-now / maintain-later /
-     run-to-failure before recommending a window.
-  5. **Governed agent architecture** — the LLM only plans and explains; every number comes from
-     deterministic code; a human approves every action. State this as architecture, not a slogan.
-- **Rubric mapping** (one line each, no invented point totals):
-  - *Innovation:* regime-awareness + prescriptive layer, not another anomaly-threshold demo.
-  - *Technical excellence:* time/asset-aware validation, calibration, drift detection, MLflow
-    registry, edge deployment.
-  - *Problem-solution fit:* directly implements every bullet in ABB's Theme 1 feature list.
-  - *Scalability:* asset → site → enterprise story via the Decision Contract as an MES/CMMS
-    integration point (say this explicitly — it's a real scalability argument, not filler).
-  - *UX / Presentation:* one motor, one emerging fault, one decision — no feature-tour demo.
-- **Tech stack to name-drop:** Python, FastAPI, MLflow, LangGraph, Docker, SHAP, LightGBM/XGBoost,
-  PostgreSQL — these are ABB's own suggested Theme 1 technologies, so use them by name.
 - **Never:** claim a specific dollar savings as fact (say "under these configurable plant-cost
   assumptions..."); cite unverified competitor claims; call any part of this an MES.
 
@@ -113,32 +91,8 @@ Full prose + IN/OUT for every function: see `docs/architecture.html`.
 
 ## 5. Repository layout
 
-```
-thor/
-├── apps/
-│   ├── api/              # FastAPI control plane + LangGraph orchestrator (one service)
-│   └── web/               # React + TS — Fleet, Asset 360, AutoML Studio, ModelOps, Copilot
-├── agents/                 # tool functions per role, imported by apps/api's graph — not separate services
-│   ├── data_agent/
-│   ├── ml_architect/
-│   ├── validation/
-│   ├── reliability/          # explain.py (SHAP) + rag.py (manual retrieval)
-│   └── mlops/
-├── edge/                    # ONNX Runtime inference container
-├── streaming/
-│   ├── mqtt/
-│   └── replay/               # historical-sequence replay script
-├── data/
-│   ├── simulator/             # synthetic regime + bearing-degradation generator (primary demo data)
-│   ├── benchmark/              # AI4I 2020 validation notebook (credibility check, not the demo)
-│   └── manuals/                # PDF corpus for retrieve_manual_context(); indexed into Chroma at startup
-├── infra/
-│   └── docker-compose.yml
-├── tests/
-├── docs/
-│   └── decision-contracts/      # example Decision Contract JSON for reference
-└── CLAUDE.md
-```
+Run `ls` for the tree. Non-obvious: `agents/*` are tool modules imported by `apps/api`'s LangGraph
+graph, not services; the five web screens are Fleet, Asset 360, AutoML Studio, ModelOps, Copilot.
 
 ## 6. Agent build spec (condensed — full detail in the linked artifact)
 
@@ -271,3 +225,93 @@ item runs end to end:
 - ECC plugin: https://github.com/affaan-m/ECC
 - Anthropic Claude Code best practices: https://code.claude.com/docs/en/best-practices
 - AI4I 2020 Predictive Maintenance Dataset (UCI) — credibility benchmark, not primary demo data
+
+## 15. Finals — in-person demo (Tuesday, Fort Smith, AR)
+
+We are a top-4 finalist. Format: ~4 min slides, ~6 min live demo, then judge Q&A of similar length,
+presented from the team's HP EliteBook 840 G8 (Intel Iris Xe integrated graphics) on venue Wi-Fi.
+Competing teams also build with Claude, so polish and a coherent story beat feature count.
+
+**Build order (stop and checkpoint between phases — each phase leaves the demo working):**
+- **Phase 0 — Correctness pass** (`docs/finals/prompt-0-correctness.md`). An external review,
+  verified against the code on 2026-10-11, found defects that contradicted our own claims:
+  maintenance approval also promoted and deployed the model; failed validation didn't block
+  promotion; simulator ground truth (`health`) leaked into fleet health; preprocessing was fitted
+  before the asset split; edge probabilities skipped calibration and used a mismatched baseline;
+  0.3 and 0.5 thresholds were mixed; and every "Run analysis" retrained the whole fleet. Phase 0
+  fixes these. The leak-free metrics in `docs/finals/metrics.md` replace the prototype's numbers
+  everywhere. Phase 0 also makes training inspectable, because judges will ask how the model was
+  trained:
+  - `docs/finals/model-card.md`;
+  - an AutoML Studio view of the split, trials, champion score breakdown, gate checklist and parity
+    result;
+  - an AI4I benchmark rerun with the corrected method;
+  - a Bolt evaluation case proving it refuses approvals.
+- **Phase A — 3-D Digital Twin + X-Ray.** The plant has two views of the same live data,
+  with exactly these names in the UI:
+  - **Dashboard:** the existing isometric/pixel fleet view (formerly "Fleet").
+  - **3-D Digital Twin:** a 3D, low-poly, "corporate clean" modern factory showing five packaging
+    lines plus a compressor hall, driven by live API data.
+  - An X-Ray toggle works in both views: hover shows a status glyph and key facts, click opens a
+    futuristic HUD panel.
+  - The app keeps its existing color scheme. Only the 3-D Digital Twin scene and its HUD try a
+    neon-yellow and electric-blue scheme, kept in one place so it can be swapped back. The team
+    evaluates it.
+- **Phase B — Bolt Designer.** This is Bolt's design mode, with its own nav item, Bolt's chat on
+  the left and a spec workbench on the right. It answers a judge's question ("could it be used to
+  create a motor?").
+  - Deterministic code compares fleet spec and measured performance and proposes a spec envelope.
+  - Bolt explains it in conversation and stays read-only.
+  - The engineer clicks to draft a **Design Change Request**, then approves it via
+    `record_decision()`. The request is insert-only and is a decision separate from maintenance
+    and model promotion.
+  - The AI never "decides": it finds the signal and makes the case, and a human signs. That's our
+    answer to "can the AI make decisions?"
+  - Stage line: "Bolt explains your fleet. Bolt Designer shows you how to build a better motor.
+    You sign."
+  - **The hero loop is detect → diagnose → redesign → install → plan.**
+    1. MTR-042's Decision Contract opens Bolt Designer.
+    2. The engineer approves a Design Change Request.
+    3. The maintenance approval attaches it as the replacement spec. The contract stays immutable.
+    4. The simulated work order installs the upgraded motor.
+    5. The HUD shows the next inspection date, from a deterministic bearing rated-life (L10)
+       estimate under measured duty. This is never a model prediction.
+  - Post-repair telemetry is the normal healthy baseline. Never fabricate an upgrade payoff.
+  - A deterministic **fault hypothesis** steers the redesign: possible bearing degradation, possible
+    thermal overload, unclassified vibration anomaly, or insufficient evidence. Each comes with
+    evidence, counter-evidence and limitations, and it is never called a confirmed root cause.
+  - An insert-only **repair outcome** records what the plant found, shown next to the hypothesis.
+- **Code freeze Monday 5 pm.** After that: only demo-blocking bug fixes; Monday evening and Tuesday
+  morning are for rehearsing the hero story end to end.
+
+**Finals-specific constraints:**
+- Plant layout: the 24 existing motors are regrouped as Packaging Lines 1–5 (4 motors each) plus a
+  Compressor Hall (4 motors). Only asset metadata (name, line) changes — never the telemetry
+  generator's signals or `FAULTY_ASSETS` timing; MTR-042 stays the hero fault.
+- Molding and Batching appear only as greyed-out site tabs (scalability story), not built.
+- Cut for time: Streamline swim-lane/container drill-down, Plant Personas, real external plant data.
+- 3D must hold ≥45 fps on Iris Xe at 1080p, work fully offline (no CDN assets, all geometry
+  procedural or bundled), and fall back to the Dashboard view if WebGL is unavailable.
+- **The 3-D Digital Twin is data-first.**
+  - It has no buildings, vehicles, people or decorative motion; everything that moves is driven
+    by data.
+  - It shows motors and their machines, the live message path motor → edge → control plane with
+    measured rate and latency, regime rings, decision-state badges, model provenance, and a
+    rewind of stored predictions that makes warning lead time visible.
+  - The test: an ABB engineer can point at any pixel and we can trace it to its source.
+- Every number in the 3D view, the HUD and Bolt Designer comes from the API (deterministic Python).
+- Plant-data integration panels show the kind of data a plant already captures:
+  - PLC tags map one-to-one from real telemetry, each showing its source signal. Values with no
+    telemetry source are marked "simulated".
+  - MES context (SKU, container, quantity, UOM) is a deterministic "simulated MES feed". It is
+    context only and never feeds a model, score or decision.
+- Status encoding: healthy = green circle, warning = amber triangle, critical = red stop-octagon.
+  Brand yellow is never used to mean "warning".
+- The demo must run end to end in LLM template mode (venue Wi-Fi may drop).
+- Simulator ground truth (`health`, `failure_within_h`) is for training labels and evaluation only.
+  It never reaches live MQTT, fleet or asset responses, Bolt, Decision Contracts or the edge.
+- The live demo shows inference, a Decision Contract and approval with a model prepared beforehand
+  by the demo-prep script. It never waits on training.
+- Cut for time (from the external review): 120-motor scale, risk events and priority scoring,
+  Decision Contract V2, maintenance outcomes, RAG metadata, Bolt tool expansion. They're roadmap
+  material for the slides.
