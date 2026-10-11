@@ -30,8 +30,9 @@ echo "==> stopping stack"
 docker compose down --remove-orphans
 VOLS=("${PROJECT}_timescale-data")
 [[ $KEEP_MODELS -eq 0 ]] && VOLS+=("${PROJECT}_models" "${PROJECT}_mlflow-data")
+EXISTING="$(docker volume ls -q)"
 for v in "${VOLS[@]}"; do
-  if docker volume inspect "$v" >/dev/null 2>&1; then
+  if grep -qx "$v" <<<"$EXISTING"; then
     echo "==> removing volume $v"; docker volume rm "$v" >/dev/null
   fi
 done

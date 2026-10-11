@@ -31,9 +31,9 @@ Write-Host "==> stopping stack"
 docker compose down --remove-orphans
 $vols = @("${project}_timescale-data")
 if (-not $KeepModels) { $vols += @("${project}_models", "${project}_mlflow-data") }
+$existing = @(docker volume ls -q)
 foreach ($v in $vols) {
-  docker volume inspect $v *> $null
-  if ($LASTEXITCODE -eq 0) { Write-Host "==> removing volume $v"; docker volume rm $v | Out-Null }
+  if ($existing -contains $v) { Write-Host "==> removing volume $v"; docker volume rm $v | Out-Null }
 }
 
 Write-Host "==> starting stack (api seeds 80%, prep trains + promotes, then replay + edge start)"
