@@ -197,3 +197,15 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
 - Final run: `SCRIPT EXIT: 0`; prep 66.9 s, lightgbm v59706 promoted (IMS 0.844, parity 0.0),
   24/24 scored, edge + replay streaming, `/system/health` db/mqtt/mlflow/edge all up.
   The api wait loop's 2 s request timeout was shorter than the health probes; raised to 15 s.
+
+## 2026-10-11 16:55 — demo rehearsal on the real stack
+
+- Two more replay fixes, both pushed: the simulated CMMS executes an approved work order at the
+  approval (`deb00c7`, `REPLAY_WORK_ORDER_EXECUTE=approval`, the window mode kept and tested),
+  and later replay passes shift their timestamps by one full timeline so plant time never
+  freezes at the end of the history (`db6e253`; previously duplicate rows were silently
+  ignored and a repair after the first pass never reached the dashboard).
+- Measured rehearsal after a clean reset (exit 0, model v62552): MTR-042 green at 0 s, red
+  (p 0.64) at 74 s; Run analysis to the gate in 17 s with no training step; after approval
+  "in maintenance" within 10 s and green with the work order completed by 30 s; registry
+  unchanged. Steps and lines: `docs/finals/demo-walkthrough.md`.

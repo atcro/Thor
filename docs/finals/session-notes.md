@@ -83,3 +83,14 @@ Prompt B (Bolt Designer) build on this. Keep these true.
   without a prediction honestly say "none scored yet". 53/53 pass in template mode.
 - `docs/DEMO.md` shot list was corrected; `docs/BUILD_STATUS.md` still holds prototype numbers
   and is marked superseded in DEMO.md.
+
+## Replay behaviour that matters for the twin (added after the rehearsal)
+
+- The simulated CMMS executes an approved work order at the approval (`REPLAY_WORK_ORDER_EXECUTE`
+  defaults to `approval`; `window` is the faithful mode). The `in_progress` work-order event
+  note names the scheduled window. A repaired motor streams its healthy baseline forever after.
+- After the first pass the replay shifts timestamps by one full timeline per pass
+  (`streaming/replay/replay.py::shift_pass`), so `last_ts` / plant time keeps growing and the
+  dashboard never freezes. Anything keyed on absolute plant time must tolerate that.
+- Demo timings from the rehearsal: MTR-042 red ~75 s after prep finishes; analysis 17 s;
+  approval → green ~30 s. See `demo-walkthrough.md`.
