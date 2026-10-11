@@ -24,7 +24,13 @@ from sqlalchemy.engine import Engine
 
 from apps.api import db
 from apps.api.graph_state import run_summary
-from apps.api.schemas import FeatureSpec, FleetAsset, ModelStage, ObservedTelemetryRow
+from apps.api.schemas import (
+    FeatureSpec,
+    FleetAsset,
+    ModelStage,
+    ObservedTelemetryRow,
+    Thresholds,
+)
 from apps.api.settings import get_settings
 
 log = logging.getLogger("thor.routes.fleet")
@@ -209,6 +215,7 @@ def get_asset(asset_id: str) -> dict[str, Any]:
         "prediction_ts": _ts_of(pred["ts"]) if pred else None,
         "model_version": pred["model_version"] if pred else None,
         "health_score": _health_score(p_fail),
+        "thresholds": Thresholds(),
         "contracts": contracts,
         "work_orders": work_orders,
         "runs": runs,
@@ -267,4 +274,5 @@ def system_health() -> dict[str, Any]:
         },
         "n_telemetry_rows": n_rows,
         "last_ingest_ts": last_ts,
+        "thresholds": Thresholds(),
     }

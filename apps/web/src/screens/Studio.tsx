@@ -339,7 +339,8 @@ export function Studio() {
                       ["median", fmtHours(val.lead_time.median_h)],
                       ["p90", fmtHours(val.lead_time.p90_h)],
                       ["p10", fmtHours(val.lead_time.p10_h)],
-                      ["events", `${val.lead_time.n_events} @ ${fmtNum(val.lead_time.threshold, 2)}`],
+                      ["events", `${val.lead_time.n_events} @ early warning ${fmtNum(val.lead_time.threshold, 2)} (${val.lead_time.sustained_rows ?? 3} sustained rows)`],
+                      ["classification", `recall / precision at ${fmtNum(val.thresholds?.classification ?? 0.5, 2)}`],
                       ...(val.rul ? ([["RUL p10/50/90", `${fmtHours(val.rul.p10_h)} / ${fmtHours(val.rul.p50_h)} / ${fmtHours(val.rul.p90_h)}`]] as [string, string][]) : []),
                     ]}
                   />

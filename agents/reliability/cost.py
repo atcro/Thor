@@ -22,12 +22,20 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 
-from apps.api.schemas import CostComparison, CostOption, LeadTimeReport, MaintenanceWindow
+from apps.api.schemas import (
+    EARLY_WARNING_THRESHOLD,
+    CostComparison,
+    CostOption,
+    LeadTimeReport,
+    MaintenanceWindow,
+)
 from apps.api.settings import Settings
 
 DEFAULT_LEAD_TIME_H = 48.0
 NEXT_PLANNED_WINDOW_H = 72.0
-WINDOW_P_FAIL_LIMIT = 0.30
+#: The maintenance window must end before P(failure) exceeds the early-warning threshold --
+#: the same 0.3 that defines the alarm and the warning lead time (one meaning per threshold).
+WINDOW_P_FAIL_LIMIT = EARLY_WARNING_THRESHOLD
 LOW_LOAD_WINDOW_START_HOUR = 2
 LOW_LOAD_WINDOW_END_HOUR = 5
 WINDOW_SEARCH_DAYS = 14
@@ -167,7 +175,7 @@ def _low_load_windows(
 def find_maintenance_window(
     cost: CostComparison, lead_time: LeadTimeReport, now: datetime | None = None
 ) -> MaintenanceWindow:
-    """Earliest low-load window that ends before P(failure) exceeds 0.30.
+    """Earliest low-load window that ends before P(failure) exceeds EARLY_WARNING_THRESHOLD.
 
     Inputs: the CostComparison (its assumptions carry p_now and the curve parameters),
     the LeadTimeReport (median lead time drives the hazard curve; the assumptions'

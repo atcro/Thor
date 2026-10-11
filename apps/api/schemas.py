@@ -19,6 +19,40 @@ from pydantic import BaseModel, Field, model_validator
 # Shared primitives
 # --------------------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------------------
+# Thresholds: one meaning each, defined once, used everywhere (agents/metrics.py, cost.py,
+# the validation report and the Asset 360 chart). Never mix them.
+# --------------------------------------------------------------------------------------
+
+#: P(failure within the horizon) >= this counts as a *predicted failure*. Used for recall,
+#: precision and F1 in the Optuna objective, the validation gate and the AI4I benchmark.
+CLASSIFICATION_THRESHOLD: float = 0.5
+#: The *early-warning alarm*: lead time is measured from the first of
+#: EARLY_WARNING_SUSTAINED_ROWS consecutive rows at or above this, and a maintenance window
+#: must end before P(failure) exceeds it. A calibrated 30 % chance within the horizon is
+#: actionable because the unplanned cost far exceeds the planned cost.
+EARLY_WARNING_THRESHOLD: float = 0.3
+#: Consecutive rows (10-min samples) required for an alarm, so a single noisy row never counts.
+EARLY_WARNING_SUSTAINED_ROWS: int = 3
+
+
+class Thresholds(BaseModel):
+    """The named thresholds a run used, reported in every ValidationReport and by the API."""
+
+    classification: float = Field(
+        default=CLASSIFICATION_THRESHOLD,
+        description="P >= this is a predicted failure (recall / precision / F1)",
+    )
+    early_warning: float = Field(
+        default=EARLY_WARNING_THRESHOLD,
+        description="alarm: lead time and the maintenance-window limit",
+    )
+    sustained_rows: int = Field(
+        default=EARLY_WARNING_SUSTAINED_ROWS,
+        description="consecutive rows >= early_warning that make an alarm",
+    )
+
+
 SENSOR_COLUMNS: tuple[str, ...] = (
     "vibration_rms",
     "vibration_kurtosis",
@@ -259,7 +293,9 @@ class LeadTimeReport(BaseModel):
     p90_h: float
     p10_h: float
     n_events: int
+    #: The early-warning threshold the alarm used (== Thresholds.early_warning).
     threshold: float
+    sustained_rows: int = EARLY_WARNING_SUSTAINED_ROWS
 
 
 class RULInterval(BaseModel):
@@ -285,6 +321,8 @@ class ValidationReport(BaseModel):
     ims: IndustrialModelScore
     passed: bool
     notes: list[str] = Field(default_factory=list)
+    #: The thresholds every metric above was computed with (one meaning each).
+    thresholds: Thresholds = Field(default_factory=Thresholds)
 
 
 # --------------------------------------------------------------------------------------

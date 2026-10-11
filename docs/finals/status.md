@@ -38,3 +38,22 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
 - **Next:** fix 3 (ground truth): strip `health`/`failure_within_h`/`regime` at the replay's
   publish boundary, `health_score: None` when no prediction, infer `regime` from rpm/load with
   the production baseline, scrub asset/telemetry/copilot responses, isolation test, web types.
+
+## 2026-10-11 13:56 — fix group 2 done: ground truth isolation (defect 3)
+
+- **Commit:** `6af028b` "Keep simulator ground truth out of every operational path".
+- **Files:** `apps/api/schemas.py` (`ObservedTelemetryRow`, `GROUND_TRUTH_COLUMNS`, nullable
+  `FleetAsset.health_score` + `prediction_ts`/`model_version`), `apps/api/db.py`
+  (`latest_prediction_rows`), `apps/api/routes/fleet.py` (no fallback health, `infer_regimes`),
+  `apps/api/routes/telemetry.py`, `apps/api/orchestrator.py` (copilot tools/templates,
+  feature spec passed to `register_model`), `agents/mlops/lifecycle.py` (`feature_spec` payload,
+  `production_feature_spec`), `agents/ml_architect/features.py` (`assign_regime_ids`),
+  `streaming/replay/replay.py` (`public_record`/`public_payload`), web types + Fleet/Asset360/
+  HealthPill/MotorSprite, `docs/INTERFACES.md`; new `tests/test_ground_truth_isolation.py`.
+- **Tests run:** `pytest` on isolation, api, telemetry_routes, orchestrator, mlops,
+  replay_work_orders, ml_architect → 77 passed; `ruff check .` clean;
+  `npm run build` ok; `npm run test` 4 passed.
+- **Next:** fix 6 (thresholds): named `CLASSIFICATION_THRESHOLD` (0.5) and
+  `EARLY_WARNING_THRESHOLD` (0.3) in `apps/api/schemas.py`, one lead-time definition (3 sustained
+  rows at 0.3) shared by `automl.py` and `checks.py`, `cost.py` window limit = early warning,
+  thresholds reported in `ValidationReport`, Asset 360 chart draws both; test.

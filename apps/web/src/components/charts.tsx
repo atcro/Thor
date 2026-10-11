@@ -83,6 +83,7 @@ export function TimeSeriesChart({
   height = 130,
   yDomain,
   threshold,
+  thresholds,
   digits = 2,
 }: {
   title: string;
@@ -92,6 +93,8 @@ export function TimeSeriesChart({
   height?: number;
   yDomain?: [number | "auto", number | "auto"];
   threshold?: number;
+  /** Named reference lines (e.g. early-warning 0.3 and classification 0.5), from the API. */
+  thresholds?: { value: number; label: string; color: string }[];
   digits?: number;
 }) {
   const last = [...data].reverse().find((d) => d.v !== null);
@@ -137,6 +140,15 @@ export function TimeSeriesChart({
           {threshold !== undefined && (
             <ReferenceLine y={threshold} stroke={CHART.amber} strokeDasharray="4 3" />
           )}
+          {(thresholds ?? []).map((t) => (
+            <ReferenceLine
+              key={t.label}
+              y={t.value}
+              stroke={t.color}
+              strokeDasharray="4 3"
+              label={{ value: `${t.label} ${t.value}`, position: "insideTopLeft", fill: t.color, fontSize: 10 }}
+            />
+          ))}
           <Line
             type="monotone"
             dataKey="v"

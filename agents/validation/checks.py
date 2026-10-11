@@ -26,15 +26,19 @@ from sklearn.base import clone
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.frozen import FrozenEstimator
-from sklearn.metrics import (
-    brier_score_loss,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
+from sklearn.metrics import brier_score_loss
 
+from agents.metrics import (
+    IMS_WEIGHTS,
+    classification_metrics,
+    industrial_model_score,
+    lead_times_h,
+    positive_proba,
+)
 from apps.api.schemas import (
+    CLASSIFICATION_THRESHOLD,
+    EARLY_WARNING_SUSTAINED_ROWS,
+    EARLY_WARNING_THRESHOLD,
     BacktestFold,
     CalibrationReport,
     CandidateModel,
@@ -44,6 +48,7 @@ from apps.api.schemas import (
     LeadTimeReport,
     LeakageReport,
     RULInterval,
+    Thresholds,
     ValidationReport,
 )
 
@@ -53,23 +58,28 @@ FORBIDDEN_FEATURES: frozenset[str] = frozenset(
     {"health", "failure_within_h", "rul_h", "label", "ts", "asset_id", "regime"}
 )
 LEAKAGE_CORR_LIMIT: float = 0.98
-SUSTAINED_SAMPLES: int = 3
-# Alarm threshold for warning lead time (shared with agents.ml_architect.automl): a
-# calibrated 30 % chance of failure within the horizon is actionable because the unplanned
-# cost far exceeds the planned cost. Classification metrics keep the conventional 0.5.
-ALARM_THRESHOLD: float = 0.3
+# Thresholds come from apps.api.schemas (one meaning each; see agents/metrics.py):
+#   CLASSIFICATION_THRESHOLD  -> recall / precision / F1
+#   EARLY_WARNING_THRESHOLD   -> the alarm that defines warning lead time (sustained rows)
 ISOTONIC_MIN_ROWS: int = 200
 MIN_RECALL_TO_PASS: float = 0.6
 MIN_LEAD_TIME_H_TO_PASS: float = 12.0
 HOLDOUT_ASSET_FRACTION: float = 0.25
 
-IMS_WEIGHTS: dict[str, float] = {
-    "recall": 0.35,
-    "lead_time_score": 0.25,
-    "precision": 0.15,
-    "calibration_score": 0.15,
-    "latency_score": 0.10,
-}
+__all__ = [
+    "CLASSIFICATION_THRESHOLD",
+    "EARLY_WARNING_SUSTAINED_ROWS",
+    "EARLY_WARNING_THRESHOLD",
+    "IMS_WEIGHTS",
+    "calibrate_probabilities",
+    "champion_artifact_path",
+    "compute_lead_time",
+    "detect_leakage",
+    "estimate_rul_interval",
+    "run_backtest",
+    "train_end_of",
+    "validate",
+]
 
 
 # --------------------------------------------------------------------------------------
@@ -84,29 +94,8 @@ def _nan_to(value: float, default: float = 0.0) -> float:
 
 
 def _industrial_model_score(metrics: dict[str, float], latency_ms: float) -> IndustrialModelScore:
-    """Local copy of the IMS formula so this module does not import agents.ml_architect.
-
-    Inputs: `metrics` with keys recall, precision, lead_time_h, brier (missing keys count as
-    the worst value) and `latency_ms`. Output: IndustrialModelScore with the schema-default
-    weights. lead_time_score = min(1, lead_time_h / 72); calibration_score = 1 - min(1, brier /
-    0.25); latency_score = 1 - min(1, latency_ms / 50).
-    """
-    recall = min(1.0, max(0.0, _nan_to(metrics.get("recall", 0.0))))
-    precision = min(1.0, max(0.0, _nan_to(metrics.get("precision", 0.0))))
-    lead_time_h = max(0.0, _nan_to(metrics.get("lead_time_h", 0.0)))
-    brier = max(0.0, _nan_to(metrics.get("brier", 0.25), default=0.25))
-    lead_time_score = min(1.0, lead_time_h / 72.0)
-    calibration_score = 1.0 - min(1.0, brier / 0.25)
-    latency_score = 1.0 - min(1.0, max(0.0, _nan_to(latency_ms)) / 50.0)
-    parts = {
-        "recall": recall,
-        "precision": precision,
-        "lead_time_score": lead_time_score,
-        "calibration_score": calibration_score,
-        "latency_score": latency_score,
-    }
-    total = sum(IMS_WEIGHTS[k] * parts[k] for k in IMS_WEIGHTS)
-    return IndustrialModelScore(**parts, weights=dict(IMS_WEIGHTS), total=float(total))
+    """The shared IMS (agents.metrics.industrial_model_score); kept under this name for callers."""
+    return industrial_model_score(metrics, latency_ms)
 
 
 def _sorted_assets(df: pd.DataFrame) -> list[str]:
@@ -125,63 +114,27 @@ def _split_assets(
 
 
 def _positive_proba(model: Any, X: pd.DataFrame) -> np.ndarray:
-    """Return P(label = 1) for each row; tolerates single-column predict_proba outputs."""
-    proba = np.asarray(model.predict_proba(X))
-    if proba.ndim == 1:
-        return proba.astype(float)
-    if proba.shape[1] == 1:
-        return proba[:, 0].astype(float)
-    return proba[:, 1].astype(float)
+    """Return P(label = 1) for each row (shared helper from agents.metrics)."""
+    return positive_proba(model, X)
 
 
 def _classification_metrics(
-    y_true: np.ndarray, p: np.ndarray, threshold: float = 0.5
+    y_true: np.ndarray, p: np.ndarray, threshold: float = CLASSIFICATION_THRESHOLD
 ) -> dict[str, float]:
-    """recall, precision, f1, auroc, brier for one held-out set. auroc = NaN if one class only."""
-    y_pred = (p >= threshold).astype(int)
-    out: dict[str, float] = {
-        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "brier": float(brier_score_loss(y_true, p)),
-        "n_test": float(len(y_true)),
-        "n_pos_test": float(int(y_true.sum())),
-    }
-    if len(np.unique(y_true)) == 2:
-        out["auroc"] = float(roc_auc_score(y_true, p))
-    else:
-        out["auroc"] = float("nan")
+    """recall, precision, f1, auroc, brier, n_test, n_pos_test at CLASSIFICATION_THRESHOLD."""
+    out = classification_metrics(y_true, p, threshold)
+    out.pop("threshold", None)
     return out
 
 
-def _failure_ts(asset_df: pd.DataFrame) -> pd.Timestamp | None:
-    """Failure instant for one asset: last row's ts + rul_h; None if the asset never fails."""
-    rul = asset_df["rul_h"]
-    mask = rul.notna()
-    if not mask.any():
-        return None
-    last = asset_df.loc[mask].iloc[-1]
-    return pd.Timestamp(last["ts"]) + pd.Timedelta(hours=float(last["rul_h"]))
-
-
-def _lead_times_h(df: pd.DataFrame, spec: FeatureSpec, model: Any, threshold: float) -> list[float]:
-    """Per failing asset: hours from the first sustained alarm (3 consecutive rows with
-    P >= threshold) to failure. A missed event contributes 0.0."""
-    leads: list[float] = []
-    for _asset, g in df.sort_values(["asset_id", "ts"]).groupby("asset_id", sort=True):
-        fail_ts = _failure_ts(g)
-        if fail_ts is None:
-            continue
-        p = _positive_proba(model, g[spec.features])
-        hot = p >= threshold
-        lead = 0.0
-        for i in range(len(hot) - SUSTAINED_SAMPLES + 1):
-            if bool(hot[i : i + SUSTAINED_SAMPLES].all()):
-                first_ts = pd.Timestamp(g["ts"].iloc[i])
-                lead = max(0.0, (fail_ts - first_ts).total_seconds() / 3600.0)
-                break
-        leads.append(float(lead))
-    return leads
+def _lead_times_h(
+    df: pd.DataFrame, spec: FeatureSpec, model: Any, threshold: float = EARLY_WARNING_THRESHOLD
+) -> list[float]:
+    """Per failing asset: hours from the sustained early-warning alarm to failure (shared
+    definition, agents.metrics.lead_times_h). A missed event contributes 0.0."""
+    ordered = df.sort_values(["asset_id", "ts"])
+    p = positive_proba(model, ordered[spec.features])
+    return lead_times_h(ordered[["asset_id", "ts", "rul_h"]], p, threshold)
 
 
 def _reliability_bins(
@@ -208,7 +161,7 @@ class _IdentityCalibrator:
         return np.asarray(self.estimator.predict_proba(X))
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        return (_positive_proba(self.estimator, X) >= 0.5).astype(int)
+        return (_positive_proba(self.estimator, X) >= CLASSIFICATION_THRESHOLD).astype(int)
 
 
 def _model_factory_for(model: Any) -> Callable[[], Any]:
@@ -305,17 +258,19 @@ def run_backtest(
     spec: FeatureSpec,
     model_factory: Callable[[], Any],
     n_folds: int = 3,
-    threshold: float = 0.5,
+    threshold: float = CLASSIFICATION_THRESHOLD,
+    early_warning_threshold: float = EARLY_WARNING_THRESHOLD,
 ) -> list[BacktestFold]:
     """Asset-level, time-ordered backtest.
 
     Inputs: feature frame, FeatureSpec, a zero-arg factory returning an unfitted estimator
-    with fit/predict_proba, the number of folds, and the alarm threshold. Assets are sorted
-    and dealt round-robin into `n_folds` held-out groups; fold i trains on every other asset's
-    rows (time-ordered, all dated <= train_end) and scores the held-out assets, which the
-    model has never seen. Output: one BacktestFold per fold with metrics recall, precision,
-    f1, auroc (NaN if the held-out set has one class), brier, n_test, n_pos_test and
-    lead_time_h (median warning lead time over failing held-out assets; NaN if none fail).
+    with fit/predict_proba, the number of folds, the classification threshold (recall /
+    precision / F1) and the early-warning threshold (lead time). Assets are sorted and dealt
+    round-robin into `n_folds` held-out groups; fold i trains on every other asset's rows
+    (time-ordered, all dated <= train_end) and scores the held-out assets, which the model
+    has never seen. Output: one BacktestFold per fold with metrics recall, precision, f1,
+    auroc (NaN if the held-out set has one class), brier, n_test, n_pos_test and lead_time_h
+    (median warning lead time over failing held-out assets; NaN if none fail).
     With a single asset the fallback is a time-ordered 70/30 split of that asset.
     """
     df = features_df.sort_values(["asset_id", "ts"]).reset_index(drop=True)
@@ -331,7 +286,7 @@ def run_backtest(
         model.fit(train[spec.features], train["label"].astype(int))
         p = _positive_proba(model, test[spec.features])
         metrics = _classification_metrics(test["label"].to_numpy().astype(int), p, threshold)
-        leads = _lead_times_h(test, spec, model, threshold)
+        leads = _lead_times_h(test, spec, model, early_warning_threshold)
         metrics["lead_time_h"] = float(np.median(leads)) if leads else float("nan")
         folds.append(
             BacktestFold(
@@ -359,7 +314,7 @@ def run_backtest(
         model.fit(train[spec.features], train["label"].astype(int))
         p = _positive_proba(model, test[spec.features])
         metrics = _classification_metrics(test["label"].to_numpy().astype(int), p, threshold)
-        leads = _lead_times_h(test, spec, model, threshold)
+        leads = _lead_times_h(test, spec, model, early_warning_threshold)
         metrics["lead_time_h"] = float(np.median(leads)) if leads else float("nan")
         folds.append(
             BacktestFold(
@@ -410,16 +365,20 @@ def calibrate_probabilities(
 
 
 def compute_lead_time(
-    features_df: pd.DataFrame, spec: FeatureSpec, model: Any, threshold: float = 0.5
+    features_df: pd.DataFrame,
+    spec: FeatureSpec,
+    model: Any,
+    threshold: float = EARLY_WARNING_THRESHOLD,
 ) -> LeadTimeReport:
     """Warning lead time: how far ahead of failure the model raises a sustained alarm.
 
-    Inputs: feature frame with rul_h, FeatureSpec, a fitted model, alarm threshold. For each
-    asset that fails (rul_h not null), the alarm instant is the first of 3 consecutive rows
-    with P(failure) >= threshold; lead time = failure instant (last ts + rul_h) minus alarm
-    instant, in hours; a never-alarmed failing asset counts as 0 h. Output: LeadTimeReport
-    with median / p10 / p90 over events, n_events and the threshold used. All zeros if no
-    asset in the frame fails.
+    Inputs: feature frame with rul_h, FeatureSpec, a fitted model, the early-warning
+    threshold (default EARLY_WARNING_THRESHOLD = 0.3, never the classification threshold).
+    For each asset that fails (rul_h not null), the alarm instant is the first of
+    EARLY_WARNING_SUSTAINED_ROWS consecutive rows with P(failure) >= threshold; lead time =
+    failure instant (last ts + rul_h) minus alarm instant, in hours; a never-alarmed failing
+    asset counts as 0 h. Output: LeadTimeReport with median / p10 / p90 over events, n_events
+    and the threshold used. All zeros if no asset in the frame fails.
     """
     leads = _lead_times_h(features_df, spec, model, threshold)
     if not leads:
@@ -521,8 +480,9 @@ def validate(candidates: CandidateSet, features_df: pd.DataFrame, run_id: str) -
     held-out assets and saved as <candidate_id>_calibrated.joblib next to the original;
     lead time measured with the calibrated champion on the held-out assets (falls back to
     the whole frame if no held-out asset fails); RUL interval (None on failure).
-    Output: ValidationReport. `passed` = leakage passed and champion recall >= 0.6 and
-    median lead time >= 12 h. notes[0] is always "champion_artifact=<path>" because the
+    Output: ValidationReport. `passed` = leakage passed and champion recall (at
+    CLASSIFICATION_THRESHOLD) >= 0.6 and median lead time (at EARLY_WARNING_THRESHOLD) >= 12 h;
+    `thresholds` records both. notes[0] is always "champion_artifact=<path>" because the
     schema has no field for the calibrated artifact path.
     """
     spec = candidates.features
@@ -565,9 +525,9 @@ def validate(candidates: CandidateSet, features_df: pd.DataFrame, run_id: str) -
     joblib.dump(calibrated, cal_path)
     notes.append(f"champion_artifact={cal_path}")
 
-    lead_time = compute_lead_time(cal_rows, spec, calibrated, threshold=ALARM_THRESHOLD)
+    lead_time = compute_lead_time(cal_rows, spec, calibrated, threshold=EARLY_WARNING_THRESHOLD)
     if lead_time.n_events == 0:
-        lead_time = compute_lead_time(df, spec, calibrated, threshold=ALARM_THRESHOLD)
+        lead_time = compute_lead_time(df, spec, calibrated, threshold=EARLY_WARNING_THRESHOLD)
         notes.append("lead time measured on the full frame: no held-out asset fails")
     else:
         notes.append(f"lead time measured on held-out assets {test_assets}")
@@ -611,6 +571,7 @@ def validate(candidates: CandidateSet, features_df: pd.DataFrame, run_id: str) -
         ims=ims,
         passed=passed,
         notes=notes,
+        thresholds=Thresholds(),
     )
 
 

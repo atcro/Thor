@@ -358,7 +358,17 @@ export function Asset360() {
                 <TimeSeriesChart title="vibration_rms" unit="mm/s" data={series.vib} color={CHART.ember} />
                 <TimeSeriesChart title="bearing_temp_c" unit="°C" data={series.temp} color={CHART.steel} digits={1} />
                 {series.preds.length > 0 ? (
-                  <TimeSeriesChart title="failure_probability" unit="edge / control plane" data={series.preds} color={CHART.amber} yDomain={[0, 1]} threshold={0.5} />
+                  <TimeSeriesChart
+                    title="failure_probability"
+                    unit="edge / control plane"
+                    data={series.preds}
+                    color={CHART.amber}
+                    yDomain={[0, 1]}
+                    thresholds={[
+                      { value: detail.data?.thresholds?.early_warning ?? 0.3, label: "early warning", color: CHART.amber },
+                      { value: detail.data?.thresholds?.classification ?? 0.5, label: "predicted failure", color: CHART.ember },
+                    ]}
+                  />
                 ) : (
                   <div className="small muted">No predictions logged yet — deploy a model to the edge or run an analysis.</div>
                 )}

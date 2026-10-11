@@ -181,7 +181,18 @@ export interface LeadTimeReport {
   p90_h: number;
   p10_h: number;
   n_events: number;
+  /** The early-warning threshold the alarm used. */
   threshold: number;
+  sustained_rows?: number;
+}
+
+/** One meaning per threshold (apps/api/schemas.py Thresholds). */
+export interface Thresholds {
+  /** P >= this is a predicted failure (recall / precision / F1). */
+  classification: number;
+  /** The alarm: lead time and the maintenance-window limit. */
+  early_warning: number;
+  sustained_rows: number;
 }
 
 export interface RULInterval {
@@ -205,6 +216,7 @@ export interface ValidationReport {
   ims: IndustrialModelScore;
   passed: boolean;
   notes: string[];
+  thresholds?: Thresholds;
 }
 
 // ---------------------------------------------------------------------------
@@ -522,6 +534,7 @@ export interface SystemHealth {
   };
   n_telemetry_rows: number;
   last_ingest_ts: ISODate | null;
+  thresholds?: Thresholds;
 }
 
 /** GET /assets/:id/predictions */
@@ -558,6 +571,7 @@ export interface AssetDetail {
   model_version: string | null;
   /** null = no prediction yet (never derived from anything but a prediction). */
   health_score: number | null;
+  thresholds?: Thresholds;
   contracts: DecisionContract[];
   work_orders: WorkOrder[];
   runs: RunSummary[];

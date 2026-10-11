@@ -65,7 +65,7 @@ from sklearn.model_selection import GroupShuffleSplit
 from agents.data_agent.profiling import detect_regime as _thor_detect_regime
 from agents.ml_architect.automl import industrial_model_score
 from agents.validation.checks import calibrate_probabilities, detect_leakage
-from apps.api.schemas import FeatureSpec
+from apps.api.schemas import CLASSIFICATION_THRESHOLD, FeatureSpec
 
 logger = logging.getLogger(__name__)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -106,7 +106,8 @@ RAW_FEATURES: tuple[str, ...] = (
     "temp_delta_k",
 )
 FAMILIES: tuple[str, ...] = ("random_forest", "xgboost", "lightgbm")
-ALARM_THRESHOLD = 0.5
+#: AI4I has no time axis, so only the classification threshold applies (no early-warning alarm).
+ALARM_THRESHOLD = CLASSIFICATION_THRESHOLD
 TEST_GROUP_FRACTION = 0.25
 CAL_GROUP_FRACTION = 0.2
 Z_EPS = 1e-9

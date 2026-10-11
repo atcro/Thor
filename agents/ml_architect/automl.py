@@ -25,15 +25,19 @@ import numpy as np
 import optuna
 import pandas as pd
 from optuna.samplers import TPESampler
-from sklearn.metrics import (
-    brier_score_loss,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
 
+from agents.metrics import (
+    BRIER_CAP,
+    LATENCY_CAP_MS,
+    LEAD_TIME_CAP_H,
+    classification_metrics,
+    industrial_model_score,
+    median_lead_time_h,
+    positive_proba,
+)
 from apps.api.schemas import (
+    CLASSIFICATION_THRESHOLD,
+    EARLY_WARNING_THRESHOLD,
     CandidateModel,
     CandidateSet,
     DataQualityContract,
@@ -48,15 +52,24 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 FAMILIES: tuple[str, ...] = ("random_forest", "xgboost", "lightgbm")
 HOLDOUT_FRACTION = 0.25
-# Alarm threshold for warning lead time: a calibrated 30 % chance of failure within the
-# horizon is actionable in maintenance practice (unplanned cost >> planned cost), so lead
-# time is measured from the first crossing of 0.3, not 0.5. Classification metrics keep 0.5.
-ALARM_THRESHOLD = 0.3
-LEAD_TIME_CAP_H = 72.0
-BRIER_CAP = 0.25
-LATENCY_CAP_MS = 50.0
 DEFAULT_EXPERIMENT = "thor-automl"
 METRIC_KEYS: tuple[str, ...] = ("recall", "precision", "f1", "auroc", "brier", "lead_time_h")
+
+__all__ = [
+    "BRIER_CAP",
+    "CLASSIFICATION_THRESHOLD",
+    "EARLY_WARNING_THRESHOLD",
+    "FAMILIES",
+    "LATENCY_CAP_MS",
+    "LEAD_TIME_CAP_H",
+    "IndustrialModelScore",
+    "compare_models",
+    "industrial_model_score",
+    "infer_task",
+    "launch_trial",
+    "split_by_asset",
+    "train_candidates",
+]
 
 
 # --------------------------------------------------------------------------------------
@@ -102,60 +115,6 @@ def infer_task(dq: DataQualityContract, df: pd.DataFrame, horizon_h: float = 48.
 
 
 # --------------------------------------------------------------------------------------
-# industrial_model_score
-# --------------------------------------------------------------------------------------
-
-
-def industrial_model_score(metrics: dict[str, float], latency_ms: float) -> IndustrialModelScore:
-    """Champion-selection score weighted for industrial use, not raw accuracy.
-
-    Input: ``metrics`` with ``recall``, ``precision``, ``lead_time_h``, ``brier`` (missing keys
-    count as their worst value); ``latency_ms`` = inference cost per 1000 rows.
-    Output: ``IndustrialModelScore`` with
-    ``lead_time_score = min(1, lead_time_h / 72)``,
-    ``calibration_score = 1 - min(1, brier / 0.25)``,
-    ``latency_score = 1 - min(1, latency_ms / 50)`` and
-    ``total = sum(weight_k * score_k)`` using the schema's default weights
-    (recall .35, lead_time .25, precision .15, calibration .15, latency .10).
-    """
-
-    def _clip01(v: float) -> float:
-        v = float(v) if v is not None and np.isfinite(v) else 0.0
-        return float(min(1.0, max(0.0, v)))
-
-    recall = _clip01(metrics.get("recall", 0.0))
-    precision = _clip01(metrics.get("precision", 0.0))
-    lead_time_h = max(0.0, float(metrics.get("lead_time_h", 0.0) or 0.0))
-    brier = float(metrics.get("brier", BRIER_CAP))
-    if not np.isfinite(brier):
-        brier = BRIER_CAP
-    lat = (
-        float(latency_ms) if latency_ms is not None and np.isfinite(latency_ms) else LATENCY_CAP_MS
-    )
-
-    lead_time_score = min(1.0, lead_time_h / LEAD_TIME_CAP_H)
-    calibration_score = 1.0 - min(1.0, max(0.0, brier) / BRIER_CAP)
-    latency_score = 1.0 - min(1.0, max(0.0, lat) / LATENCY_CAP_MS)
-    ims = IndustrialModelScore(
-        recall=recall,
-        precision=precision,
-        lead_time_score=lead_time_score,
-        calibration_score=calibration_score,
-        latency_score=latency_score,
-        total=0.0,
-    )
-    parts = {
-        "recall": recall,
-        "lead_time_score": lead_time_score,
-        "precision": precision,
-        "calibration_score": calibration_score,
-        "latency_score": latency_score,
-    }
-    ims.total = round(sum(ims.weights[k] * parts[k] for k in ims.weights), 6)
-    return ims
-
-
-# --------------------------------------------------------------------------------------
 # Splits + evaluation helpers
 # --------------------------------------------------------------------------------------
 
@@ -176,37 +135,6 @@ def split_by_asset(
     return assets[:-n_hold], assets[-n_hold:]
 
 
-def _lead_time_hours(
-    meta: pd.DataFrame, prob: np.ndarray, threshold: float = ALARM_THRESHOLD
-) -> float:
-    """Median warning lead time over failing held-out assets.
-
-    For each asset with ``rul_h`` present: failure time = ``ts + rul_h`` at the LAST row that
-    still carries a ``rul_h`` (after a failure the motor is repaired and ``rul_h`` is NaN
-    again); lead time = hours from the first row before that failure with
-    ``prob >= threshold`` to the failure (0 if never). Returns 0.0 when no held-out asset
-    fails.
-    """
-    m = meta.assign(prob=prob)
-    leads: list[float] = []
-    for _, g in m.groupby("asset_id", sort=True):
-        g = g.sort_values("ts")
-        rul = g["rul_h"].astype(float)
-        if not rul.notna().any():
-            continue
-        last_pos = int(np.flatnonzero(rul.notna().to_numpy())[-1])
-        last = g.iloc[last_pos]
-        failure_ts = pd.Timestamp(last["ts"]) + pd.Timedelta(hours=float(rul.iloc[last_pos]))
-        before = g.iloc[: last_pos + 1]
-        alarms = before[before["prob"] >= threshold]
-        if alarms.empty:
-            leads.append(0.0)
-            continue
-        first = pd.Timestamp(alarms.iloc[0]["ts"])
-        leads.append(max(0.0, (failure_ts - first).total_seconds() / 3600.0))
-    return float(np.median(leads)) if leads else 0.0
-
-
 def _latency_ms_per_1000(model: Any, X: pd.DataFrame, repeats: int = 3) -> float:
     """Best-of-``repeats`` wall time of ``predict_proba`` on ``X``, scaled to ms per 1000 rows."""
     if len(X) == 0:
@@ -220,28 +148,23 @@ def _latency_ms_per_1000(model: Any, X: pd.DataFrame, repeats: int = 3) -> float
     return float(best / len(X) * 1000.0 * 1000.0)
 
 
-def _positive_proba(model: Any, X: pd.DataFrame) -> np.ndarray:
-    p = np.asarray(model.predict_proba(X))
-    if p.ndim == 2 and p.shape[1] >= 2:
-        return p[:, 1].astype(float)
-    return p.reshape(-1).astype(float)
-
-
 def _evaluate(model: Any, X: pd.DataFrame, y: np.ndarray, meta: pd.DataFrame) -> dict[str, float]:
-    """Holdout metrics: recall, precision, f1, auroc, brier, lead_time_h (all floats)."""
+    """Holdout metrics with the shared definitions (agents/metrics.py): recall / precision /
+    f1 at CLASSIFICATION_THRESHOLD, auroc, brier, and lead_time_h = median warning lead time
+    at EARLY_WARNING_THRESHOLD over the failing held-out assets (0.0 when none fails)."""
     if len(X) == 0:
         return {k: 0.0 for k in METRIC_KEYS} | {"auroc": 0.5, "brier": BRIER_CAP}
-    prob = np.clip(_positive_proba(model, X), 0.0, 1.0)
-    pred = (prob >= ALARM_THRESHOLD).astype(int)
-    metrics = {
-        "recall": float(recall_score(y, pred, zero_division=0)),
-        "precision": float(precision_score(y, pred, zero_division=0)),
-        "f1": float(f1_score(y, pred, zero_division=0)),
-        "auroc": float(roc_auc_score(y, prob)) if len(np.unique(y)) == 2 else 0.5,
-        "brier": float(brier_score_loss(y, prob)),
-        "lead_time_h": _lead_time_hours(meta, prob),
+    prob = positive_proba(model, X)
+    cm = classification_metrics(y, prob, CLASSIFICATION_THRESHOLD)
+    lead = median_lead_time_h(meta, prob)
+    return {
+        "recall": cm["recall"],
+        "precision": cm["precision"],
+        "f1": cm["f1"],
+        "auroc": cm["auroc"] if np.isfinite(cm["auroc"]) else 0.5,
+        "brier": cm["brier"],
+        "lead_time_h": lead if np.isfinite(lead) else 0.0,
     }
-    return metrics
 
 
 # --------------------------------------------------------------------------------------
@@ -393,8 +316,9 @@ def launch_trial(
     for the joblib artifact (default ``<models_dir>/candidates``) and an MLflow experiment name.
     Split: the last 25 % of assets by id are held out (``split_by_asset``); rows stay in time
     order; no shuffling. Objective: ``industrial_model_score`` on the held-out assets
-    (recall, precision, f1, auroc, brier, lead_time_h + latency in ms per 1000 rows), maximised
-    with ``TPESampler(seed)``. Class imbalance: ``class_weight="balanced_subsample"`` (RF) or
+    (recall / precision / f1 at CLASSIFICATION_THRESHOLD, auroc, brier, lead_time_h at
+    EARLY_WARNING_THRESHOLD with the sustained-rows rule, + latency in ms per 1000 rows --
+    the same definitions the Validation Agent uses), maximised with ``TPESampler(seed)``. Class imbalance: ``class_weight="balanced_subsample"`` (RF) or
     ``scale_pos_weight = n_neg / n_pos`` (XGB/LGBM).
     Output: ``CandidateModel`` whose artifact (fitted on training assets only) is saved to
     ``artifacts_dir/<candidate_id>.joblib`` and exposes ``predict_proba(X)`` for ``X`` with
