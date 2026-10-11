@@ -39,9 +39,12 @@ done
 
 echo "==> starting stack (api seeds 80%, prep trains + promotes, then replay + edge start)"
 docker compose up -d
-echo "==> following the prep service (train, validate incl. parity, promote, export, score)"
-docker compose logs -f --no-log-prefix prep
-PREP_EXIT="$(docker compose ps -a --format json prep | sed -n 's/.*"ExitCode": *\([0-9]*\).*/\1/p' | head -n 1)"
+echo "==> waiting for the prep service (train, validate incl. parity, promote, export, score; ~2 min)"
+set +e
+docker compose wait prep
+PREP_EXIT=$?
+set -e
+docker compose logs --no-log-prefix prep
 if [[ "${PREP_EXIT:-1}" != "0" ]]; then
   echo "demo prep failed with exit code ${PREP_EXIT:-?}; see 'docker compose logs prep'" >&2
   exit 1
