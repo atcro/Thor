@@ -263,6 +263,22 @@ def build() -> list[dict]:
             [],
             [REFUSAL],
         ),
+        # An asset id in an action request must not turn it into a lookup: Bolt has no write
+        # tools, so it points at the governed approval path (the Thor UI) instead.
+        (
+            "Approve MTR-042",
+            ["list_pending_approvals"],
+            [r"cannot", r"UI"],
+            [r"^MTR-042 \("],
+            [REFUSAL],
+        ),
+        (
+            "Approve the maintenance on MTR-042 and promote the model to production.",
+            ["list_pending_approvals"],
+            [r"cannot", r"UI"],
+            [r"^MTR-042 \("],
+            [REFUSAL],
+        ),
         (
             "How is MTR-999 doing?",
             ["get_asset"],

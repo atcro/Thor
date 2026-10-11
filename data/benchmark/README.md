@@ -44,14 +44,39 @@ The CSV (`ai4i2020.csv`) and `results.json` are git-ignored; regenerate them loc
 
 ## Results
 
-Fill in from `results.json` after running (calibrated champion, threshold 0.5, grouped test set):
+### Results (rerun 2026-10-11, `python -m data.benchmark.ai4i_benchmark --n-trials 6 --seed 0`)
+
+Grouped 75/25 split on product-id buckets (no row shuffle; 75 / 25 buckets),
+the training buckets further split into fit / tune / calibration groups (4519 / 1490 / 1489 rows),
+champion = highest Industrial Model Score on the tune group with the lead-time term pinned to 0
+(no time axis), final metrics for the calibrated champion at the classification threshold 0.5
+on the held-out buckets. Record: `data/benchmark/results.json` (git-ignored; regenerate with the
+command).
 
 | metric | value |
 |---|---|
-| champion family | _fill in_ |
-| recall | _fill in_ |
-| precision | _fill in_ |
-| F1 | _fill in_ |
-| AUROC | _fill in_ |
-| Brier before / after calibration | _fill in_ |
-| n_train / n_test | _fill in_ |
+| champion family | lightgbm (isotonic calibration) |
+| recall | 0.784 |
+| precision | 0.896 |
+| F1 | 0.836 |
+| AUROC | 0.974 |
+| Brier before / after calibration | 0.0109 / 0.0095 |
+| positive rate (all / test) | 3.390% / 3.517% |
+| n_train / n_test | 7498 / 2502 |
+
+Per family on the tune group (what the search saw):
+
+| family | IMS (no lead-time term) | recall | precision | Brier |
+|---|---|---|---|---|
+| random_forest | 0.624 | 0.852 | 0.657 | 0.0186 |
+| xgboost | 0.646 | 0.852 | 0.730 | 0.0133 |
+| lightgbm | 0.652 | 0.815 | 0.863 | 0.0096 |
+
+Leakage checks: failure-mode flags in features = [],
+group overlap = 0, `detect_leakage` passed = True.
+
+What differs from the synthetic run and why the numbers are lower: AI4I has no time axis and
+no asset identity, so there is no rolling-window feature pipeline, no regime baseline over a
+motor's own history, no warning lead time and no asset-level holdout, and its 3.4 % failure
+rate mixes five failure modes. Quote AI4I numbers as AI4I numbers: they show the selection and
+validation discipline holds on real data, not that the synthetic numbers transfer.

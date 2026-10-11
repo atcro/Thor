@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { getRun, listRuns, runPipeline } from "../api/client";
-import type { CandidateModel, GraphState, IndustrialModelScore, RunSummary } from "../api/types";
+import type { AssetSplit, CandidateModel, GateCheck, GraphState, IndustrialModelScore, ParityReport, RunSummary } from "../api/types";
 import { TERMINAL_STAGES } from "../api/types";
 import { AXIS_TICK, CHART, ChartTip } from "../components/charts";
 import { BarH, EmptyState, ErrorState, Kv, LoadingState, ModelStageChip, Panel, Pill, StageChip } from "../components/ui";
@@ -81,6 +81,84 @@ function CalibrationChart({ bins }: { bins: [number, number, number][] }) {
         <Line type="monotone" dataKey="y" name="observed" stroke={CHART.steel} strokeWidth={2} dot={{ r: 3, fill: CHART.steel, strokeWidth: 0 }} isAnimationActive={false} />
       </LineChart>
     </ResponsiveContainer>
+  );
+}
+
+/** Which motors went where. Every list comes from the run's recorded AssetSplit. */
+function SplitTable({ split }: { split: AssetSplit }) {
+  const rows: [string, string[]][] = [
+    ["train", split.train],
+    ["validation", split.validation],
+    ["calibration", split.calibration],
+    ["test", split.test],
+  ];
+  return (
+    <div>
+      <h3 style={{ marginBottom: 4 }}>Asset split · seed {split.seed}</h3>
+      <table className="tbl">
+        <thead>
+          <tr>
+            <th>group</th>
+            <th className="right">motors</th>
+            <th>completed failures</th>
+            <th>ids</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([name, ids]) => (
+            <tr key={name}>
+              <td className="mono">{name}</td>
+              <td className="num">{ids.length}</td>
+              <td className="mono small">{(split.positives?.[name] ?? []).join(", ") || "—"}</td>
+              <td className="mono small dim">{ids.map((id) => id.replace("MTR-", "")).join(" ")}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {split.forced_test.length > 0 && <div className="small muted" style={{ marginTop: 4 }}>held out of training: {split.forced_test.join(", ")}</div>}
+      {split.notes.slice(-1).map((n) => (
+        <div className="small muted" key={n}>{n}</div>
+      ))}
+    </div>
+  );
+}
+
+function GateList({ gate }: { gate: GateCheck[] }) {
+  return (
+    <div>
+      <h3 style={{ marginBottom: 4 }}>Validation gate</h3>
+      <div className="col" style={{ gap: 4 }}>
+        {gate.map((g) => (
+          <div key={g.name} className="row small" style={{ alignItems: "flex-start" }}>
+            <Pill tone={g.passed ? "good" : "danger"}>{g.passed ? "pass" : "fail"}</Pill>
+            <span className="mono">{g.name}</span>
+            <span className="muted">
+              {g.value !== null && g.value !== undefined ? `${fmtNum(g.value, 3)}` : ""}
+              {g.threshold !== null && g.threshold !== undefined ? ` vs ${fmtNum(g.threshold, 3)}` : ""}
+              {g.detail ? ` · ${g.detail}` : ""}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ParityBox({ parity }: { parity: ParityReport }) {
+  return (
+    <div>
+      <h3 style={{ marginBottom: 4 }}>Edge parity</h3>
+      <div className="row wrap">
+        <Pill tone={parity.passed ? "good" : "danger"}>{parity.passed ? "edge = centre" : "parity failed"}</Pill>
+        <span className="small mono muted">
+          max |Δp| {parity.max_abs_diff_probability.toExponential(1)} ≤ {parity.tolerance_probability} on {parity.n_rows} held-out vectors
+          {parity.n_windows > 0 && parity.max_abs_diff_features !== null && parity.max_abs_diff_features !== undefined
+            ? ` · features ${parity.max_abs_diff_features.toExponential(1)} on ${parity.n_windows} raw windows`
+            : ""}
+          {" · "}calibration {parity.calibration_method}
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -232,6 +310,7 @@ export function Studio() {
                     <div className="small muted" style={{ marginTop: 4 }}>silhouette {fmtNum(dq.regimes.silhouette, 2)}</div>
                   )}
                 </div>
+                {state.split && <SplitTable split={state.split} />}
                 <div>
                   <h3 style={{ marginBottom: 4 }}>Schema issues</h3>
                   {dq.schema_issues.length === 0 ? (
@@ -286,8 +365,12 @@ export function Studio() {
             {cs && cs.candidates.length > 0 ? (
               <div className="stack">
                 <div>
-                  <h3 style={{ marginBottom: 2 }}>Industrial Model Score</h3>
+                  <h3 style={{ marginBottom: 2 }}>Industrial Model Score · validation motors</h3>
                   <ImsStack candidates={cs.candidates} championId={val?.champion_id ?? cs.ranked[0] ?? null} />
+                  <div className="small muted">
+                    One Optuna search per family, each candidate fitted on the training motors and scored on the validation motors ({cs.split?.validation.length ?? "—"} motors);
+                    test motors are untouched until the gate.
+                  </div>
                 </div>
                 {cs.candidates.map((c) => {
                   const champ = c.candidate_id === (val?.champion_id ?? cs.ranked[0]);
@@ -301,12 +384,18 @@ export function Studio() {
                         </span>
                       </div>
                       <div className="small muted mono" style={{ marginTop: 4 }}>
-                        {["recall", "precision", "auroc", "brier", "f1"]
+                        {["recall", "precision", "auroc", "brier", "f1", "lead_time_h"]
                           .filter((k) => c.metrics && k in c.metrics)
-                          .map((k) => `${k} ${fmtNum(c.metrics[k], 3)}`)
+                          .map((k) => `${k} ${fmtNum(c.metrics[k], k === "lead_time_h" ? 1 : 3)}`)
                           .join(" · ") || "no metrics"}
                         {" · "}
                         {fmtNum(c.inference_latency_ms, 2)} ms
+                      </div>
+                      <div className="small dim mono" style={{ marginTop: 2 }}>
+                        {Object.entries(c.params ?? {})
+                          .filter(([k]) => k !== "random_state")
+                          .map(([k, v]) => `${k}=${typeof v === "number" ? fmtNum(v, Number.isInteger(v) ? 0 : 3) : String(v)}`)
+                          .join(" ")}
                       </div>
                       <div className="small dim mono" style={{ marginTop: 2 }}>
                         {c.candidate_id}
@@ -328,6 +417,23 @@ export function Studio() {
                   <Pill tone={val.passed ? "good" : "danger"}>{val.passed ? "passed" : "failed"}</Pill>
                   <span className="mono small">{val.champion_family} · {val.model_version}</span>
                 </div>
+                {val.gate && val.gate.length > 0 && <GateList gate={val.gate} />}
+                {val.test_metrics && Object.keys(val.test_metrics).length > 0 && (
+                  <div>
+                    <h3 style={{ marginBottom: 4 }}>Final metrics · {val.split?.test.length ?? val.backtest[0]?.test_assets.length ?? "—"} untouched test motors</h3>
+                    <Kv
+                      rows={[
+                        ["recall @ P≥" + fmtNum(val.thresholds?.classification ?? 0.5, 1), fmtNum(val.test_metrics.recall, 3)],
+                        ["precision", fmtNum(val.test_metrics.precision, 3)],
+                        ["F1 / AUROC", `${fmtNum(val.test_metrics.f1, 3)} / ${fmtNum(val.test_metrics.auroc, 3)}`],
+                        ["Brier", fmtNum(val.test_metrics.brier, 4)],
+                        ["positive rows", `${fmtInt(val.test_metrics.n_pos_test)} of ${fmtInt(val.test_metrics.n_test)}`],
+                        ["failure events", fmtInt(val.test_metrics.n_failure_events)],
+                      ]}
+                    />
+                  </div>
+                )}
+                {val.parity && <ParityBox parity={val.parity} />}
                 <div>
                   <h3 style={{ marginBottom: 4 }}>Leakage</h3>
                   <Kv
@@ -339,7 +445,7 @@ export function Studio() {
                   />
                 </div>
                 <div>
-                  <h3 style={{ marginBottom: 4 }}>Backtest · asset-level folds</h3>
+                  <h3 style={{ marginBottom: 4 }}>Scored on test motors the model never saw</h3>
                   <table className="tbl">
                     <thead>
                       <tr>
@@ -416,15 +522,31 @@ export function Studio() {
                   )}
                 </div>
                 <div>
-                  <h3 style={{ marginBottom: 4 }}>Registry stage</h3>
+                  <h3 style={{ marginBottom: 4 }}>Model used</h3>
                   <div className="row">
-                    <ModelStageChip stage={approval?.decision === "approved" ? "validated" : "candidate"} />
-                    <span className="small muted">see ModelOps for promotion</span>
+                    <ModelStageChip stage={state.model_ref?.stage ?? "candidate"} />
+                    <span className="small muted mono">{state.model_ref ? state.model_ref.version : val?.model_version ?? "—"}</span>
+                    <span className="small muted">promotion is a separate ModelOps decision</span>
                   </div>
                 </div>
               </div>
             ) : (
-              <Pending label={state.stage === "failed" ? `Run failed: ${state.error ?? "unknown"}` : "No contract drafted yet."} />
+              state.mode === "train" && val ? (
+                <div className="stack">
+                  <div>
+                    <h3 style={{ marginBottom: 4 }}>Registered</h3>
+                    <div className="row">
+                      <ModelStageChip stage="candidate" />
+                      <span className="small muted mono">{val.model_version}</span>
+                    </div>
+                    <div className="small muted" style={{ marginTop: 4 }}>
+                      {val.passed ? "Validation passed: a promotion request is waiting in ModelOps for a named approver." : "Validation failed: no promotion request was opened; reasons are in the gate above."}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <Pending label={state.stage === "failed" ? `Run failed: ${state.error ?? "unknown"}` : "No contract drafted yet."} />
+              )
             )}
           </StageCol>
         </div>

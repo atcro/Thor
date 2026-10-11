@@ -95,6 +95,11 @@ def seed() -> str:
     example["asset_id"] = "MTR-042"
     dc = DecisionContract.model_validate(example)
     db.insert_decision_contract(dc, engine=engine)
+    # Fleet health comes only from approved-model predictions (never simulator ground truth),
+    # so the eval seeds one prediction for the degrading motor as the edge would have.
+    from datetime import UTC, datetime
+
+    db.insert_prediction("MTR-042", datetime.now(UTC), "v42", 0.62, source="edge", engine=engine)
 
     from agents.reliability import rag
     from apps.api.settings import get_settings
