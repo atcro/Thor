@@ -1,0 +1,312 @@
+{
+  "api": "http://127.0.0.1:8010",
+  "asset_held_out": "MTR-042",
+  "started_at": "2026-10-11T22:20:11.877839+00:00",
+  "training": {
+    "run_id": "a7d611188ec64383",
+    "version": "v57257",
+    "champion_family": "lightgbm",
+    "split": {
+      "seed": 0,
+      "train": [
+        "MTR-002",
+        "MTR-005",
+        "MTR-006",
+        "MTR-007",
+        "MTR-010",
+        "MTR-013",
+        "MTR-015",
+        "MTR-016",
+        "MTR-017",
+        "MTR-021",
+        "MTR-023",
+        "MTR-024"
+      ],
+      "validation": [
+        "MTR-008",
+        "MTR-009",
+        "MTR-011",
+        "MTR-014",
+        "MTR-019",
+        "MTR-020"
+      ],
+      "calibration": [
+        "MTR-008",
+        "MTR-009",
+        "MTR-011",
+        "MTR-014",
+        "MTR-019",
+        "MTR-020"
+      ],
+      "test": [
+        "MTR-001",
+        "MTR-003",
+        "MTR-012",
+        "MTR-018",
+        "MTR-022",
+        "MTR-042"
+      ],
+      "forced_test": [
+        "MTR-042"
+      ],
+      "positives": {
+        "train": [
+          "MTR-013",
+          "MTR-023"
+        ],
+        "validation": [
+          "MTR-009"
+        ],
+        "calibration": [
+          "MTR-009"
+        ],
+        "test": [
+          "MTR-003"
+        ]
+      },
+      "notes": [
+        "24 assets, 4 with a completed failure: ['MTR-003', 'MTR-009', 'MTR-013', 'MTR-023']",
+        "seed 0; completed failures dealt in order train, test, tune",
+        "forced into test (asset under analysis, never trained on): ['MTR-042']",
+        "validation and calibration share the tune group: only 4 completed failure(s), fewer than 5 needed for four groups with a positive each"
+      ]
+    },
+    "data_quality_score": 100.0,
+    "regimes": [
+      {
+        "regime_id": "R1",
+        "label": "idle/startup",
+        "n_rows": 19076,
+        "rpm_mean": 600.2086611448941,
+        "load_mean": 9.84128564688614,
+        "share": 0.22998649691358025
+      },
+      {
+        "regime_id": "R2",
+        "label": "nominal",
+        "n_rows": 39033,
+        "rpm_mean": 1479.8298106730203,
+        "load_mean": 54.76553101222043,
+        "share": 0.4705946180555556
+      },
+      {
+        "regime_id": "R3",
+        "label": "high-load",
+        "n_rows": 24835,
+        "rpm_mean": 1499.7859734246024,
+        "load_mean": 84.69238759814776,
+        "share": 0.2994188850308642
+      }
+    ],
+    "candidates": [
+      {
+        "candidate_id": "random_forest-15c44fb0",
+        "family": "random_forest",
+        "validation_metrics": {
+          "recall": 0.9688581314878892,
+          "precision": 0.9790209790209791,
+          "f1": 0.9739130434782609,
+          "auroc": 0.9999426792391438,
+          "brier": 0.0011855724150436908,
+          "lead_time_h": 56.0
+        },
+        "validation_ims": 0.925531,
+        "params": {
+          "n_estimators": 200,
+          "max_depth": 11,
+          "min_samples_leaf": 20,
+          "max_features": "sqrt",
+          "class_weight": "balanced_subsample",
+          "random_state": 0
+        },
+        "latency_ms": 2.0776581142855175
+      },
+      {
+        "candidate_id": "xgboost-35fa4859",
+        "family": "xgboost",
+        "validation_metrics": {
+          "recall": 1.0,
+          "precision": 0.9292604501607717,
+          "f1": 0.9633333333333334,
+          "auroc": 0.9999814495919561,
+          "brier": 0.0008373013184607934,
+          "lead_time_h": 51.666666666666664
+        },
+        "validation_ims": 0.916303,
+        "params": {
+          "n_estimators": 100,
+          "max_depth": 7,
+          "learning_rate": 0.06878669038001532,
+          "min_child_weight": 6,
+          "subsample": 0.607515920174542,
+          "colsample_bytree": 0.8470541988303508,
+          "scale_pos_weight": 64.5433,
+          "random_state": 0
+        },
+        "latency_ms": 0.9908299020173381
+      },
+      {
+        "candidate_id": "lightgbm-885d48c6",
+        "family": "lightgbm",
+        "validation_metrics": {
+          "recall": 1.0,
+          "precision": 0.932258064516129,
+          "f1": 0.9649415692821369,
+          "auroc": 0.999982748120519,
+          "brier": 0.0009461272267152338,
+          "lead_time_h": 61.333333333333336
+        },
+        "validation_ims": 0.950275,
+        "params": {
+          "n_estimators": 50,
+          "max_depth": 3,
+          "num_leaves": 8,
+          "learning_rate": 0.19066321773235723,
+          "min_child_samples": 40,
+          "subsample": 0.9480048592987277,
+          "colsample_bytree": 0.9914473368931056,
+          "scale_pos_weight": 64.5433,
+          "random_state": 0
+        },
+        "latency_ms": 0.9796220037716243
+      }
+    ],
+    "ranked": [
+      "lightgbm-885d48c6",
+      "random_forest-15c44fb0",
+      "xgboost-35fa4859"
+    ],
+    "test_metrics": {
+      "recall": 0.8650519031141869,
+      "precision": 1.0,
+      "f1": 0.9276437847866419,
+      "brier": 0.0020589166930630345,
+      "n_test": 18942.0,
+      "n_pos_test": 289.0,
+      "threshold": 0.5,
+      "auroc": 0.9325259515570934,
+      "lead_time_h": 41.5,
+      "n_assets": 6.0,
+      "n_failure_events": 1.0
+    },
+    "ims": {
+      "recall": 0.8650519031141869,
+      "precision": 1.0,
+      "lead_time_score": 0.5763888888888888,
+      "calibration_score": 0.9917643332277478,
+      "latency_score": 0.9804075599245675,
+      "weights": {
+        "recall": 0.35,
+        "lead_time_score": 0.25,
+        "precision": 0.15,
+        "calibration_score": 0.15,
+        "latency_score": 0.1
+      },
+      "total": 0.843671
+    },
+    "lead_time": {
+      "median_h": 41.5,
+      "p90_h": 41.5,
+      "p10_h": 41.5,
+      "n_events": 1,
+      "threshold": 0.3,
+      "sustained_rows": 3
+    },
+    "calibration": {
+      "method": "isotonic",
+      "brier_before": 0.0009461272267152338,
+      "brier_after": 0.00033650226871639606
+    },
+    "thresholds": {
+      "classification": 0.5,
+      "early_warning": 0.3,
+      "sustained_rows": 3
+    },
+    "gate": [
+      {
+        "name": "leakage",
+        "passed": true,
+        "value": null,
+        "threshold": null,
+        "detail": "no asset overlap, no forbidden or label-correlated feature"
+      },
+      {
+        "name": "test_failure_events",
+        "passed": true,
+        "value": 1.0,
+        "threshold": 1.0,
+        "detail": "1 completed failure(s) among test assets ['MTR-001', 'MTR-003', 'MTR-012', 'MTR-018', 'MTR-022', 'MTR-042']"
+      },
+      {
+        "name": "recall",
+        "passed": true,
+        "value": 0.8650519031141869,
+        "threshold": 0.6,
+        "detail": "test recall at P>=0.5"
+      },
+      {
+        "name": "lead_time",
+        "passed": true,
+        "value": 41.5,
+        "threshold": 12.0,
+        "detail": "median warning lead time at P>=0.3 sustained 3 rows, over test failures"
+      },
+      {
+        "name": "edge_parity",
+        "passed": true,
+        "value": 0.0,
+        "threshold": 0.001,
+        "detail": "200 held-out vectors: edge vs centre max |dp| = 0.00e+00 (calibration isotonic); 18 raw windows: edge vs centre max relative |df| = 1.55e-15"
+      }
+    ],
+    "parity": {
+      "passed": true,
+      "n_rows": 200,
+      "max_abs_diff_probability": 0.0,
+      "tolerance_probability": 0.001,
+      "n_windows": 18,
+      "max_abs_diff_features": 1.5543122344752192e-15,
+      "tolerance_features": 1e-06,
+      "calibration_method": "isotonic",
+      "notes": [
+        "200 held-out vectors: edge vs centre max |dp| = 0.00e+00 (calibration isotonic)",
+        "18 raw windows: edge vs centre max relative |df| = 1.55e-15"
+      ]
+    },
+    "passed": true,
+    "notes": [
+      "champion_artifact=C:\\Users\\Kang\\AppData\\Local\\Temp\\claude\\C--Thor-main\\43f6d281-0911-4b04-8d41-b844a4ac7e36\\scratchpad\\native\\models\\artifacts\\a7d611188ec64383\\lightgbm-885d48c6_calibrated.joblib",
+      "calibration (isotonic) fitted on 18942 rows of ['MTR-008', 'MTR-009', 'MTR-011', 'MTR-014', 'MTR-019', 'MTR-020']",
+      "final metrics on test assets ['MTR-001', 'MTR-003', 'MTR-012', 'MTR-018', 'MTR-022', 'MTR-042'] (never used before this step)",
+      "ranking (validation IMS): lightgbm-885d48c6=0.950, random_forest-15c44fb0=0.926, xgboost-35fa4859=0.916"
+    ],
+    "seconds": 54.9
+  },
+  "promotion": {
+    "approval_id": "d748d05ea1534c72805811e31a4923dc",
+    "contract_id": null,
+    "promotion_id": "pr_v57257_production_a16fa634",
+    "decision": "approved",
+    "approver": "demo-prep@thor",
+    "note": "demo preparation: validated champion promoted before the live demo",
+    "decided_at": "2026-10-11T22:20:58.264317Z",
+    "detail": {
+      "promoted": {
+        "name": "thor-bearing-classifier",
+        "version": "v57257",
+        "stage": "production"
+      },
+      "edge": {
+        "onnx_path": "C:\\Users\\Kang\\AppData\\Local\\Temp\\claude\\C--Thor-main\\43f6d281-0911-4b04-8d41-b844a4ac7e36\\scratchpad\\native\\models\\thor-bearing-classifier_v57257.onnx",
+        "deployed_at": "2026-10-11T22:20:58.287970Z"
+      }
+    }
+  },
+  "fleet_scoring": {
+    "model_version": "v57257",
+    "n_scored": 24,
+    "skipped": {}
+  },
+  "finished_at": "2026-10-11T22:20:59.553610+00:00",
+  "seconds_total": 56.2
+}

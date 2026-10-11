@@ -1,8 +1,9 @@
 # Thor -- one command: `docker compose -f infra/docker-compose.yml up --build`
 # (or `docker compose up --build` from the repo root via the symlinked compose.yaml).
 #
-# Services: timescale, mqtt, mlflow, api (control plane + orchestrator), edge (ONNX inference),
-# replay (MQTT telemetry replay), web (React). No Kubernetes, no MinIO, no Redis.
+# Services: timescale, mqtt, mlflow, api (control plane + orchestrator), prep (one-shot demo
+# preparation: train, validate, promote, export, score), edge (ONNX inference), replay (MQTT
+# telemetry replay), web (React). No Kubernetes, no MinIO, no Redis.
 
 name: thor
 
@@ -90,6 +91,30 @@ services:
       mlflow:
         condition: service_started
 
+  # One-shot demo preparation through the api's own governed endpoints: train + validate a
+  # champion (MTR-042 held out), approve its promotion as demo-prep@thor, export it for the
+  # edge, re-check parity on the deployed files, score the fleet. Idempotent: skips training
+  # when a production model already exists. The replay and the edge wait for it, so the live
+  # demo never shows training. ~2-3 min on first start.
+  prep:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    command: ["python", "-m", "scripts.demo_prep", "--api", "http://api:8000", "--report", "/models/demo-prep-report.json"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://thor:thor@timescale:5432/thor
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MODELS_DIR: /models
+      DEMO_PREP_TRIALS: ${DEMO_PREP_TRIALS:-6}
+    volumes:
+      - models:/models
+    restart: "no"
+    depends_on:
+      api:
+        condition: service_started
+      timescale:
+        condition: service_healthy
+
   edge:
     build:
       context: ..
@@ -105,6 +130,8 @@ services:
     depends_on:
       mqtt:
         condition: service_started
+      prep:
+        condition: service_completed_successfully
 
   replay:
     build:
@@ -120,6 +147,8 @@ services:
         condition: service_started
       api:
         condition: service_started
+      prep:
+        condition: service_completed_successfully
 
   web:
     build:
