@@ -59,7 +59,7 @@ if ($prepExit -ne 0) { throw "demo prep failed with exit code $prepExit; see 'do
 Write-Host -NoNewline "==> waiting for api"
 $ready = $false
 for ($i = 0; $i -lt 90 -and -not $ready; $i++) {
-  try { Invoke-RestMethod http://localhost:8000/system/health -TimeoutSec 2 | Out-Null; $ready = $true }
+  try { Invoke-RestMethod http://localhost:8000/system/health -TimeoutSec 15 | Out-Null; $ready = $true }
   catch { Write-Host -NoNewline "."; Start-Sleep -Seconds 2 }
 }
 Write-Host (" ready" * [int]$ready)

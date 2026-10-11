@@ -63,7 +63,7 @@ fi
 
 echo -n "==> waiting for api"
 for _ in $(seq 1 90); do
-  if curl -sf http://localhost:8000/system/health >/dev/null 2>&1; then echo " ready"; break; fi
+  if curl -sf -m 15 http://localhost:8000/system/health >/dev/null 2>&1; then echo " ready"; break; fi
   echo -n "."; sleep 2
 done
 curl -s http://localhost:8000/system/health

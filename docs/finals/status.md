@@ -187,3 +187,13 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
 - Script fixes found by running it: volume probe via `docker volume ls` (`5ce6b5f`) and
   explicit exit-code checks instead of `ErrorActionPreference = "Stop"` (docker's stderr
   progress lines aborted the script after the stack was already up).
+
+## 2026-10-11 16:05 — demo reset confirmed clean
+
+- Four reset runs on the real stack surfaced three script bugs, all fixed and pushed: volume
+  probe (`5ce6b5f`), docker stderr under `ErrorActionPreference Stop` (`64db1d4`),
+  `docker compose logs -f` / `docker compose wait` never returning for the one-shot prep
+  container (`681a926`, `3ee6563`, `b4b64ec`: poll `docker compose ps -a` for the exited state).
+- Final run: `SCRIPT EXIT: 0`; prep 66.9 s, lightgbm v59706 promoted (IMS 0.844, parity 0.0),
+  24/24 scored, edge + replay streaming, `/system/health` db/mqtt/mlflow/edge all up.
+  The api wait loop's 2 s request timeout was shorter than the health probes; raised to 15 s.
