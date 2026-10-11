@@ -174,3 +174,16 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
   production baseline.
 - **Tests run after the fixes:** full `pytest` → 213 passed in 59 s; `ruff check .` clean; web
   build + 4 vitest passed. Images rebuilt with `docker compose build`.
+
+## 2026-10-11 16:00 — demo reset run on the real Docker stack
+
+- `.\scripts\demo_reset.ps1` (project `thor-main`): stack wiped and restarted; `prep` trained
+  lightgbm v58611 in 78 s inside Docker with the same metrics as the native run (test recall
+  0.865, precision 1.0, lead time 41.5 h, IMS 0.844, parity 0.0), promoted it as demo-prep@thor,
+  wrote the ONNX bundle and scored 24/24 motors; edge and replay then started (edge: model
+  v58611 loaded, MQTT connected, 6,696 predictions after 100 s). Fleet: MTR-042 rising
+  (p 0.29, health 71, regime R2), all others at p 0.0. `GET /system/health`: db ok, mqtt, mlflow,
+  edge all up.
+- Script fixes found by running it: volume probe via `docker volume ls` (`5ce6b5f`) and
+  explicit exit-code checks instead of `ErrorActionPreference = "Stop"` (docker's stderr
+  progress lines aborted the script after the stack was already up).

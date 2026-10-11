@@ -20,7 +20,10 @@
   .\scripts\demo_reset.ps1 -KeepModels   # keep model + MLflow volumes (prep still re-registers)
 #>
 param([switch]$KeepModels)
-$ErrorActionPreference = "Stop"
+# "Continue", not "Stop": docker writes its progress to stderr, which Windows PowerShell 5.1
+# would otherwise turn into a terminating error. Exit codes are checked explicitly instead.
+$ErrorActionPreference = "Continue"
+function Assert-Ok([string]$what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" } }
 Set-Location (Join-Path $PSScriptRoot "..")
 
 $project = (docker compose config --format json | ConvertFrom-Json).name
@@ -29,6 +32,7 @@ Write-Host "==> compose project: $project"
 
 Write-Host "==> stopping stack"
 docker compose down --remove-orphans
+Assert-Ok "docker compose down"
 $vols = @("${project}_timescale-data")
 if (-not $KeepModels) { $vols += @("${project}_models", "${project}_mlflow-data") }
 $existing = @(docker volume ls -q)
@@ -38,6 +42,7 @@ foreach ($v in $vols) {
 
 Write-Host "==> starting stack (api seeds 80%, prep trains + promotes, then replay + edge start)"
 docker compose up -d
+Assert-Ok "docker compose up"
 Write-Host "==> following the prep service (train, validate incl. parity, promote, export, score)"
 docker compose logs -f --no-log-prefix prep
 $prepExit = docker compose ps -a --format json prep | ConvertFrom-Json | Select-Object -First 1 -ExpandProperty ExitCode
