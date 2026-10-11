@@ -86,7 +86,7 @@ def test_build_feature_pipeline_shape_and_labels(
     synthetic_fleet: pd.DataFrame, features: tuple[pd.DataFrame, FeatureSpec]
 ) -> None:
     fdf, spec = features
-    assert list(fdf.columns) == ["asset_id", "ts", *FEATURE_NAMES, "label", "rul_h"]
+    assert list(fdf.columns) == ["asset_id", "ts", *FEATURE_NAMES, "label", "rul_h", "label_known"]
     assert spec.features == FEATURE_NAMES
     assert spec.window_rows == WINDOW and spec.regime_normalized is True
     per_asset_raw = synthetic_fleet.groupby("asset_id").size()

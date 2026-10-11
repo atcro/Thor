@@ -57,3 +57,20 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
   `EARLY_WARNING_THRESHOLD` (0.3) in `apps/api/schemas.py`, one lead-time definition (3 sustained
   rows at 0.3) shared by `automl.py` and `checks.py`, `cost.py` window limit = early warning,
   thresholds reported in `ValidationReport`, Asset 360 chart draws both; test.
+
+## 2026-10-11 14:02 — fix group 3 done: thresholds (defect 6)
+
+- **Commit:** see `git log` ("Give each threshold one meaning shared by AutoML search and
+  validation").
+- **Files:** `apps/api/schemas.py` (`CLASSIFICATION_THRESHOLD`, `EARLY_WARNING_THRESHOLD`,
+  `EARLY_WARNING_SUSTAINED_ROWS`, `Thresholds`, `ValidationReport.thresholds`), new
+  `agents/metrics.py` (shared metrics, lead time, IMS), `agents/ml_architect/automl.py`,
+  `agents/validation/checks.py`, `agents/reliability/cost.py`, `data/benchmark/ai4i_benchmark.py`,
+  `apps/api/routes/fleet.py` (thresholds in responses), web chart/Asset360/Studio/types;
+  new `tests/test_thresholds.py`.
+- **Tests run:** thresholds, validation, ml_architect, reliability, benchmark, schemas, e2e →
+  74 passed; `ruff check .` clean; web build ok, 4 vitest passed.
+- **Next:** fix 4 (leakage): `AssetSplit` (seeded, recorded in the run), regimes + baselines
+  fitted on train assets only, Optuna on the validation group, calibration on the
+  calibration group, final metrics on untouched test assets; right-censor the last
+  horizon of unlabelled rows; tests for leak-free + reproducible split.

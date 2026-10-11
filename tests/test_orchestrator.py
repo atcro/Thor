@@ -404,19 +404,24 @@ def install_fake_toolbox(monkeypatch: pytest.MonkeyPatch, orchestrator: Any) -> 
     }
 
     monkeypatch.setattr(
-        orchestrator, "tool_profile_dataset", lambda df, asset_id: make_dq(asset_id)
+        orchestrator,
+        "tool_profile_dataset",
+        lambda df, asset_id, fit_assets=None: make_dq(asset_id),
     )
     monkeypatch.setattr(
         orchestrator,
         "tool_build_features",
-        lambda df, regimes, horizon_h, window_rows=12: (make_features_df(), make_spec()),
+        lambda df, regimes, horizon_h, window_rows=12, fit_assets=None, baseline=None: (
+            make_features_df(),
+            make_spec(),
+        ),
     )
     monkeypatch.setattr(orchestrator, "tool_infer_task", lambda dq, df, horizon_h: make_task())
     monkeypatch.setattr(
         orchestrator,
         "tool_train_candidates",
-        lambda fdf, spec, task, n_trials, seed, artifacts_dir, asset_id: make_candidates(
-            asset_id, artifacts_dir
+        lambda fdf, spec, task, n_trials, seed, artifacts_dir, asset_id, split=None: (
+            make_candidates(asset_id, artifacts_dir)
         ),
     )
     monkeypatch.setattr(
@@ -668,6 +673,9 @@ def test_full_run_pauses_at_gate_and_resumes(engine: Any, monkeypatch: pytest.Mo
     tools = [e.tool for e in gs.events]
     for t in ("profile", "train", "validate", "explain", "await_approval", "request_promotion"):
         assert t in tools
+    # the asset split was fixed before profiling and the analysed asset is held out of training
+    assert gs.split is not None and "MTR-042" in gs.split.test and "MTR-042" not in gs.split.train
+    assert tools.index("make_asset_split") < tools.index("profile_dataset")
 
     approval = Approval(
         approval_id="a1",
@@ -775,7 +783,7 @@ def test_node_failure_marks_run_failed(engine: Any, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         orchestrator,
         "tool_profile_dataset",
-        lambda df, asset_id: make_dq(asset_id, trainable=False),
+        lambda df, asset_id, fit_assets=None: make_dq(asset_id, trainable=False),
     )
     gs0 = orchestrator.start_run("MTR-042", engine=engine)
     gs = wait_for_stage(orchestrator, gs0.run_id, {"awaiting_approval", "failed"}, engine)
@@ -788,7 +796,9 @@ def test_missing_toolbox_fails_run_gracefully(engine: Any, monkeypatch: pytest.M
     """Without the agent modules the run must end as `failed`, never hang or crash the app."""
     from apps.api import orchestrator
 
-    monkeypatch.setattr(orchestrator, "tool_profile_dataset", lambda df, a: make_dq(a))
+    monkeypatch.setattr(
+        orchestrator, "tool_profile_dataset", lambda df, a, fit_assets=None: make_dq(a)
+    )
 
     def missing(*args: Any, **kwargs: Any) -> Any:
         raise ImportError("No module named 'agents.ml_architect.features'")

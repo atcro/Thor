@@ -16,7 +16,7 @@ from lightgbm import LGBMClassifier
 from sklearn.ensemble import RandomForestClassifier
 
 from agents.validation import checks
-from apps.api.schemas import CandidateModel, CandidateSet, FeatureSpec, TaskSpec
+from apps.api.schemas import AssetSplit, CandidateModel, CandidateSet, FeatureSpec, TaskSpec
 
 FEATURES = ["vib_rms_z", "bearing_temp_z", "vib_kurt_mean", "load_mean"]
 FAULTY = ("MTR-003", "MTR-006", "MTR-008")
@@ -253,12 +253,23 @@ def _candidate_set(frame: pd.DataFrame, spec: FeatureSpec, tmp_path: Path) -> Ca
             inference_latency_ms=2.0,
         )
     )
+    assets = sorted(frame["asset_id"].unique())
     return CandidateSet(
         asset_id="MTR-008",
         task=TaskSpec(task="classification", target="label", horizon_h=HORIZON_H, rationale="t"),
         features=spec,
         candidates=cands,
         mlflow_experiment="test",
+        # models above were fitted on MTR-001..006; MTR-006 fails (train positive),
+        # MTR-007 is healthy (calibration), MTR-008 fails (final test)
+        split=AssetSplit(
+            seed=0,
+            train=assets[:6],
+            validation=["MTR-007"],
+            calibration=["MTR-007"],
+            test=["MTR-008"],
+            positives={"train": ["MTR-003", "MTR-006"], "validation": [], "calibration": [], "test": ["MTR-008"]},
+        ),
     )
 
 
@@ -271,8 +282,10 @@ def test_validate_end_to_end(frame: pd.DataFrame, spec: FeatureSpec, tmp_path: P
     assert report.champion_family in {"random_forest", "lightgbm"}
     assert report.model_version.startswith("v")
     assert report.leakage.passed
-    assert len(report.backtest) == 3
-    assert report.calibration.method in {"isotonic", "sigmoid"}
+    assert len(report.backtest) == 1 and report.backtest[0].test_assets == ["MTR-008"]
+    assert report.split is not None and report.split.test == ["MTR-008"]
+    assert report.calibration.method == "none"  # one class on the calibration asset: honest
+    assert [g.name for g in report.gate] == ["leakage", "test_failure_events", "recall", "lead_time"]
     assert 0.0 <= report.ims.total <= 1.0
     assert abs(sum(report.ims.weights.values()) - 1.0) < 1e-9
     assert report.lead_time.n_events >= 1

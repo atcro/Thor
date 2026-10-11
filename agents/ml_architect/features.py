@@ -94,12 +94,16 @@ def baseline_for(
     df: pd.DataFrame,
     regimes: RegimeReport | None,
     baseline_fraction: float = BASELINE_FRACTION,
+    fit_assets: list[str] | None = None,
 ) -> dict[str, dict[str, float]]:
     """Per-regime healthy baseline used for the regime-normalised features.
 
     Input: telemetry DataFrame sorted by ``(asset_id, ts)``; ``regimes`` from
     ``detect_regime`` (or ``None`` to use df['regime'] / a single regime); the fraction of each
-    asset's earliest rows treated as healthy (default 20 %).
+    asset's earliest rows treated as healthy (default 20 %); ``fit_assets`` -- when given,
+    every statistic (per-regime means / stds, pooled fallbacks, regime centroids and scales)
+    is computed from the rows of those assets only, so held-out motors never shape the
+    normalisation they are later scored with.
 
     Output (JSON-serialisable, ships in the edge sidecar): keyed by raw sensor name, e.g.
     ``{"vibration_rms": {"mean": m, "std": s, "R1_mean": m1, "R1_std": s1, "R2_mean": ...},
@@ -114,6 +118,11 @@ def baseline_for(
     if len(df) == 0:
         raise ValueError("baseline_for needs at least one row")
     labels = _regime_labels(df, regimes)
+    if fit_assets is not None and "asset_id" in df.columns:
+        keep = df["asset_id"].astype(str).isin(set(fit_assets)).to_numpy()
+        if keep.any():
+            df = df.loc[keep]
+            labels = labels.loc[df.index]
     sensors = list(SENSOR_COLUMNS)
     raw = df[sensors].astype(float)
 
@@ -317,19 +326,28 @@ def build_feature_pipeline(
     regimes: RegimeReport | None,
     horizon_h: float = 48.0,
     window_rows: int = 12,
+    fit_assets: list[str] | None = None,
+    baseline: dict[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, FeatureSpec]:
     """Turn raw telemetry into the model-ready feature frame.
 
     Input: telemetry DataFrame (Telemetry shape, sorted by ``(asset_id, ts)``; it is re-sorted
-    defensively), ``regimes`` from ``detect_regime`` (may be ``None``), label horizon in hours
-    and the rolling window length in rows (12 rows = 2 h at a 10-min step).
+    defensively), ``regimes`` from ``detect_regime`` (may be ``None``), label horizon in hours,
+    the rolling window length in rows (12 rows = 2 h at a 10-min step), ``fit_assets`` (the
+    training group: the healthy baseline and scales are fitted on those assets only) and an
+    optional fixed ``baseline`` to reuse instead of fitting one (the production model's, for
+    "Run analysis" and drift checks -- nothing is refitted then).
     Output: ``(features_df, spec)`` where ``features_df`` has columns
-    ``asset_id, ts, *FEATURE_NAMES, label, rul_h``: one row per raw row after the first
-    ``window_rows - 1`` rows of each asset (assets shorter than the window yield no rows);
-    ``ts`` is the timestamp of the window's last row; ``label = 1`` iff
+    ``asset_id, ts, *FEATURE_NAMES, label, rul_h, label_known``: one row per raw row after the
+    first ``window_rows - 1`` rows of each asset (assets shorter than the window yield no
+    rows); ``ts`` is the timestamp of the window's last row; ``label = 1`` iff
     ``failure_within_h <= horizon_h`` (NaN -> 0); ``rul_h = failure_within_h`` (NaN when no
-    failure ahead). ``spec.features == FEATURE_NAMES``. The regime baseline used is attached
-    as ``features_df.attrs["baseline"]`` (also recomputable with ``baseline_for(df, regimes)``).
+    failure ahead); ``label_known = False`` for right-censored rows -- the last ``horizon_h``
+    of any asset with no failure ahead, whose label cannot be known yet (training and
+    evaluation skip them; scoring the latest window still uses them). Only a COMPLETED
+    failure produces labels; an in-progress degradation is an unknown future.
+    ``spec.features == FEATURE_NAMES``; ``spec.baseline`` / ``spec.fit_assets`` record the
+    normalisation used (also attached as ``features_df.attrs["baseline"]``).
     Raw sensor NaNs are forward- then back-filled per asset, remaining NaNs become 0.0.
     """
     if window_rows < 2:
@@ -346,7 +364,8 @@ def build_feature_pipeline(
             regimes = regimes.model_copy(
                 update={"row_regime": [regimes.row_regime[i] for i in order]}
             )
-    baseline = baseline_for(df, regimes)
+    if baseline is None:
+        baseline = baseline_for(df, regimes, fit_assets=fit_assets)
 
     fail = (
         df["failure_within_h"].astype(float)
@@ -362,6 +381,12 @@ def build_feature_pipeline(
         fail = fail.where(completed)
     label_all = (fail <= horizon_h).fillna(False).astype(int).to_numpy()
     rul_all = fail.to_numpy(dtype=float)
+    # Right-censoring: a row with no failure ahead whose future is shorter than the horizon
+    # (the asset's last `horizon_h` of data) has an unknown label, not a negative one.
+    last_ts = df.groupby("asset_id")["ts"].transform("max")
+    known_all = (
+        fail.notna() | (df["ts"] <= last_ts - pd.Timedelta(hours=float(horizon_h)))
+    ).to_numpy()
 
     parts: list[pd.DataFrame] = []
     for asset_id, g in df.groupby("asset_id", sort=True):
@@ -376,18 +401,23 @@ def build_feature_pipeline(
         part.insert(0, "asset_id", asset_id)
         part["label"] = label_all[idx]
         part["rul_h"] = rul_all[idx]
+        part["label_known"] = known_all[idx]
         parts.append(part)
 
-    columns = ["asset_id", "ts", *FEATURE_NAMES, "label", "rul_h"]
+    columns = ["asset_id", "ts", *FEATURE_NAMES, "label", "rul_h", "label_known"]
     if parts:
         features_df = pd.concat(parts, ignore_index=True)[columns]
     else:
         features_df = pd.DataFrame({c: pd.Series(dtype=float) for c in columns})
         features_df["asset_id"] = features_df["asset_id"].astype(object)
     features_df["label"] = features_df["label"].astype(int)
+    features_df["label_known"] = features_df["label_known"].astype(bool)
     features_df.attrs["baseline"] = baseline
     features_df.attrs["horizon_h"] = float(horizon_h)
 
+    fitted_on = (
+        f"fitted on {len(fit_assets)} training assets" if fit_assets is not None else "fitted on all assets"
+    )
     spec = FeatureSpec(
         features=list(FEATURE_NAMES),
         window_rows=int(window_rows),
@@ -396,9 +426,12 @@ def build_feature_pipeline(
             f"Rolling {window_rows}-row window per asset (mean, OLS slope) over the raw sensors; "
             f"vib_rms_z / bearing_temp_z / vib_rms_resid are normalised against the healthy "
             f"baseline of the window's operating regime (first {int(BASELINE_FRACTION * 100)}% "
-            f"of each asset's history, {len(_regime_ids(baseline))} regimes). "
-            f"label = failure_within_h <= {horizon_h:g} h."
+            f"of each asset's history, {len(_regime_ids(baseline))} regimes, {fitted_on}). "
+            f"label = failure_within_h <= {horizon_h:g} h; the last {horizon_h:g} h of an asset "
+            "with no failure ahead is right-censored (label unknown)."
         ),
+        baseline=baseline,
+        fit_assets=sorted(fit_assets) if fit_assets is not None else None,
     )
     assert not any(c in FORBIDDEN_FEATURE_COLUMNS for c in spec.features)
     assert math.isfinite(horizon_h)

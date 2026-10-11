@@ -39,6 +39,7 @@ from apps.api.graph_state import (
 )
 from apps.api.schemas import (
     Approval,
+    AssetSplit,
     CandidateSet,
     ChampionComparison,
     CopilotMessage,
@@ -493,20 +494,45 @@ def llm_ping() -> dict[str, Any]:
 # --------------------------------------------------------------------------------------
 
 
-def tool_profile_dataset(df: pd.DataFrame, asset_id: str) -> DataQualityContract:
-    """04: `agents.data_agent.profiling.profile_dataset(df, asset_id)`."""
+def tool_make_split(df: pd.DataFrame, seed: int, forced_test: list[str]) -> AssetSplit:
+    """05: `agents.ml_architect.split.make_asset_split(df, seed, forced_test)` -- the seeded
+    asset-level split, fixed before any preprocessing is fitted."""
+    from agents.ml_architect.split import make_asset_split
+
+    return make_asset_split(df, seed=seed, forced_test=forced_test)
+
+
+def tool_profile_dataset(
+    df: pd.DataFrame, asset_id: str, fit_assets: list[str] | None = None
+) -> DataQualityContract:
+    """04: `agents.data_agent.profiling.profile_dataset(df, asset_id, fit_assets=...)` --
+    regimes are fitted on the training assets only."""
     from agents.data_agent.profiling import profile_dataset
 
-    return profile_dataset(df, asset_id)
+    return profile_dataset(df, asset_id, fit_assets=fit_assets)
 
 
 def tool_build_features(
-    df: pd.DataFrame, regimes: RegimeReport | None, horizon_h: float, window_rows: int = 12
+    df: pd.DataFrame,
+    regimes: RegimeReport | None,
+    horizon_h: float,
+    window_rows: int = 12,
+    fit_assets: list[str] | None = None,
+    baseline: dict[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, FeatureSpec]:
-    """05: `agents.ml_architect.features.build_feature_pipeline(df, regimes, horizon_h, window_rows)`."""
+    """05: `agents.ml_architect.features.build_feature_pipeline(df, regimes, horizon_h,
+    window_rows, fit_assets, baseline)` -- baselines fitted on `fit_assets` only, or a fixed
+    `baseline` reused (the production model's) with nothing refitted."""
     from agents.ml_architect.features import build_feature_pipeline
 
-    return build_feature_pipeline(df, regimes, horizon_h=horizon_h, window_rows=window_rows)
+    return build_feature_pipeline(
+        df,
+        regimes,
+        horizon_h=horizon_h,
+        window_rows=window_rows,
+        fit_assets=fit_assets,
+        baseline=baseline,
+    )
 
 
 def tool_infer_task(dq: DataQualityContract, df: pd.DataFrame, horizon_h: float) -> TaskSpec:
@@ -524,8 +550,10 @@ def tool_train_candidates(
     seed: int,
     artifacts_dir: Path,
     asset_id: str,
+    split: AssetSplit | None = None,
 ) -> CandidateSet:
-    """05: `agents.ml_architect.automl.train_candidates(...)` -> CandidateSet."""
+    """05: `agents.ml_architect.automl.train_candidates(..., split)` -> CandidateSet (trained
+    on `split.train`, selected on `split.validation`)."""
     from agents.ml_architect.automl import train_candidates
 
     return train_candidates(
@@ -536,6 +564,7 @@ def tool_train_candidates(
         seed=seed,
         artifacts_dir=artifacts_dir,
         asset_id=asset_id,
+        split=split,
     )
 
 
@@ -963,7 +992,13 @@ def _features_for(
     if fdf is not None and spec is not None:
         return fdf, spec
     regimes = gs.data_quality.regimes if gs.data_quality else None
-    fdf, spec = tool_build_features(_telemetry(h, engine), regimes, h.horizon_h)
+    # After a restart the recorded baseline is reused as-is (nothing is refitted); before
+    # training exists the baseline is fitted on the split's training assets only.
+    fixed = gs.candidates.features.baseline if gs.candidates is not None else None
+    fit_assets = gs.split.train if gs.split is not None else None
+    fdf, spec = tool_build_features(
+        _telemetry(h, engine), regimes, h.horizon_h, fit_assets=fit_assets, baseline=fixed
+    )
     if gs.candidates is not None:
         spec = gs.candidates.features
     h.cache["features_df"], h.cache["spec"] = fdf, spec
@@ -985,7 +1020,27 @@ def _profile(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
     df = _telemetry(h, engine)
     if df.empty:
         raise RuntimeError("no telemetry rows in the database")
-    dq = tool_profile_dataset(df, gs.asset_id)
+    # The asset-level split is fixed FIRST, so regimes, baselines and scales below are fitted
+    # on the training motors only; the asset under analysis is held out of training.
+    split = tool_make_split(df, 0, [gs.asset_id])
+    gs.split = split
+    append_event(
+        gs,
+        gs.stage,
+        f"asset split (seed {split.seed}): train {len(split.train)}, validation "
+        f"{len(split.validation)}, calibration {len(split.calibration)}, test {len(split.test)}; "
+        f"completed failures per group {split.positives}",
+        tool="make_asset_split",
+        payload={
+            "train": split.train,
+            "validation": split.validation,
+            "calibration": split.calibration,
+            "test": split.test,
+            "forced_test": split.forced_test,
+            "notes": split.notes,
+        },
+    )
+    dq = tool_profile_dataset(df, gs.asset_id, fit_assets=split.train)
     gs.data_quality = dq
     append_event(
         gs,
@@ -1006,20 +1061,32 @@ def _train(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
     if gs.data_quality is None:
         raise RuntimeError("train called without a Data Quality Contract")
     df = _telemetry(h, engine)
-    features_df, spec = tool_build_features(df, gs.data_quality.regimes, h.horizon_h)
+    fit_assets = gs.split.train if gs.split is not None else None
+    features_df, spec = tool_build_features(
+        df, gs.data_quality.regimes, h.horizon_h, fit_assets=fit_assets
+    )
     h.cache["features_df"], h.cache["spec"] = features_df, spec
+    n_known = (
+        int(features_df["label_known"].sum())
+        if "label_known" in features_df.columns
+        else len(features_df)
+    )
     append_event(
         gs,
         gs.stage,
-        f"{len(spec.features)} features over {len(features_df)} rows",
+        f"{len(spec.features)} features over {len(features_df)} rows "
+        f"({len(features_df) - n_known} right-censored); baseline fitted on "
+        f"{len(fit_assets) if fit_assets is not None else 'all'} training assets",
         tool="build_feature_pipeline",
-        payload={"features": spec.features},
+        payload={"features": spec.features, "fit_assets": fit_assets},
     )
     task = tool_infer_task(gs.data_quality, df, h.horizon_h)
     append_event(gs, gs.stage, f"task: {task.task} ({task.rationale})", tool="infer_task")
     artifacts_dir = Path(get_settings().models_dir) / "artifacts" / gs.run_id
     artifacts_dir.mkdir(parents=True, exist_ok=True)
-    cs = tool_train_candidates(features_df, spec, task, h.n_trials, 0, artifacts_dir, gs.asset_id)
+    cs = tool_train_candidates(
+        features_df, spec, task, h.n_trials, 0, artifacts_dir, gs.asset_id, split=gs.split
+    )
     # The regime baseline travels with the FeatureSpec so deploy_edge can ship it to the edge.
     baseline = features_df.attrs.get("baseline") if hasattr(features_df, "attrs") else None
     if baseline and cs.features.baseline is None:

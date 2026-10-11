@@ -224,16 +224,22 @@ def _regime_label(rank: int, k: int) -> str:
     return f"regime-{rank + 1}"
 
 
-def detect_regime(df: pd.DataFrame, k: int = 3, seed: int = 0) -> RegimeReport:
+def detect_regime(
+    df: pd.DataFrame, k: int = 3, seed: int = 0, fit_assets: list[str] | None = None
+) -> RegimeReport:
     """Cluster operating state from ``rpm`` and ``load_pct``.
 
     Input: telemetry DataFrame with numeric ``rpm`` and ``load_pct`` (NaNs are median-filled
-    for clustering only); ``k`` clusters; ``seed`` for KMeans and the silhouette sample.
+    for clustering only); ``k`` clusters; ``seed`` for KMeans and the silhouette sample;
+    ``fit_assets`` -- when given, the scaler and KMeans are FITTED on the rows of those assets
+    only (the training group) and every other row is merely assigned to its nearest centroid,
+    so held-out motors never shape the regimes.
     Output: ``RegimeReport`` with ``k`` ``Regime`` entries named ``R1..Rk`` in ascending order of
     ``rpm_mean * load_mean`` (so R1 = idle/startup, R3 = high-load when k=3), ``row_regime``
-    aligned to the input row order (``len == len(df)``), ``method="kmeans"`` and a silhouette
-    score computed on a seeded sample of at most 5000 rows (``None`` when undefined).
-    Degenerate inputs (fewer distinct points than ``k``) fall back to fewer clusters.
+    aligned to the input row order (``len == len(df)``), ``method="kmeans"``, ``fit_assets``
+    and a silhouette score computed on a seeded sample of at most 5000 rows (``None`` when
+    undefined). Degenerate inputs (fewer distinct points than ``k``) fall back to fewer
+    clusters.
     """
     n = 0 if df is None else len(df)
     if n == 0:
@@ -243,16 +249,22 @@ def detect_regime(df: pd.DataFrame, k: int = 3, seed: int = 0) -> RegimeReport:
             raise ValueError(f"detect_regime needs column '{col}'")
 
     X = df[["rpm", "load_pct"]].astype(float).copy()
-    X = X.fillna(X.median()).fillna(0.0).to_numpy()
-    n_unique = len(np.unique(X, axis=0))
+    fit_mask = np.ones(n, dtype=bool)
+    if fit_assets is not None and "asset_id" in df.columns:
+        m = df["asset_id"].astype(str).isin(set(fit_assets)).to_numpy()
+        if m.any():
+            fit_mask = m
+    X = X.fillna(X[fit_mask].median()).fillna(0.0).to_numpy()
+    n_unique = len(np.unique(X[fit_mask], axis=0))
     k_eff = max(1, min(k, n_unique))
 
     if k_eff == 1:
         labels = np.zeros(n, dtype=int)
     else:
-        Xs = StandardScaler().fit_transform(X)
-        km = KMeans(n_clusters=k_eff, n_init=10, random_state=seed)
-        labels = km.fit_predict(Xs)
+        scaler = StandardScaler().fit(X[fit_mask])
+        Xs = scaler.transform(X)
+        km = KMeans(n_clusters=k_eff, n_init=10, random_state=seed).fit(Xs[fit_mask])
+        labels = km.predict(Xs)
 
     # Order clusters by rpm*load ascending -> R1..Rk
     stats = []
@@ -288,7 +300,13 @@ def detect_regime(df: pd.DataFrame, k: int = 3, seed: int = 0) -> RegimeReport:
             silhouette = None
 
     row_regime = [f"R{r + 1}" for r in ranks.tolist()]
-    return RegimeReport(regimes=regimes, row_regime=row_regime, method="kmeans", silhouette=silhouette)
+    return RegimeReport(
+        regimes=regimes,
+        row_regime=row_regime,
+        method="kmeans",
+        silhouette=silhouette,
+        fit_assets=sorted(fit_assets) if fit_assets is not None else None,
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -296,11 +314,14 @@ def detect_regime(df: pd.DataFrame, k: int = 3, seed: int = 0) -> RegimeReport:
 # --------------------------------------------------------------------------------------
 
 
-def profile_dataset(df: pd.DataFrame, asset_id: str, step_min: int = 10) -> DataQualityContract:
+def profile_dataset(
+    df: pd.DataFrame, asset_id: str, step_min: int = 10, fit_assets: list[str] | None = None
+) -> DataQualityContract:
     """Produce the Data Quality Contract for a training run targeting ``asset_id``.
 
     Input: whole-fleet telemetry DataFrame (the model trains across assets), the target
-    asset id, and the nominal sampling step in minutes.
+    asset id, the nominal sampling step in minutes and ``fit_assets`` (the training group:
+    regime clustering is fitted on those rows only; see ``detect_regime``).
     Output: ``DataQualityContract``. ``quality_score = 100 - penalties`` where penalties are:
     missing data (40 x mean sensor NaN fraction, max 40), timestamp gaps (2 per gap, max 10),
     flatlined sensors (10 each, max 30), schema issues (15 per error, 5 per warning, max 40),
@@ -335,7 +356,7 @@ def profile_dataset(df: pd.DataFrame, asset_id: str, step_min: int = 10) -> Data
     can_cluster = "rpm" in df.columns and "load_pct" in df.columns
     if can_cluster:
         try:
-            regimes = detect_regime(df)
+            regimes = detect_regime(df, fit_assets=fit_assets)
         except (ValueError, TypeError) as exc:
             logger.warning("regime detection failed: %s", exc)
             regimes = RegimeReport(regimes=[], row_regime=[])

@@ -167,6 +167,9 @@ class RegimeReport(BaseModel):
     )
     method: str = "kmeans"
     silhouette: float | None = None
+    #: Assets whose rows the clustering was fitted on (None = every row; a leak-free run
+    #: passes the training assets only and the other rows are merely assigned).
+    fit_assets: list[str] | None = None
 
 
 class SchemaIssue(BaseModel):
@@ -214,6 +217,33 @@ class FeatureSpec(BaseModel):
         default=None,
         description="Per-sensor regime baseline (mean/std + centroids) shipped to the edge sidecar",
     )
+    #: Assets the baseline / scales were fitted on (the training group); None = all rows.
+    fit_assets: list[str] | None = None
+
+
+class AssetSplit(BaseModel):
+    """The seeded asset-level split a run used, fixed before any preprocessing was fitted.
+
+    `train`: model, regimes and baselines are fitted here only. `validation`: the Optuna
+    objective. `calibration`: probability calibration. `test`: final metrics, untouched until
+    then. `validation` and `calibration` are the same assets when the fleet has too few
+    completed failures for four groups (see `notes`).
+    """
+
+    seed: int
+    train: list[str]
+    validation: list[str]
+    calibration: list[str]
+    test: list[str]
+    #: Assets forced into `test` (the asset under analysis), so its score is out-of-sample.
+    forced_test: list[str] = Field(default_factory=list)
+    #: group -> assets in it that carry a completed failure (positive labels).
+    positives: dict[str, list[str]] = Field(default_factory=dict)
+    notes: list[str] = Field(default_factory=list)
+
+    @property
+    def not_test(self) -> list[str]:
+        return sorted(set(self.train) | set(self.validation) | set(self.calibration))
 
 
 class IndustrialModelScore(BaseModel):
@@ -256,6 +286,8 @@ class CandidateSet(BaseModel):
     candidates: list[CandidateModel]
     mlflow_experiment: str
     ranked: list[str] = Field(default_factory=list, description="candidate_ids best → worst by IMS")
+    #: The split the candidates were trained / selected with (validation uses the same one).
+    split: AssetSplit | None = None
 
 
 # --------------------------------------------------------------------------------------
@@ -286,6 +318,16 @@ class CalibrationReport(BaseModel):
     reliability_bins: list[tuple[float, float, int]] = Field(
         default_factory=list, description="(mean_predicted, fraction_positive, count)"
     )
+
+
+class GateCheck(BaseModel):
+    """One line of the validation gate checklist (shown in AutoML Studio)."""
+
+    name: str
+    passed: bool
+    value: float | None = None
+    threshold: float | None = None
+    detail: str = ""
 
 
 class LeadTimeReport(BaseModel):
@@ -323,6 +365,12 @@ class ValidationReport(BaseModel):
     notes: list[str] = Field(default_factory=list)
     #: The thresholds every metric above was computed with (one meaning each).
     thresholds: Thresholds = Field(default_factory=Thresholds)
+    #: Which motors were train / validation / calibration / test (None for legacy reports).
+    split: AssetSplit | None = None
+    #: Pass/fail checklist with reasons; `passed` is their conjunction.
+    gate: list[GateCheck] = Field(default_factory=list)
+    #: Final metrics of the calibrated champion on the untouched test assets.
+    test_metrics: dict[str, float] = Field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------------------
@@ -597,6 +645,8 @@ class GraphState(BaseModel):
     stage: PipelineStage = PipelineStage.queued
     events: list[StageEvent] = Field(default_factory=list)
     data_quality: DataQualityContract | None = None
+    #: Fixed before profiling; every later stage fits only on `split.train`.
+    split: AssetSplit | None = None
     candidates: CandidateSet | None = None
     validation: ValidationReport | None = None
     evidence: EvidenceBundle | None = None

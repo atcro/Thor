@@ -35,9 +35,11 @@ from agents.metrics import (
     median_lead_time_h,
     positive_proba,
 )
+from agents.ml_architect.split import rows_in
 from apps.api.schemas import (
     CLASSIFICATION_THRESHOLD,
     EARLY_WARNING_THRESHOLD,
+    AssetSplit,
     CandidateModel,
     CandidateSet,
     DataQualityContract,
@@ -119,6 +121,25 @@ def infer_task(dq: DataQualityContract, df: pd.DataFrame, horizon_h: float = 48.
 # --------------------------------------------------------------------------------------
 
 
+def legacy_split(features_df: pd.DataFrame) -> AssetSplit:
+    """An AssetSplit from the id-order holdout (``split_by_asset``) for callers that pass no
+    split: validation = calibration = test = the held-out assets. Recorded as such in
+    ``notes`` -- it is NOT leak-free for calibration vs test and exists for backward
+    compatibility and small unit tests only."""
+    train, hold = split_by_asset(features_df)
+    return AssetSplit(
+        seed=-1,
+        train=train,
+        validation=hold,
+        calibration=hold,
+        test=hold,
+        notes=[
+            "legacy id-order split (no AssetSplit given): validation, calibration and test "
+            "share the held-out assets"
+        ],
+    )
+
+
 def split_by_asset(
     features_df: pd.DataFrame, holdout_fraction: float = HOLDOUT_FRACTION
 ) -> tuple[list[str], list[str]]:
@@ -126,6 +147,7 @@ def split_by_asset(
 
     Input: feature frame with an ``asset_id`` column. Output: ``(train_assets, holdout_assets)``,
     disjoint, both sorted; at least one asset on each side when >= 2 assets exist.
+    Superseded by ``agents.ml_architect.split.make_asset_split`` for real runs.
     """
     assets = sorted(features_df["asset_id"].astype(str).unique().tolist())
     if len(assets) < 2:
@@ -307,15 +329,19 @@ def launch_trial(
     seed: int = 0,
     artifacts_dir: Path | None = None,
     experiment: str | None = None,
+    split: AssetSplit | None = None,
 ) -> CandidateModel:
     """Run an Optuna search for one model family and persist the best model.
 
     Input: ``features_df`` from ``build_feature_pipeline`` (``asset_id, ts, features, label,
-    rul_h``), its ``spec``, the ``task`` (classification), ``family`` in
+    rul_h[, label_known]``), its ``spec``, the ``task`` (classification), ``family`` in
     ``("random_forest", "xgboost", "lightgbm")``, number of Optuna trials, RNG seed, directory
-    for the joblib artifact (default ``<models_dir>/candidates``) and an MLflow experiment name.
-    Split: the last 25 % of assets by id are held out (``split_by_asset``); rows stay in time
-    order; no shuffling. Objective: ``industrial_model_score`` on the held-out assets
+    for the joblib artifact (default ``<models_dir>/candidates``), an MLflow experiment name
+    and the run's ``AssetSplit``: the model is fitted on ``split.train`` rows only and the
+    Optuna objective is scored on ``split.validation`` rows (motors never trained on); test
+    and calibration assets are never touched here. Right-censored rows (``label_known``
+    False) are excluded from both. Without a split the legacy id-order holdout is used
+    (``legacy_split``). Objective: ``industrial_model_score`` on the validation assets
     (recall / precision / f1 at CLASSIFICATION_THRESHOLD, auroc, brier, lead_time_h at
     EARLY_WARNING_THRESHOLD with the sustained-rows rule, + latency in ms per 1000 rows --
     the same definitions the Validation Agent uses), maximised with ``TPESampler(seed)``. Class imbalance: ``class_weight="balanced_subsample"`` (RF) or
@@ -337,10 +363,11 @@ def launch_trial(
     if missing:
         raise ValueError(f"features_df is missing columns: {missing}")
 
-    train_assets, hold_assets = split_by_asset(features_df)
+    split = split or legacy_split(features_df)
+    train_assets, hold_assets = list(split.train), list(split.validation)
     df = features_df.sort_values(["asset_id", "ts"]).reset_index(drop=True)
-    tr = df[df["asset_id"].isin(train_assets)]
-    ho = df[df["asset_id"].isin(hold_assets)]
+    tr = rows_in(df, train_assets)
+    ho = rows_in(df, hold_assets)
     X_tr, y_tr = tr[feats], tr["label"].to_numpy(dtype=int)
     X_ho, y_ho = ho[feats], ho["label"].to_numpy(dtype=int)
     meta_ho = ho[["asset_id", "ts", "rul_h"]].reset_index(drop=True)
@@ -392,7 +419,9 @@ def launch_trial(
             "window_rows": spec.window_rows,
             "horizon_h": task.horizon_h,
             "train_assets": ",".join(train_assets),
-            "holdout_assets": ",".join(hold_assets),
+            "validation_assets": ",".join(hold_assets),
+            "test_assets": ",".join(split.test),
+            "split_seed": split.seed,
         },
         {**metrics, "latency_ms": latency, "ims_total": ims.total},
         artifact_path,
@@ -432,17 +461,20 @@ def train_candidates(
     seed: int = 0,
     artifacts_dir: Path | None = None,
     asset_id: str = "",
+    split: AssetSplit | None = None,
 ) -> CandidateSet:
     """Train one candidate per family and rank them.
 
     Input: as ``launch_trial`` plus the target ``asset_id`` (used for the MLflow experiment name
-    ``thor-automl[-<asset_id>]`` and ``CandidateSet.asset_id``).
+    ``thor-automl[-<asset_id>]`` and ``CandidateSet.asset_id``) and the run's ``AssetSplit``
+    (recorded on the ``CandidateSet`` so the Validation Agent uses the same groups).
     Output: ``CandidateSet`` with three ``CandidateModel`` entries (random_forest, xgboost,
-    lightgbm) and ``ranked`` = ``compare_models(candidates)``. A family whose search raises is
-    skipped with a warning so one broken library never blocks the run; at least one candidate
-    must succeed or ``RuntimeError`` is raised.
+    lightgbm) and ``ranked`` = ``compare_models(candidates)`` by validation-group IMS. A family
+    whose search raises is skipped with a warning so one broken library never blocks the run;
+    at least one candidate must succeed or ``RuntimeError`` is raised.
     """
     experiment = f"{DEFAULT_EXPERIMENT}-{asset_id}" if asset_id else DEFAULT_EXPERIMENT
+    split = split or legacy_split(features_df)
     candidates: list[CandidateModel] = []
     errors: list[str] = []
     for family in FAMILIES:
@@ -457,6 +489,7 @@ def train_candidates(
                     seed=seed,
                     artifacts_dir=artifacts_dir,
                     experiment=experiment,
+                    split=split,
                 )
             )
         except ValueError:
@@ -473,4 +506,5 @@ def train_candidates(
         candidates=candidates,
         mlflow_experiment=experiment,
         ranked=compare_models(candidates),
+        split=split,
     )

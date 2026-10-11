@@ -6,7 +6,9 @@ so the AutoML Studio screen and the tests can call them one at a time.
 
 Splitting policy (CLAUDE.md section 7): there is no random shuffle split anywhere in this
 module. Every held-out set is a set of whole assets the model never saw, and rows inside a
-fold are kept in time order.
+fold are kept in time order. `validate()` uses the run's recorded `AssetSplit`
+(agents/ml_architect/split.py): champion selection on the validation assets, calibration on
+the calibration assets, final metrics on the untouched test assets.
 """
 
 from __future__ import annotations
@@ -35,15 +37,18 @@ from agents.metrics import (
     lead_times_h,
     positive_proba,
 )
+from agents.ml_architect.split import make_asset_split, rows_in
 from apps.api.schemas import (
     CLASSIFICATION_THRESHOLD,
     EARLY_WARNING_SUSTAINED_ROWS,
     EARLY_WARNING_THRESHOLD,
+    AssetSplit,
     BacktestFold,
     CalibrationReport,
     CandidateModel,
     CandidateSet,
     FeatureSpec,
+    GateCheck,
     IndustrialModelScore,
     LeadTimeReport,
     LeakageReport,
@@ -469,53 +474,99 @@ def _mean_metric(folds: list[BacktestFold], key: str) -> float:
     return float(np.mean(vals)) if vals else float("nan")
 
 
-def validate(candidates: CandidateSet, features_df: pd.DataFrame, run_id: str) -> ValidationReport:
-    """Run every validation check on a CandidateSet and pick the champion.
+def _fallback_split(df: pd.DataFrame, candidates: CandidateSet) -> AssetSplit:
+    """Split for a CandidateSet that recorded none: train = the spec's fit_assets (or the
+    id-order 75 %), the rest dealt into tune / test by seed so calibration and test stay
+    disjoint. Noted on the report as a fallback."""
+    assets = _sorted_assets(df)
+    train = list(candidates.features.fit_assets or _split_assets(assets)[0])
+    rest = [a for a in assets if a not in set(train)]
+    sub = make_asset_split(df.loc[df["asset_id"].isin(rest)], seed=0) if rest else None
+    return AssetSplit(
+        seed=0,
+        train=sorted(train),
+        validation=sorted((sub.validation if sub else []) + (sub.train if sub else [])),
+        calibration=sorted((sub.calibration if sub else []) + (sub.train if sub else [])),
+        test=sorted(sub.test if sub else []),
+        positives=sub.positives if sub else {},
+        notes=["fallback split: the CandidateSet recorded no AssetSplit"]
+        + (sub.notes if sub else []),
+    )
 
-    Inputs: CandidateSet (candidates must have artifact_path set), the feature frame the
-    candidates were trained from, and the run id. Steps: leakage check on the deterministic
-    asset split (last 25 percent of sorted assets held out); asset-level backtest per
-    candidate (fresh clones fitted per fold); IMS recomputed from mean backtest metrics and
-    the candidate's inference latency; champion = highest IMS; champion calibrated on the
-    held-out assets and saved as <candidate_id>_calibrated.joblib next to the original;
-    lead time measured with the calibrated champion on the held-out assets (falls back to
-    the whole frame if no held-out asset fails); RUL interval (None on failure).
-    Output: ValidationReport. `passed` = leakage passed and champion recall (at
-    CLASSIFICATION_THRESHOLD) >= 0.6 and median lead time (at EARLY_WARNING_THRESHOLD) >= 12 h;
-    `thresholds` records both. notes[0] is always "champion_artifact=<path>" because the
-    schema has no field for the calibrated artifact path.
+
+def _lead_time_report(leads: list[float]) -> LeadTimeReport:
+    if not leads:
+        return LeadTimeReport(
+            median_h=0.0, p90_h=0.0, p10_h=0.0, n_events=0, threshold=EARLY_WARNING_THRESHOLD
+        )
+    arr = np.asarray(leads, dtype=float)
+    return LeadTimeReport(
+        median_h=float(np.median(arr)),
+        p90_h=float(np.percentile(arr, 90)),
+        p10_h=float(np.percentile(arr, 10)),
+        n_events=int(len(arr)),
+        threshold=EARLY_WARNING_THRESHOLD,
+    )
+
+
+def validate(candidates: CandidateSet, features_df: pd.DataFrame, run_id: str) -> ValidationReport:
+    """Run every validation check on a CandidateSet and pick the champion -- leak-free.
+
+    Inputs: CandidateSet (candidates must have artifact_path set; ``split`` records the
+    train / validation / calibration / test assets fixed before training), the feature frame
+    the candidates were built from (``label_known`` marks right-censored rows, skipped here),
+    and the run id. Steps:
+      1. leakage check: every non-test asset vs the test assets (disjoint, no forbidden or
+         label-correlated features);
+      2. champion = the candidate with the highest Industrial Model Score on the VALIDATION
+         assets, scored with its fitted artifact (metrics at CLASSIFICATION_THRESHOLD, lead
+         time at EARLY_WARNING_THRESHOLD, see agents/metrics.py) -- test assets untouched;
+      3. the champion is calibrated on the CALIBRATION assets (isotonic >= 200 rows, else
+         sigmoid; "none" with one class) and saved as <candidate_id>_calibrated.joblib;
+      4. final metrics come from the calibrated champion on the TEST assets only: one
+         ``BacktestFold`` (fold 0, train_assets = split.train, test_assets = split.test),
+         ``test_metrics``, ``lead_time`` (median over failing test assets) and the reported
+         ``ims``;
+      5. RUL interval (None on failure);
+      6. the gate checklist: leakage passed, test recall >= 0.6, median test lead time >= 12 h,
+         at least one completed failure among test assets. ``passed`` is their conjunction.
+    Output: ValidationReport with ``split``, ``gate``, ``test_metrics`` and ``thresholds``.
+    notes[0] is always "champion_artifact=<path>" (the calibrated champion). Raises
+    ValueError when no candidate artifact can be loaded.
     """
     spec = candidates.features
     df = features_df.sort_values(["asset_id", "ts"]).reset_index(drop=True)
-    assets = _sorted_assets(df)
-    train_assets, test_assets = _split_assets(assets)
+    split = candidates.split or _fallback_split(df, candidates)
     notes: list[str] = []
 
-    leakage = detect_leakage(df, spec, train_assets, test_assets)
+    leakage = detect_leakage(df, spec, split.not_test, split.test)
 
-    scored: list[tuple[CandidateModel, Any, list[BacktestFold], IndustrialModelScore]] = []
+    val_rows = rows_in(df, split.validation)
+    cal_rows = rows_in(df, split.calibration)
+    test_rows = rows_in(df, split.test)
+    if val_rows.empty:
+        val_rows = rows_in(df, split.train)
+        notes.append("validation group empty: candidates ranked on training rows")
+
+    scored: list[tuple[CandidateModel, Any, dict[str, float], IndustrialModelScore]] = []
     for c in candidates.candidates:
         model = _load_candidate(c)
         if model is None:
             continue
-        folds = run_backtest(df, spec, _model_factory_for(model), n_folds=3)
-        metrics = {
-            "recall": _mean_metric(folds, "recall"),
-            "precision": _mean_metric(folds, "precision"),
-            "lead_time_h": _mean_metric(folds, "lead_time_h"),
-            "brier": _mean_metric(folds, "brier"),
-        }
+        p = positive_proba(model, val_rows[spec.features])
+        metrics = classification_metrics(val_rows["label"].to_numpy().astype(int), p)
+        leads = lead_times_h(val_rows[["asset_id", "ts", "rul_h"]], p)
+        metrics["lead_time_h"] = float(np.median(leads)) if leads else float("nan")
         ims = _industrial_model_score(metrics, c.inference_latency_ms)
-        scored.append((c, model, folds, ims))
-        log.info("candidate %s (%s): IMS %.3f", c.candidate_id, c.family, ims.total)
+        scored.append((c, model, metrics, ims))
+        log.info("candidate %s (%s): validation IMS %.3f", c.candidate_id, c.family, ims.total)
     if not scored:
         raise ValueError("validate: no candidate could be loaded from artifact_path")
+    champion, model, _val_metrics, _val_ims = max(scored, key=lambda t: t[3].total)
 
-    champion, model, folds, ims = max(scored, key=lambda t: t[3].total)
-
-    cal_rows = df.loc[df["asset_id"].isin(test_assets)] if test_assets else df
     if cal_rows.empty:
-        cal_rows = df
+        cal_rows = val_rows
+        notes.append("calibration group empty: calibrated on validation rows")
     calibrated, calibration = calibrate_probabilities(
         model, cal_rows[spec.features], cal_rows["label"].astype(int)
     )
@@ -524,13 +575,44 @@ def validate(candidates: CandidateSet, features_df: pd.DataFrame, run_id: str) -
     cal_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(calibrated, cal_path)
     notes.append(f"champion_artifact={cal_path}")
+    notes.append(
+        f"calibration ({calibration.method}) fitted on {len(cal_rows)} rows of "
+        f"{sorted(set(cal_rows['asset_id']))}"
+    )
 
-    lead_time = compute_lead_time(cal_rows, spec, calibrated, threshold=EARLY_WARNING_THRESHOLD)
-    if lead_time.n_events == 0:
-        lead_time = compute_lead_time(df, spec, calibrated, threshold=EARLY_WARNING_THRESHOLD)
-        notes.append("lead time measured on the full frame: no held-out asset fails")
+    # Final, untouched test assets.
+    if test_rows.empty:
+        test_metrics: dict[str, float] = {}
+        leads = []
+        notes.append("no test rows: final metrics unavailable")
+        train_end = pd.Timestamp(df["ts"].max())
     else:
-        notes.append(f"lead time measured on held-out assets {test_assets}")
+        p_test = positive_proba(calibrated, test_rows[spec.features])
+        test_metrics = classification_metrics(test_rows["label"].to_numpy().astype(int), p_test)
+        leads = lead_times_h(test_rows[["asset_id", "ts", "rul_h"]], p_test)
+        test_metrics["lead_time_h"] = float(np.median(leads)) if leads else float("nan")
+        test_metrics["n_assets"] = float(test_rows["asset_id"].nunique())
+        test_metrics["n_failure_events"] = float(len(leads))
+        train_rows = rows_in(df, split.train, known_only=False)
+        train_end = pd.Timestamp((train_rows if not train_rows.empty else df)["ts"].max())
+    lead_time = _lead_time_report(leads)
+    fold = BacktestFold(
+        fold=0,
+        train_assets=list(split.train),
+        test_assets=list(split.test),
+        train_end=train_end.to_pydatetime(),
+        metrics=_finite_metrics(test_metrics),
+    )
+    ims = _industrial_model_score(
+        {
+            "recall": test_metrics.get("recall", 0.0),
+            "precision": test_metrics.get("precision", 0.0),
+            "lead_time_h": lead_time.median_h,
+            "brier": test_metrics.get("brier", float("nan")),
+        },
+        champion.inference_latency_ms,
+    )
+    notes.append(f"final metrics on test assets {split.test} (never used before this step)")
 
     rul: RULInterval | None
     try:
@@ -539,18 +621,46 @@ def validate(candidates: CandidateSet, features_df: pd.DataFrame, run_id: str) -
         rul = None
         notes.append(f"rul interval unavailable: {e}")
 
-    passed = (
-        leakage.passed
-        and ims.recall >= MIN_RECALL_TO_PASS
-        and lead_time.median_h >= MIN_LEAD_TIME_H_TO_PASS
-    )
+    gate = [
+        GateCheck(
+            name="leakage",
+            passed=leakage.passed,
+            detail="no asset overlap, no forbidden or label-correlated feature"
+            if leakage.passed
+            else "; ".join(leakage.notes),
+        ),
+        GateCheck(
+            name="test_failure_events",
+            passed=lead_time.n_events >= 1,
+            value=float(lead_time.n_events),
+            threshold=1.0,
+            detail=f"{lead_time.n_events} completed failure(s) among test assets {split.test}",
+        ),
+        GateCheck(
+            name="recall",
+            passed=ims.recall >= MIN_RECALL_TO_PASS,
+            value=float(ims.recall),
+            threshold=MIN_RECALL_TO_PASS,
+            detail=f"test recall at P>={CLASSIFICATION_THRESHOLD}",
+        ),
+        GateCheck(
+            name="lead_time",
+            passed=lead_time.median_h >= MIN_LEAD_TIME_H_TO_PASS,
+            value=float(lead_time.median_h),
+            threshold=MIN_LEAD_TIME_H_TO_PASS,
+            detail=(
+                f"median warning lead time at P>={EARLY_WARNING_THRESHOLD} sustained "
+                f"{EARLY_WARNING_SUSTAINED_ROWS} rows, over test failures"
+            ),
+        ),
+    ]
+    passed = all(g.passed for g in gate)
     if not passed:
         notes.append(
-            f"gate: leakage_ok={leakage.passed} recall={ims.recall:.2f} "
-            f"lead_time_median_h={lead_time.median_h:.1f}"
+            "gate: " + "; ".join(f"{g.name}={'ok' if g.passed else 'FAIL'}" for g in gate)
         )
     notes.append(
-        "ranking: "
+        "ranking (validation IMS): "
         + ", ".join(
             f"{c.candidate_id}={s.total:.3f}"
             for c, _, _, s in sorted(scored, key=lambda t: -t[3].total)
@@ -564,7 +674,7 @@ def validate(candidates: CandidateSet, features_df: pd.DataFrame, run_id: str) -
         champion_mlflow_run_id=champion.mlflow_run_id,
         model_version=f"v{int(time.time()) % 100000}",
         leakage=leakage,
-        backtest=folds,
+        backtest=[fold],
         calibration=calibration,
         lead_time=lead_time,
         rul=rul,
@@ -572,6 +682,9 @@ def validate(candidates: CandidateSet, features_df: pd.DataFrame, run_id: str) -
         passed=passed,
         notes=notes,
         thresholds=Thresholds(),
+        split=split,
+        gate=gate,
+        test_metrics=_finite_metrics(test_metrics),
     )
 
 
