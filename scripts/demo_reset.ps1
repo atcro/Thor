@@ -43,9 +43,10 @@ foreach ($v in $vols) {
 Write-Host "==> starting stack (api seeds 80%, prep trains + promotes, then replay + edge start)"
 docker compose up -d
 Assert-Ok "docker compose up"
-Write-Host "==> following the prep service (train, validate incl. parity, promote, export, score)"
-docker compose logs -f --no-log-prefix prep
-$prepExit = docker compose ps -a --format json prep | ConvertFrom-Json | Select-Object -First 1 -ExpandProperty ExitCode
+Write-Host "==> waiting for the prep service (train, validate incl. parity, promote, export, score; ~2 min)"
+docker compose wait prep
+$prepExit = $LASTEXITCODE
+docker compose logs --no-log-prefix prep
 if ($prepExit -ne 0) { throw "demo prep failed with exit code $prepExit; see 'docker compose logs prep'" }
 
 Write-Host -NoNewline "==> waiting for api"
