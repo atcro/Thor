@@ -40,13 +40,24 @@ done
 echo "==> starting stack (api seeds 80%, prep trains + promotes, then replay + edge start)"
 docker compose up -d
 echo "==> waiting for the prep service (train, validate incl. parity, promote, export, score; ~2 min)"
-set +e
-docker compose wait prep
-PREP_EXIT=$?
-set -e
+# docker compose wait only sees running containers, so poll the container state instead and
+# read the exit code the container recorded.
+PREP_EXIT=""
+for _ in $(seq 1 360); do
+  INFO="$(docker compose ps -a --format json prep 2>/dev/null | head -n 1)"
+  if grep -q '"State": *"exited"' <<<"$INFO"; then
+    PREP_EXIT="$(sed -n 's/.*"ExitCode": *\([0-9]*\).*/\1/p' <<<"$INFO" | head -n 1)"
+    break
+  fi
+  sleep 5
+done
 docker compose logs --no-log-prefix prep
-if [[ "${PREP_EXIT:-1}" != "0" ]]; then
-  echo "demo prep failed with exit code ${PREP_EXIT:-?}; see 'docker compose logs prep'" >&2
+if [[ -z "$PREP_EXIT" ]]; then
+  echo "demo prep did not finish within 30 minutes; see 'docker compose logs prep'" >&2
+  exit 1
+fi
+if [[ "$PREP_EXIT" != "0" ]]; then
+  echo "demo prep failed with exit code $PREP_EXIT; see 'docker compose logs prep'" >&2
   exit 1
 fi
 
