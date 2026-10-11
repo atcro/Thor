@@ -322,7 +322,7 @@ def test_deploy_edge_exports_onnx_matching_predict_proba(
     assert sidecar["version"] == reg.version
     assert sidecar["features"] == FEATURES
     assert sidecar["window_rows"] == 12
-    assert sidecar["calibration"] == "none"
+    assert sidecar["calibration"] == {"method": "none"}
     assert sidecar["family"] == family
     assert sidecar["baseline"]["vib_rms_mean"]["std"] == 1.0
     assert sidecar["asset_id"] == "MTR-042"
@@ -338,23 +338,100 @@ def test_deploy_edge_exports_onnx_matching_predict_proba(
     np.testing.assert_allclose(probs[:, 1], fitted.predict_proba(X_test)[:, 1], atol=1e-3)
 
 
-def test_deploy_edge_unwraps_calibrated_classifier(engine, tmp_path: Path, data) -> None:
-    import onnxruntime as ort
+@pytest.mark.parametrize("method", ["sigmoid", "isotonic"])
+def test_deploy_edge_exports_calibration_and_edge_reproduces_it(
+    engine, tmp_path: Path, data, method: str
+) -> None:
+    """The ONNX graph is the raw tree; the sidecar carries the calibration transform; the edge
+    (edge.inference) reproduces the centre's calibrated probability."""
+    from sklearn.frozen import FrozenEstimator
+
+    from edge.inference import load_model, predict_proba
 
     X, y, X_test = data
-    cal = CalibratedClassifierCV(RandomForestClassifier(n_estimators=15, random_state=0), cv=3)
-    cal.fit(X, y)
-    artifact = tmp_path / "cal.joblib"
+    rf = RandomForestClassifier(n_estimators=15, random_state=0).fit(X[:300], y[:300])
+    cal = CalibratedClassifierCV(FrozenEstimator(rf), method=method).fit(X[300:], y[300:])
+    artifact = tmp_path / f"cal_{method}.joblib"
     joblib.dump(cal, artifact)
-    reg = lifecycle.register_model(make_validation("v30001"), artifact, engine=engine)
+    reg = lifecycle.register_model(make_validation(f"v3{method[:3]}"), artifact, engine=engine)
     dep = lifecycle.deploy_edge(reg, artifact, FEATURES, tmp_path / "models", engine=engine)
     sidecar = json.loads(Path(dep.onnx_path).with_suffix(".json").read_text())
-    assert sidecar["calibration"] == "none"
-    base = cal.calibrated_classifiers_[0].estimator
-    sess = ort.InferenceSession(dep.onnx_path, providers=["CPUExecutionProvider"])
-    outs = sess.run(None, {"input": X_test.to_numpy(np.float32)})
-    probs = next(o for o in outs if getattr(o, "ndim", 0) == 2 and o.shape[-1] == 2)
-    np.testing.assert_allclose(probs[:, 1], base.predict_proba(X_test)[:, 1], atol=1e-3)
+    assert sidecar["calibration"]["method"] == method
+    model = load_model(Path(dep.onnx_path), Path(dep.onnx_path).with_suffix(".json"))
+    p_edge = predict_proba(model, X_test.to_numpy())
+    np.testing.assert_allclose(p_edge, cal.predict_proba(X_test)[:, 1], atol=1e-3)
+
+
+def test_deploy_edge_refuses_multi_fold_calibrator(engine, tmp_path: Path, data) -> None:
+    X, y, _ = data
+    cal = CalibratedClassifierCV(RandomForestClassifier(n_estimators=15, random_state=0), cv=3)
+    cal.fit(X, y)
+    artifact = tmp_path / "cv3.joblib"
+    joblib.dump(cal, artifact)
+    reg = lifecycle.register_model(make_validation("v30009"), artifact, engine=engine)
+    with pytest.raises(ValueError, match="cannot be exported"):
+        lifecycle.deploy_edge(reg, artifact, FEATURES, tmp_path / "models", engine=engine)
+
+
+class _LyingWrapper:
+    """A central model whose predict_proba disagrees with the tree it exposes for export."""
+
+    def __init__(self, estimator) -> None:
+        self.estimator = estimator
+
+    def predict_proba(self, X):
+        p = self.estimator.predict_proba(X)
+        return np.column_stack([p[:, 1], p[:, 0]])  # swapped on purpose
+
+
+def test_check_edge_parity_passes_and_fails_honestly(tmp_path: Path, data) -> None:
+    from sklearn.frozen import FrozenEstimator
+
+    X, y, X_test = data
+    rf = RandomForestClassifier(n_estimators=15, random_state=0).fit(X[:300], y[:300])
+    cal = CalibratedClassifierCV(FrozenEstimator(rf), method="isotonic").fit(X[300:], y[300:])
+    good = tmp_path / "good.joblib"
+    joblib.dump(cal, good)
+    report = lifecycle.check_edge_parity(good, FEATURES, X_test, window_rows=12, baseline=None)
+    assert report.passed and report.n_rows == 20
+    assert report.max_abs_diff_probability <= report.tolerance_probability
+    assert report.calibration_method == "isotonic"
+
+    bad = tmp_path / "bad.joblib"
+    joblib.dump(_LyingWrapper(rf), bad)
+    report = lifecycle.check_edge_parity(bad, FEATURES, X_test, window_rows=12, baseline=None)
+    assert not report.passed and report.max_abs_diff_probability > 0.1
+    assert any("PARITY FAILED" in n for n in report.notes)
+
+    broken = tmp_path / "missing.joblib"
+    report = lifecycle.check_edge_parity(broken, FEATURES, X_test)
+    assert not report.passed and any("error" in n for n in report.notes)
+
+
+def test_failed_parity_blocks_promotion(engine, tmp_path: Path) -> None:
+    from apps.api.schemas import ParityReport
+
+    failed = ParityReport(
+        passed=False,
+        n_rows=20,
+        max_abs_diff_probability=0.4,
+        tolerance_probability=1e-3,
+        notes=["PARITY FAILED: the edge would not reproduce the centre's probability"],
+    )
+    val = make_validation("v10020").model_copy(update={"parity": failed})
+    reg = lifecycle.register_model(val, tmp_path / "m.joblib", engine=engine)
+    with pytest.raises(lifecycle.PromotionBlocked, match="parity"):
+        lifecycle.request_promotion(
+            lifecycle.compare_champion(reg, engine=engine), ModelStage.production, engine=engine
+        )
+    ok = make_validation("v10021").model_copy(update={"parity": failed.model_copy(update={"passed": True})})
+    reg2 = lifecycle.register_model(ok, tmp_path / "n.joblib", engine=engine)
+    req = lifecycle.request_promotion(
+        lifecycle.compare_champion(reg2, engine=engine), ModelStage.production, engine=engine
+    )
+    assert lifecycle.promote(req.promotion_id, approval_for(req.promotion_id), engine=engine).stage == (
+        ModelStage.production
+    )
 
 
 # --------------------------------------------------------------------------------------

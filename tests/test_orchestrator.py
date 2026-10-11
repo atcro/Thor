@@ -40,6 +40,7 @@ from apps.api.schemas import (
     ManualPassage,
     MissingnessReport,
     ModelStage,
+    ParityReport,
     PipelineStage,
     PromotionRequest,
     Regime,
@@ -428,6 +429,18 @@ def install_fake_toolbox(monkeypatch: pytest.MonkeyPatch, orchestrator: Any) -> 
         orchestrator, "tool_validate", lambda cs, fdf, run_id: make_validation(cs.asset_id)
     )
     monkeypatch.setattr(orchestrator, "tool_load_model", lambda path: FakeModel())
+    monkeypatch.setattr(
+        orchestrator,
+        "tool_check_parity",
+        lambda artifact, spec, x, windows: ParityReport(
+            passed=True,
+            n_rows=len(x),
+            max_abs_diff_probability=1e-6,
+            tolerance_probability=1e-3,
+            n_windows=len(windows),
+            notes=["fake parity"],
+        ),
+    )
     monkeypatch.setattr(
         orchestrator,
         "tool_explain",

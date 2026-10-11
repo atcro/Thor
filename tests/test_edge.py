@@ -37,7 +37,9 @@ def _train_rf(seed: int = 0):
     return RandomForestClassifier(n_estimators=12, max_depth=4, random_state=seed).fit(X, y), X
 
 
-def _export(rf, path: Path, version: str, zipmap: bool, baseline: dict | None = None) -> None:
+def _export(
+    rf, path: Path, version: str, zipmap: bool, baseline: dict | None = None, calibration=None
+) -> None:
     from skl2onnx import to_onnx
     from skl2onnx.common.data_types import FloatTensorType
 
@@ -54,15 +56,15 @@ def _export(rf, path: Path, version: str, zipmap: bool, baseline: dict | None = 
         "version": version,
         "features": ef.FEATURE_NAMES,
         "window_rows": 12,
-        "calibration": "none",
+        "calibration": {"method": "none"} if calibration is None else calibration,
     }
     if baseline is not None:
         sidecar["baseline"] = baseline
     path.with_suffix(".json").write_text(json.dumps(sidecar), encoding="utf-8")
 
 
-def _pandas_reference(df: pd.DataFrame, window: int, baseline: dict) -> pd.DataFrame:
-    """Independent pandas implementation of the documented formulas (one asset)."""
+def _pandas_reference(df: pd.DataFrame, window: int) -> pd.DataFrame:
+    """Independent pandas implementation of the ten baseline-free formulas (one asset)."""
     x = np.arange(window)
 
     def slope(y: np.ndarray) -> float:
@@ -83,32 +85,30 @@ def _pandas_reference(df: pd.DataFrame, window: int, baseline: dict) -> pd.DataF
             "load_mean": r["load_pct"].mean(),
         }
     )
-    vb, bb = baseline["vibration_rms"], baseline["bearing_temp_c"]
-    out["vib_rms_z"] = (out["vib_rms_mean"] - vb["mean"]) / vb["std"]
-    out["bearing_temp_z"] = (out["bearing_temp_mean"] - bb["mean"]) / bb["std"]
-    out["vib_rms_resid"] = out["vib_rms_mean"] - vb["mean"]
-    return out.dropna().reset_index(drop=True)[ef.FEATURE_NAMES]
+    return out.dropna().reset_index(drop=True)
 
 
 @pytest.fixture(scope="module")
-def asset_df() -> pd.DataFrame:
+def fleet_df() -> pd.DataFrame:
     df, _ = generate_fleet(days=2, seed=5)
-    return df[df["asset_id"] == "MTR-042"].reset_index(drop=True)
+    return df
 
 
 @pytest.fixture(scope="module")
-def baseline(asset_df: pd.DataFrame) -> dict:
-    head = asset_df.iloc[: len(asset_df) // 5]
-    return {
-        "vibration_rms": {
-            "mean": float(head["vibration_rms"].mean()),
-            "std": float(head["vibration_rms"].std()),
-        },
-        "bearing_temp_c": {
-            "mean": float(head["bearing_temp_c"].mean()),
-            "std": float(head["bearing_temp_c"].std()),
-        },
-    }
+def asset_df(fleet_df: pd.DataFrame) -> pd.DataFrame:
+    return fleet_df[fleet_df["asset_id"] == "MTR-042"].reset_index(drop=True)
+
+
+@pytest.fixture(scope="module")
+def baseline(fleet_df: pd.DataFrame) -> dict:
+    """The baseline exactly as training produces it (per-regime stats + centroids) --
+    the format the sidecar ships, never a hand-made flat table."""
+    from agents.data_agent.profiling import detect_regime
+    from agents.ml_architect.features import baseline_for
+
+    train = sorted(fleet_df["asset_id"].unique())[:18]
+    regimes = detect_regime(fleet_df, fit_assets=train)
+    return baseline_for(fleet_df, regimes, fit_assets=train)
 
 
 # --------------------------------------------------------------------------------------
@@ -151,6 +151,7 @@ def test_single_window_formulas() -> None:
     buf[:, 3] = [50, 52, 54, 56, 58]  # bearing: slope 2, mean 54
     buf[:, 4] = 40  # motor temp -> temp_delta 14
     buf[:, 1], buf[:, 2], buf[:, 5], buf[:, 6], buf[:, 7] = 3.0, 3.2, 100, 1480, 55
+    # a baseline without regime centroids uses its pooled mean / std
     base = {
         "vibration_rms": {"mean": 2.0, "std": 0.5},
         "bearing_temp_c": {"mean": 50.0, "std": 2.0},
@@ -185,57 +186,83 @@ def test_single_window_formulas() -> None:
         ef.compute_features_np(np.zeros((3, 7)))
 
 
-def test_per_regime_baseline_selection() -> None:
-    per = {
-        "R1": {"vibration_rms": {"mean": 1.0, "std": 0.1}},
-        "R3": {"vibration_rms": {"mean": 3.0, "std": 0.3}},
-        "bearing_temp_c": {"mean": 60.0, "std": 5.0},  # flat entry shared by every regime
+def test_regime_is_inferred_from_rpm_and_load_not_from_a_label() -> None:
+    """Training-format baseline: the window's regime comes from its rpm / load against the
+    centroids; a `regime` argument or row key is ignored (the edge never sees the
+    simulator's label)."""
+    base = {
+        s: {"mean": 0.0, "std": 1.0, "R1_mean": 0.0, "R1_std": 1.0, "R2_mean": 2.0, "R2_std": 0.5}
+        for s in ef.RAW_COLUMNS
     }
-    b1 = ef.select_baseline(per, "R1")
-    assert b1["vibration_rms"]["mean"] == 1.0 and b1["bearing_temp_c"]["mean"] == 60.0
-    b3 = ef.select_baseline(per, "R3")
-    assert b3["vibration_rms"]["mean"] == 3.0
-    b2 = ef.select_baseline(per, "R2")  # unknown regime -> only the flat entries
-    assert "vibration_rms" not in b2 and b2["bearing_temp_c"]["std"] == 5.0
-    assert ef.select_baseline(None, "R1") == {}
-    rows = [{c: 1.0 for c in ef.RAW_COLUMNS} | {"regime": "R3"} for _ in range(4)]
-    f = ef.compute_features_dict(rows, per)
-    assert f["vib_rms_resid"] == pytest.approx(1.0 - 3.0)
+    base["bearing_temp_c"] = {
+        "mean": 0.0, "std": 1.0, "R1_mean": 30.0, "R1_std": 1.0, "R2_mean": 50.0, "R2_std": 2.0
+    }
+    base[ef.CENTROIDS_KEY] = {
+        "R1_rpm": 600.0, "R1_load_pct": 10.0, "R2_rpm": 1480.0, "R2_load_pct": 55.0,
+        "rpm_scale": 400.0, "load_pct_scale": 30.0,
+    }
+    buf = np.zeros((4, 8))
+    buf[:, 0] = [1.0, 2.0, 3.0, 4.0]
+    buf[:, 3] = [50.0, 50.0, 52.0, 52.0]
+    buf[:, 4] = 40.0
+    buf[:, 6], buf[:, 7] = 1480.0, 55.0  # sits on the R2 centroid
+    f = dict(zip(ef.FEATURE_NAMES, ef.compute_features_np(buf, base, regime="R1"), strict=True))
+    assert f["vib_rms_z"] == pytest.approx((2.5 - 2.0) / 0.5)
+    assert f["bearing_temp_z"] == pytest.approx((51.0 - 50.0) / 2.0)
+    assert f["vib_rms_resid"] == pytest.approx(0.5)
+    # move the window onto the R1 centroid: the R1 baseline applies, whatever any label says
+    buf[:, 6], buf[:, 7] = 600.0, 10.0
+    g = dict(zip(ef.FEATURE_NAMES, ef.compute_features_np(buf, base, regime="R2"), strict=True))
+    assert g["vib_rms_z"] == pytest.approx(2.5) and g["bearing_temp_z"] == pytest.approx(21.0)
+    # a window straddling both regimes gets the mean of the per-row baselines
+    buf[:2, 6], buf[:2, 7] = 1480.0, 55.0
+    h = dict(zip(ef.FEATURE_NAMES, ef.compute_features_np(buf, base), strict=True))
+    assert h["vib_rms_resid"] == pytest.approx(2.5 - 1.0)
+    rows = [{c: 1.0 for c in ef.RAW_COLUMNS} | {"rpm": 1480.0, "load_pct": 55.0, "regime": "R1"}] * 4
+    assert ef.compute_features_dict(rows, base)["vib_rms_resid"] == pytest.approx(1.0 - 2.0)
+    assert ef.regime_ids(base) == ["R1", "R2"] and ef.regime_ids(None) == []
 
 
-def test_rolling_matches_pandas_reference(asset_df: pd.DataFrame, baseline: dict) -> None:
+def test_rolling_matches_single_window_and_pandas(asset_df: pd.DataFrame, baseline: dict) -> None:
     window = 12
-    ref = _pandas_reference(asset_df, window, baseline)
+    ref = _pandas_reference(asset_df, window)
     got = ef.rolling_features(asset_df[ef.RAW_COLUMNS].to_numpy(), window, baseline)
     assert got.shape == (len(asset_df) - window + 1, N_FEATURES)
-    np.testing.assert_allclose(got, ref.to_numpy(), rtol=1e-9, atol=1e-9)
+    np.testing.assert_allclose(got[:, :10], ref.to_numpy(), rtol=1e-9, atol=1e-9)
     # single-window path agrees with the vectorized path, row by row (spot check)
-    for i in (0, 17, len(got) - 1):
+    for i in (0, 17, 100, len(got) - 1):
         one = ef.compute_features_np(asset_df[ef.RAW_COLUMNS].to_numpy()[i : i + window], baseline)
         np.testing.assert_allclose(one, got[i], rtol=1e-9, atol=1e-9)
     assert ef.rolling_features(np.zeros((5, 8)), 12).shape == (0, N_FEATURES)
 
 
-def test_parity_with_ml_architect_reference(asset_df: pd.DataFrame, baseline: dict) -> None:
-    """Shared test with Agent B: edge.features must equal agents.ml_architect.features."""
-    try:
-        mod = importlib.import_module("agents.ml_architect.features")
-    except ModuleNotFoundError:
-        pytest.skip("agents/ml_architect/features.py not built yet")
-    names = getattr(mod, "FEATURE_NAMES", None)
-    ref_fn = getattr(mod, "compute_features_np", None)
-    if names is None or ref_fn is None:
-        pytest.skip("agents.ml_architect.features lacks FEATURE_NAMES/compute_features_np")
-    assert list(names) == ef.FEATURE_NAMES
+def test_parity_with_ml_architect_reference(fleet_df: pd.DataFrame, baseline: dict) -> None:
+    """edge.features must equal agents.ml_architect.features on the training-format baseline,
+    including windows that straddle a regime change on a held-out motor."""
+    from agents.ml_architect.features import FEATURE_NAMES, compute_features_np
+
+    assert list(FEATURE_NAMES) == ef.FEATURE_NAMES
     window = 12
-    buf = asset_df[ef.RAW_COLUMNS].to_numpy()[:window]
-    ours = ef.compute_features_np(buf, baseline)
-    try:
-        theirs = np.asarray(ref_fn(buf, baseline), dtype=float).reshape(-1)
-    except TypeError:
-        theirs = np.asarray(ref_fn(buf), dtype=float).reshape(-1)
-        ours = ef.compute_features_np(buf)
-    np.testing.assert_allclose(ours, theirs, rtol=1e-6, atol=1e-6)
+    for asset in ("MTR-042", "MTR-024", "MTR-001"):
+        g = fleet_df[fleet_df["asset_id"] == asset].reset_index(drop=True)
+        raw = g[ef.RAW_COLUMNS].to_numpy()
+        regime_change = np.flatnonzero(g["regime"].to_numpy()[1:] != g["regime"].to_numpy()[:-1])
+        starts = [0, len(raw) // 2, len(raw) - window] + [
+            int(i) - window // 2 for i in regime_change[:3] if i >= window
+        ]
+        for start in starts:
+            buf = raw[start : start + window]
+            ours = ef.compute_features_np(buf, baseline)
+            theirs = np.asarray(compute_features_np(buf, baseline), dtype=float).reshape(-1)
+            np.testing.assert_allclose(ours, theirs, rtol=1e-9, atol=1e-9)
+    # the rolling path agrees with the training pipeline on a whole held-out motor
+    from agents.ml_architect.features import build_feature_pipeline
+
+    fdf, _ = build_feature_pipeline(fleet_df, None, horizon_h=48.0, baseline=baseline)
+    g = fleet_df[fleet_df["asset_id"] == "MTR-024"].reset_index(drop=True)
+    edge_rows = ef.rolling_features(g[ef.RAW_COLUMNS].to_numpy(), window, baseline)
+    centre_rows = fdf[fdf["asset_id"] == "MTR-024"][ef.FEATURE_NAMES].to_numpy(dtype=float)
+    np.testing.assert_allclose(edge_rows, centre_rows, rtol=1e-9, atol=1e-9)
 
 
 # --------------------------------------------------------------------------------------
@@ -278,6 +305,42 @@ def test_onnx_inference_matches_sklearn(tmp_path: Path, zipmap: bool) -> None:
     assert all(0.0 <= p <= 1.0 for p in got)
     with pytest.raises(KeyError):
         predict_one(model, {"vib_rms_mean": 1.0})
+
+
+def test_edge_applies_exported_calibration(tmp_path: Path) -> None:
+    """The sidecar's calibration transform (sigmoid or isotonic) makes the edge reproduce the
+    centre's CalibratedClassifierCV probabilities; a legacy "none" string still loads."""
+    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.frozen import FrozenEstimator
+
+    from agents.validation.checks import apply_calibration, calibration_transform
+
+    rf, X = _train_rf(seed=4)
+    rng = np.random.default_rng(9)
+    X_cal = rng.normal(size=(250, N_FEATURES)).astype(np.float32)
+    y_cal = (X_cal[:, 0] + X_cal[:, 10] + 0.3 * rng.normal(size=250) > 0).astype(int)
+    for method in ("sigmoid", "isotonic"):
+        cal = CalibratedClassifierCV(FrozenEstimator(rf), method=method).fit(X_cal, y_cal)
+        transform = calibration_transform(cal)
+        assert transform["method"] == method
+        _export(rf, tmp_path / f"m_{method}.onnx", method, False, calibration=transform)
+        store = ModelStore(tmp_path)
+        store.refresh()
+        model = store.current
+        assert model is not None and model.calibration["method"] == method
+        expected = cal.predict_proba(X[:30])[:, 1]
+        got = np.array(
+            [predict_one(model, dict(zip(ef.FEATURE_NAMES, X[i].tolist(), strict=True))) for i in range(30)]
+        )
+        np.testing.assert_allclose(got, expected, atol=1e-4)
+        # and the two reference implementations agree with each other
+        raw = rf.predict_proba(X[:30])[:, 1]
+        np.testing.assert_allclose(apply_calibration(raw, transform), expected, atol=1e-9)
+        (tmp_path / f"m_{method}.onnx").unlink()
+        (tmp_path / f"m_{method}.json").unlink()
+    _export(rf, tmp_path / "legacy.onnx", "legacy", False, calibration="none")
+    store = ModelStore(tmp_path)
+    assert store.refresh() is True and store.current.calibration == {"method": "none"}
 
 
 def test_newest_model_wins_and_broken_sidecar_is_skipped(tmp_path: Path) -> None:

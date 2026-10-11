@@ -46,7 +46,7 @@ and use its language verbatim whenever drafting submission text; don't invent ne
 | Storage | PostgreSQL + TimescaleDB extension | Telemetry hypertable, assets, decision contracts, registry metadata |
 | MLOps | MLflow | Experiment tracking + registry, artifacts on a mounted Docker volume — **not MinIO** |
 | Drift detection | Hand-rolled PSI | ~30 lines, not the Evidently library — one fewer dependency |
-| Edge | ONNX Runtime in a second lightweight FastAPI container | Subscribes to MQTT directly, independent of the control plane |
+| Edge | ONNX Runtime in a second lightweight FastAPI container | Subscribes to MQTT directly, independent of the control plane. Infers the regime from rpm/load with the sidecar baseline and applies the sidecar calibration transform, so it emits the same calibrated probability as the centre |
 | Packaging | Docker Compose | **Not Kubernetes** — one command (`docker compose up`) must always work |
 | CI | GitHub Actions | Lint + unit tests on push |
 | Tests | pytest (logic) + 1-2 Playwright smoke tests | Not a full e2e suite |
@@ -99,10 +99,10 @@ graph, not services; the five web screens are Fleet, Asset 360, AutoML Studio, M
 | # | Agent | Key functions | Produces → consumed by |
 |---|---|---|---|
 | 04 | Data Reliability | `profile_dataset()`, `detect_missingness()`, `detect_regime()`, `validate_schema()` | Data Quality Contract → 05 |
-| 05 | ML Architect | `infer_task()`, `build_feature_pipeline()`, `launch_trial()`, `compare_models()` | Candidate models + Industrial Model Score (MLflow) → 06 |
-| 06 | Validation | `detect_leakage()`, `run_backtest()`, `calibrate_probabilities()`, `compute_lead_time()`, `estimate_rul_interval()` | Validation Report + Champion → 07, 08 |
+| 05 | ML Architect | `make_asset_split()` (seeded train/validation/calibration/test, fixed first), `infer_task()`, `build_feature_pipeline()` (baseline fitted on train assets only; right-censors the last horizon), `launch_trial()` (fit on train, Optuna on validation), `compare_models()` | Candidate models + Industrial Model Score (MLflow), with the `AssetSplit` → 06 |
+| 06 | Validation | `detect_leakage()`, `calibrate_probabilities()` (calibration assets; exports the transform), `compute_lead_time()`, `estimate_rul_interval()`, `validate()` (champion on validation assets, final metrics on untouched test assets, gate checklist) | Validation Report (split, gate, test metrics, thresholds, parity) + Champion → 07, 08 |
 | 07 | Reliability | `explain()`, `retrieve_manual_context()`, `calculate_failure_cost()`, `find_maintenance_window()`, `run_whatif()`, `create_decision_contract()` | Decision Contract + recommendation → 09 |
-| 08 | MLOps | `register_model()`, `compare_champion()`, `promote()`, `detect_drift()`, `deploy_edge()` | Promotion request → 09; on drift, re-triggers 05 |
+| 08 | MLOps | `check_edge_parity()` (ONNX + sidecar vs calibrated centre on held-out vectors; failing parity blocks promotion), `register_model()`, `compare_champion()`, `promote()` (refuses failed validation or parity), `detect_drift()`, `deploy_edge()` (tree → ONNX, calibration + baseline → sidecar) | Promotion request → 09; on drift, re-triggers 05 |
 | 09 | Human Approval Gate | `present_evidence()`, `record_decision()` | Two separate decisions, never substitutable: a **maintenance** approval (contract) → logged Decision Contract handed to the plant as a work order, nothing else; a **promotion** approval (ModelOps, `decide_promotion_db()`) → `promote()` + edge deploy. A failed validation gets no promotion request and `promote()` refuses it |
 
 `promote()` models the lifecycle (`candidate → validated → shadow → production`) as a **database

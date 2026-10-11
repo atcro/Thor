@@ -33,6 +33,7 @@ from apps.api.schemas import (
     EdgeDeployment,
     FeatureSpec,
     ModelStage,
+    ParityReport,
     PromotionRequest,
     RegisteredModel,
     ValidationReport,
@@ -149,6 +150,8 @@ def _registry_payload(
         "champion_id": validation.champion_id,
         "validation_passed": validation.passed,
         "validation_failures": validation_failures(validation),
+        "parity_passed": validation.parity.passed if validation.parity is not None else None,
+        "parity": db.dump_model(validation.parity) if validation.parity is not None else None,
         "metrics": {
             "ims_total": ims.total,
             "recall": ims.recall,
@@ -184,18 +187,24 @@ def _assert_promotable(row: Any) -> None:
     """Refuse promotion of a registry row whose validation did not pass.
 
     Input: a `model_registry` row mapping. Raises `PromotionBlocked` (a ValueError) naming the
-    recorded failure reasons when `payload.validation_passed` is False. Rows registered before
-    the flag existed (no `validation_passed` key) are treated as not validated and refused too:
+    recorded failure reasons when `payload.validation_passed` is False or when the recorded
+    edge parity check failed (`payload.parity_passed` is False). Rows registered before the
+    flag existed (no `validation_passed` key) are treated as not validated and refused too:
     a model with no recorded validation must never reach production.
     """
     payload = dict(row.get("payload") or {})
-    if payload.get("validation_passed") is True:
-        return
-    reasons = payload.get("validation_failures") or ["no validation result recorded"]
-    raise PromotionBlocked(
-        f"model {row['name']}:{row['version']} failed validation; promotion refused "
-        f"({'; '.join(str(r) for r in reasons)})"
-    )
+    if payload.get("validation_passed") is not True:
+        reasons = payload.get("validation_failures") or ["no validation result recorded"]
+        raise PromotionBlocked(
+            f"model {row['name']}:{row['version']} failed validation; promotion refused "
+            f"({'; '.join(str(r) for r in reasons)})"
+        )
+    if payload.get("parity_passed") is False:
+        parity = payload.get("parity") or {}
+        raise PromotionBlocked(
+            f"model {row['name']}:{row['version']} failed the edge parity check; promotion "
+            f"refused ({'; '.join(str(n) for n in parity.get('notes', []))})"
+        )
 
 
 def _fetch_row(conn: Any, name: str, version: str) -> Any:
@@ -596,9 +605,17 @@ def reject_promotion(
 # --------------------------------------------------------------------------------------
 
 
-def _unwrap_estimator(model: Any) -> tuple[Any, str]:
-    """Return (base tree estimator, calibration note). CalibratedClassifierCV is unwrapped
-    to its first fold's base estimator; calibration is NOT exported to ONNX -> "none"."""
+def _unwrap_estimator(model: Any) -> tuple[Any, dict[str, Any]]:
+    """Return (base tree estimator, calibration transform).
+
+    A `CalibratedClassifierCV` over a prefit (`FrozenEstimator`) tree model is split into the
+    tree (exported to ONNX) and its calibrator (exported as an explicit transform in the
+    sidecar, see `agents.validation.checks.calibration_transform`), so the edge reproduces the
+    centre's calibrated probability. Raises ValueError for a multi-fold calibrator.
+    """
+    from agents.validation.checks import calibration_transform
+
+    transform = calibration_transform(model)
     current = model
     for _ in range(8):
         calibrated = getattr(current, "calibrated_classifiers_", None)
@@ -615,11 +632,11 @@ def _unwrap_estimator(model: Any) -> tuple[Any, str]:
             and hasattr(base, "predict_proba")
             and not hasattr(current, "estimators_")
         ):
-            # generic wrapper exposing .estimator (e.g. a custom calibration shim)
+            # generic wrapper exposing .estimator (e.g. the identity calibration shim)
             current = base
             continue
         break
-    return current, "none"
+    return current, transform
 
 
 def _register_boost_converters() -> None:
@@ -709,6 +726,140 @@ def _verify_onnx(onnx_path: Path, n_features: int) -> np.ndarray:
     return probs
 
 
+def export_bundle(
+    artifact_path: Path,
+    features: list[str],
+    out_dir: Path,
+    stem: str,
+    window_rows: int = 12,
+    baseline: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> tuple[Path, Path, dict[str, Any]]:
+    """Write `<stem>.onnx` + `<stem>.json` for the edge from a joblib champion.
+
+    Inputs: the joblib artifact (tree model, optionally calibrated with a prefit
+    `CalibratedClassifierCV`), the ordered feature list, the target directory, file stem,
+    the feature window length, the regime baseline (training format) and extra sidecar keys.
+    Output: (onnx_path, sidecar_path, sidecar dict). The sidecar carries the calibration as an
+    explicit transform and the baseline, so `edge.features` + `edge.inference` reproduce the
+    centre's calibrated probability. Verified with onnxruntime on a zeros row.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fitted = joblib.load(artifact_path)
+    estimator, calibration = _unwrap_estimator(fitted)
+    onx = to_onnx(estimator, len(features))
+    onnx_path = out_dir / f"{stem}.onnx"
+    sidecar_path = out_dir / f"{stem}.json"
+    onnx_path.write_bytes(onx.SerializeToString())
+    _verify_onnx(onnx_path, len(features))
+    sidecar: dict[str, Any] = {
+        "features": list(features),
+        "window_rows": int(window_rows),
+        "calibration": calibration,
+        "family": _family_of(estimator),
+    }
+    if baseline is not None:
+        sidecar["baseline"] = baseline
+    if extra:
+        sidecar.update(extra)
+    sidecar_path.write_text(json.dumps(sidecar, indent=2, default=str), encoding="utf-8")
+    return onnx_path, sidecar_path, sidecar
+
+
+def check_edge_parity(
+    artifact_path: Path,
+    features: list[str],
+    X: Any,
+    window_rows: int = 12,
+    baseline: dict[str, Any] | None = None,
+    raw_windows: list[np.ndarray] | None = None,
+    tolerance_probability: float = 1e-3,
+    tolerance_features: float = 1e-6,
+    workdir: Path | None = None,
+) -> ParityReport:
+    """Prove the edge agrees with the centre before anything is promoted.
+
+    Inputs: the calibrated joblib champion, its feature order, real held-out feature vectors
+    `X` (DataFrame or array, (n, len(features))), the window length, the regime baseline and
+    optional raw sensor windows ((window_rows, 8) arrays in SENSOR_COLUMNS order) from
+    held-out assets. The model is exported exactly as `deploy_edge` would (ONNX + sidecar),
+    loaded through `edge.inference` and scored; the centre scores the same vectors with the
+    joblib model. Raw windows go through `edge.features.compute_features_np` and
+    `agents.ml_architect.features.compute_features_np` with the same baseline.
+    Output: `ParityReport` with the max absolute probability difference (must be <=
+    `tolerance_probability`, default 1e-3: float32 ONNX trees vs float64 sklearn) and the max
+    absolute feature difference (<= `tolerance_features`). Any exception during export or
+    scoring yields passed=False with the error in `notes` -- never a silent pass.
+    """
+    import tempfile
+
+    notes: list[str] = []
+    n_rows = int(len(X))
+    try:
+        tmp_ctx = tempfile.TemporaryDirectory(prefix="thor-parity-") if workdir is None else None
+        out_dir = Path(tmp_ctx.name) if tmp_ctx is not None else Path(workdir)
+        try:
+            onnx_path, sidecar_path, sidecar = export_bundle(
+                Path(artifact_path), features, out_dir, "parity", window_rows, baseline
+            )
+            from edge.inference import load_model, predict_proba
+
+            edge_model = load_model(onnx_path, sidecar_path)
+            Xa = np.asarray(X[list(features)] if hasattr(X, "columns") else X, dtype=float)
+            p_edge = predict_proba(edge_model, Xa)
+        finally:
+            if tmp_ctx is not None:
+                tmp_ctx.cleanup()
+        fitted = joblib.load(artifact_path)
+        proba = np.asarray(fitted.predict_proba(X[list(features)] if hasattr(X, "columns") else X))
+        p_centre = proba[:, 1] if proba.ndim == 2 else proba.reshape(-1)
+        max_p = float(np.max(np.abs(p_edge - p_centre))) if n_rows else 0.0
+        calibration_method = str(sidecar.get("calibration", {}).get("method", "none"))
+        notes.append(
+            f"{n_rows} held-out vectors: edge vs centre max |dp| = {max_p:.2e} "
+            f"(calibration {calibration_method})"
+        )
+        max_f: float | None = None
+        n_windows = 0
+        if raw_windows:
+            from agents.ml_architect.features import compute_features_np as centre_features
+            from edge.features import compute_features_np as edge_features
+
+            diffs = []
+            for buf in raw_windows:
+                a = centre_features(np.asarray(buf, dtype=float), baseline or {})
+                b = edge_features(np.asarray(buf, dtype=float), baseline or {})
+                scale = np.maximum(1.0, np.abs(a))
+                diffs.append(float(np.max(np.abs(a - b) / scale)))
+            n_windows = len(diffs)
+            max_f = max(diffs) if diffs else 0.0
+            notes.append(f"{n_windows} raw windows: edge vs centre max relative |df| = {max_f:.2e}")
+        passed = max_p <= tolerance_probability and (max_f is None or max_f <= tolerance_features)
+        if not passed:
+            notes.append("PARITY FAILED: the edge would not reproduce the centre's probability")
+        return ParityReport(
+            passed=passed,
+            n_rows=n_rows,
+            max_abs_diff_probability=max_p,
+            tolerance_probability=tolerance_probability,
+            n_windows=n_windows,
+            max_abs_diff_features=max_f,
+            tolerance_features=tolerance_features,
+            calibration_method=calibration_method,
+            notes=notes,
+        )
+    except Exception as exc:  # noqa: BLE001 - a broken export is a failed parity, never a pass
+        log.warning("edge parity check failed: %s", exc)
+        return ParityReport(
+            passed=False,
+            n_rows=n_rows,
+            max_abs_diff_probability=float("inf"),
+            tolerance_probability=tolerance_probability,
+            notes=notes + [f"parity check error: {type(exc).__name__}: {exc}"],
+        )
+
+
 def deploy_edge(
     model: RegisteredModel,
     artifact_path: Path,
@@ -722,39 +873,31 @@ def deploy_edge(
     """Export the registered model to ONNX + JSON sidecar in `models_dir` for the edge container.
 
     Inputs: the `RegisteredModel`, its joblib `artifact_path` (RF / XGB / LGBM, optionally
-    wrapped in `CalibratedClassifierCV` -- unwrapped, calibration recorded as "none"), the
-    ordered `features` list, target `models_dir`, the feature `window_rows`, an optional
-    feature `baseline` dict and `extra` keys merged into the sidecar. Writes
-    `<name>_<version>.onnx` and `.json` = {model_name, version, features, window_rows,
-    calibration, family, deployed_at, [baseline], ...extra}. Verifies with onnxruntime and
-    stores `onnx_path` on the registry row. Output: `EdgeDeployment`.
+    wrapped in a prefit `CalibratedClassifierCV` -- the tree goes to ONNX and the calibration
+    to the sidecar as an explicit transform), the ordered `features` list, target
+    `models_dir`, the feature `window_rows`, the regime `baseline` (training format) and
+    `extra` keys merged into the sidecar. Writes `<name>_<version>.onnx` and `.json` =
+    {model_name, version, features, window_rows, calibration, family, deployed_at,
+    [baseline], ...extra}. Verifies with onnxruntime and stores `onnx_path` on the registry
+    row. Output: `EdgeDeployment`.
     """
     engine = engine or db.get_engine()
-    models_dir = Path(models_dir)
-    models_dir.mkdir(parents=True, exist_ok=True)
-    fitted = joblib.load(artifact_path)
-    estimator, calibration = _unwrap_estimator(fitted)
-    onx = to_onnx(estimator, len(features))
-    stem = f"{model.name}_{model.version}"
-    onnx_path = models_dir / f"{stem}.onnx"
-    sidecar_path = models_dir / f"{stem}.json"
-    onnx_path.write_bytes(onx.SerializeToString())
-    _verify_onnx(onnx_path, len(features))
     deployed_at = db.now_utc()
-    sidecar: dict[str, Any] = {
-        "model_name": model.name,
-        "version": model.version,
-        "features": list(features),
-        "window_rows": int(window_rows),
-        "calibration": calibration,
-        "family": _family_of(estimator),
-        "deployed_at": deployed_at.isoformat(),
-    }
-    if baseline is not None:
-        sidecar["baseline"] = baseline
-    if extra:
-        sidecar.update(extra)
-    sidecar_path.write_text(json.dumps(sidecar, indent=2, default=str), encoding="utf-8")
+    stem = f"{model.name}_{model.version}"
+    onnx_path, _sidecar_path, sidecar = export_bundle(
+        Path(artifact_path),
+        features,
+        Path(models_dir),
+        stem,
+        window_rows,
+        baseline,
+        {
+            "model_name": model.name,
+            "version": model.version,
+            "deployed_at": deployed_at.isoformat(),
+            **(extra or {}),
+        },
+    )
     with engine.begin() as conn:
         conn.execute(
             update(db.model_registry)
@@ -764,7 +907,11 @@ def deploy_edge(
             .values(onnx_path=str(onnx_path))
         )
     log.info(
-        "deployed %s to %s (%s, calibration=%s)", stem, onnx_path, sidecar["family"], calibration
+        "deployed %s to %s (%s, calibration=%s)",
+        stem,
+        onnx_path,
+        sidecar["family"],
+        sidecar["calibration"].get("method"),
     )
     return EdgeDeployment(
         model_name=model.name,

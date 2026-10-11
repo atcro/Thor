@@ -76,7 +76,9 @@ __all__ = [
     "EARLY_WARNING_SUSTAINED_ROWS",
     "EARLY_WARNING_THRESHOLD",
     "IMS_WEIGHTS",
+    "apply_calibration",
     "calibrate_probabilities",
+    "calibration_transform",
     "champion_artifact_path",
     "compute_lead_time",
     "detect_leakage",
@@ -356,6 +358,7 @@ def calibrate_probabilities(
             brier_before=_nan_to(brier_before, 0.25),
             brier_after=_nan_to(brier_before, 0.25),
             reliability_bins=_reliability_bins(y, p_before) if len(y) else [],
+            transform={"method": "none"},
         )
     method = "isotonic" if len(y) >= ISOTONIC_MIN_ROWS else "sigmoid"
     calibrated = CalibratedClassifierCV(FrozenEstimator(model), method=method)
@@ -366,7 +369,61 @@ def calibrate_probabilities(
         brier_before=brier_before,
         brier_after=float(brier_score_loss(y, p_after)),
         reliability_bins=_reliability_bins(y, p_after),
+        transform=calibration_transform(calibrated),
     )
+
+
+def calibration_transform(model: Any) -> dict[str, Any]:
+    """Export a fitted calibrator as an explicit, serialisable transform.
+
+    Input: the (possibly) calibrated champion. Output: {"method": "sigmoid", "a", "b"} for
+    Platt scaling (p_cal = 1 / (1 + exp(a * p + b))), {"method": "isotonic", "x": [...],
+    "y": [...]} for isotonic regression (linear interpolation of p on the fitted thresholds,
+    p clipped to [x[0], x[-1]] first), or {"method": "none"} when the model is not a
+    single-estimator CalibratedClassifierCV (an uncalibrated tree model, or the identity
+    wrapper). Raises ValueError for a cross-validated calibrator with several folds: that
+    averages several base models and cannot be exported as one ONNX graph.
+    """
+    calibrated = getattr(model, "calibrated_classifiers_", None)
+    if not calibrated:
+        return {"method": "none"}
+    if len(calibrated) != 1:
+        raise ValueError(
+            f"calibration with {len(calibrated)} folds cannot be exported; "
+            "calibrate a prefit (FrozenEstimator) model instead"
+        )
+    cal = calibrated[0].calibrators[0]
+    if hasattr(cal, "a_") and hasattr(cal, "b_"):
+        return {"method": "sigmoid", "a": float(cal.a_), "b": float(cal.b_)}
+    if hasattr(cal, "X_thresholds_") and hasattr(cal, "y_thresholds_"):
+        x = np.asarray(cal.X_thresholds_, dtype=float)
+        y = np.asarray(cal.y_thresholds_, dtype=float)
+        return {
+            "method": "isotonic",
+            "x": [float(v) for v in x],
+            "y": [float(v) for v in y],
+            "x_min": float(getattr(cal, "X_min_", x[0])),
+            "x_max": float(getattr(cal, "X_max_", x[-1])),
+        }
+    raise ValueError(f"unsupported calibrator {type(cal).__name__}")
+
+
+def apply_calibration(p_raw: np.ndarray, transform: dict[str, Any] | None) -> np.ndarray:
+    """Apply a `calibration_transform` dict to raw P(class 1) values (reference implementation;
+    `edge.inference.apply_calibration` is its numpy-only twin)."""
+    p = np.asarray(p_raw, dtype=float)
+    method = (transform or {}).get("method", "none")
+    if method == "sigmoid":
+        return 1.0 / (1.0 + np.exp(float(transform["a"]) * p + float(transform["b"])))
+    if method == "isotonic":
+        x = np.asarray(transform["x"], dtype=float)
+        y = np.asarray(transform["y"], dtype=float)
+        if len(x) == 1:
+            return np.full(p.shape, float(y[0]))
+        lo = float(transform.get("x_min", x[0]))
+        hi = float(transform.get("x_max", x[-1]))
+        return np.interp(np.clip(p, lo, hi), x, y)
+    return p
 
 
 def compute_lead_time(

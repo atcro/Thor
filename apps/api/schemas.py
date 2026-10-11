@@ -318,6 +318,32 @@ class CalibrationReport(BaseModel):
     reliability_bins: list[tuple[float, float, int]] = Field(
         default_factory=list, description="(mean_predicted, fraction_positive, count)"
     )
+    #: The calibration as an explicit, serialisable transform of the base model's P(class 1):
+    #: {"method": "sigmoid", "a", "b"} -> 1 / (1 + exp(a * p + b)); {"method": "isotonic",
+    #: "x": [...], "y": [...]} -> linear interpolation clipped to [x[0], x[-1]];
+    #: {"method": "none"}. Shipped in the edge sidecar and applied there.
+    transform: dict[str, Any] | None = None
+
+
+class ParityReport(BaseModel):
+    """Edge-vs-centre agreement, checked before a model can be promoted (08).
+
+    The central path is the calibrated joblib champion; the edge path is the exported ONNX
+    model + sidecar (baseline, calibration transform) run through `edge.inference` and
+    `edge.features`, exactly as the edge container would.
+    """
+
+    passed: bool
+    #: Calibrated probability agreement on real held-out feature vectors.
+    n_rows: int
+    max_abs_diff_probability: float
+    tolerance_probability: float
+    #: Feature agreement on raw windows (edge.features vs agents.ml_architect.features).
+    n_windows: int = 0
+    max_abs_diff_features: float | None = None
+    tolerance_features: float = 1e-6
+    calibration_method: str = "none"
+    notes: list[str] = Field(default_factory=list)
 
 
 class GateCheck(BaseModel):
@@ -371,6 +397,8 @@ class ValidationReport(BaseModel):
     gate: list[GateCheck] = Field(default_factory=list)
     #: Final metrics of the calibrated champion on the untouched test assets.
     test_metrics: dict[str, float] = Field(default_factory=dict)
+    #: Edge-vs-centre parity on held-out vectors; failing parity blocks promotion.
+    parity: ParityReport | None = None
 
 
 # --------------------------------------------------------------------------------------

@@ -9,9 +9,15 @@ A deployed model is a pair of files in MODELS_DIR written by `agents/mlops/lifec
           "version": "v12345",
           "features": ["vib_rms_mean", ...],        # subset/order of edge.features.FEATURE_NAMES
           "window_rows": 12,
-          "calibration": "none" | "isotonic" | "sigmoid",   # optional, informational
-          "baseline": {...}                          # optional, see edge.features
+          "calibration": {"method": "none"}
+                       | {"method": "sigmoid", "a": .., "b": ..}
+                       | {"method": "isotonic", "x": [..], "y": [..], "x_min": .., "x_max": ..},
+          "baseline": {...}                          # training format, see edge.features
         }
+
+The ONNX graph is the UNCALIBRATED tree model; the sidecar's calibration transform is applied
+here (`apply_calibration`) so the edge emits the same calibrated probability the control plane
+does. A legacy string value ("none") is accepted and means no calibration.
 
 The newest pair (by .onnx mtime) wins. Probability extraction handles both skl2onnx's
 `output_probability` (sequence of {class: prob} maps, ZipMap) and plain (n, 2) tensors.
@@ -46,7 +52,7 @@ class LoadedModel:
     session: Any
     input_name: str
     input_dtype: Any
-    calibration: str = "none"
+    calibration: dict[str, Any] = field(default_factory=lambda: {"method": "none"})
     baseline: dict[str, Any] = field(default_factory=dict)
     loaded_at: float = field(default_factory=time.time)
     mtime: float = 0.0
@@ -54,6 +60,57 @@ class LoadedModel:
     @property
     def key(self) -> tuple[str, float]:
         return (str(self.onnx_path), self.mtime)
+
+
+def parse_calibration(value: Any) -> dict[str, Any]:
+    """Normalise the sidecar's calibration entry to a transform dict.
+
+    Accepts the dict form written by `agents.mlops.lifecycle.deploy_edge`, a legacy string
+    ("none" / "sigmoid" / "isotonic" -- only "none" is applicable without parameters) or
+    None. Output: {"method": ...} with the parameters needed by `apply_calibration`.
+    """
+    if isinstance(value, dict):
+        method = str(value.get("method", "none"))
+        if method == "sigmoid":
+            return {"method": "sigmoid", "a": float(value["a"]), "b": float(value["b"])}
+        if method == "isotonic":
+            x = [float(v) for v in value["x"]]
+            y = [float(v) for v in value["y"]]
+            if len(x) != len(y) or not x:
+                raise ValueError("isotonic calibration needs equal, non-empty x and y")
+            return {
+                "method": "isotonic",
+                "x": x,
+                "y": y,
+                "x_min": float(value.get("x_min", x[0])),
+                "x_max": float(value.get("x_max", x[-1])),
+            }
+        return {"method": "none"}
+    if value in (None, "", "none"):
+        return {"method": "none"}
+    raise ValueError(f"calibration {value!r} has no parameters; expected a transform dict")
+
+
+def apply_calibration(p_raw: np.ndarray, transform: dict[str, Any] | None) -> np.ndarray:
+    """Apply the sidecar calibration transform to raw P(class 1) (numpy only).
+
+    sigmoid: 1 / (1 + exp(a * p + b)). isotonic: clip p to [x_min, x_max], then linear
+    interpolation on the fitted (x, y) thresholds. none: identity. Mirrors
+    `agents.validation.checks.apply_calibration` exactly.
+    """
+    p = np.asarray(p_raw, dtype=float)
+    method = (transform or {}).get("method", "none")
+    if method == "sigmoid":
+        return 1.0 / (1.0 + np.exp(float(transform["a"]) * p + float(transform["b"])))
+    if method == "isotonic":
+        x = np.asarray(transform["x"], dtype=float)
+        y = np.asarray(transform["y"], dtype=float)
+        if len(x) == 1:
+            return np.full(p.shape, float(y[0]))
+        lo = float(transform.get("x_min", x[0]))
+        hi = float(transform.get("x_max", x[-1]))
+        return np.interp(np.clip(p, lo, hi), x, y)
+    return p
 
 
 def find_newest_model(models_dir: Path) -> tuple[Path, Path] | None:
@@ -83,6 +140,7 @@ def load_model(onnx_path: Path, sidecar_path: Path) -> LoadedModel:
     window_rows = int(meta.get("window_rows", 12))
     if window_rows < 1:
         raise ValueError("window_rows must be >= 1")
+    calibration = parse_calibration(meta.get("calibration"))
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = 1
     session = ort.InferenceSession(
@@ -100,7 +158,7 @@ def load_model(onnx_path: Path, sidecar_path: Path) -> LoadedModel:
         session=session,
         input_name=inp.name,
         input_dtype=dtype,
-        calibration=str(meta.get("calibration", "none")),
+        calibration=calibration,
         baseline=dict(meta.get("baseline") or {}),
         mtime=Path(onnx_path).stat().st_mtime,
     )
@@ -146,12 +204,13 @@ def extract_probability(outputs: list[Any], output_names: list[str]) -> np.ndarr
 
 
 def predict_proba(model: LoadedModel, X: np.ndarray) -> np.ndarray:
-    """Run the session on X of shape (n, len(model.features)). Output: (n,) probabilities in [0, 1]."""
+    """Run the session on X of shape (n, len(model.features)) and apply the sidecar
+    calibration. Output: (n,) calibrated probabilities in [0, 1]."""
     X = np.asarray(X, dtype=model.input_dtype).reshape(-1, len(model.features))
     outputs = model.session.run(None, {model.input_name: X})
     names = [o.name for o in model.session.get_outputs()]
-    p = extract_probability(outputs, names)
-    return np.clip(p, 0.0, 1.0)
+    p = np.clip(extract_probability(outputs, names), 0.0, 1.0)
+    return np.clip(apply_calibration(p, model.calibration), 0.0, 1.0)
 
 
 def predict_one(model: LoadedModel, features: dict[str, float]) -> float:
@@ -195,11 +254,12 @@ class ModelStore:
         self.last_error = None
         self._last_pair_key = key
         log.info(
-            "loaded %s %s from %s (features=%d window=%d)",
+            "loaded %s %s from %s (features=%d window=%d calibration=%s)",
             model.model_name,
             model.version,
             onnx_path.name,
             len(model.features),
             model.window_rows,
+            model.calibration.get("method"),
         )
         return True

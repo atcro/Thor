@@ -52,12 +52,14 @@ from apps.api.schemas import (
     EvidenceBundle,
     Explanation,
     FeatureSpec,
+    GateCheck,
     GraphState,
     LeadTimeReport,
     MaintenanceWindow,
     ManualPassage,
     ModelStage,
     ObservedTelemetryRow,
+    ParityReport,
     PipelineStage,
     PromotionRequest,
     RegimeReport,
@@ -701,6 +703,50 @@ def tool_create_decision_contract(
     )
 
 
+def tool_check_parity(
+    artifact_path: Path,
+    spec: FeatureSpec,
+    x_holdout: pd.DataFrame,
+    raw_windows: list[Any],
+) -> ParityReport:
+    """08: `agents.mlops.lifecycle.check_edge_parity(...)` on held-out vectors and raw windows."""
+    from agents.mlops.lifecycle import check_edge_parity
+
+    return check_edge_parity(
+        artifact_path,
+        list(spec.features),
+        x_holdout,
+        window_rows=spec.window_rows,
+        baseline=spec.baseline,
+        raw_windows=raw_windows,
+    )
+
+
+def _parity_inputs(
+    df: pd.DataFrame, features_df: pd.DataFrame, spec: FeatureSpec, assets: list[str], n_rows: int = 200
+) -> tuple[pd.DataFrame, list[Any]]:
+    """Real held-out material for the parity check: up to `n_rows` feature vectors (spread
+    evenly over the assets' rows) and three raw sensor windows per asset (start, middle, end).
+    """
+    from apps.api.schemas import SENSOR_COLUMNS
+
+    sub = features_df[features_df["asset_id"].isin(assets)] if assets else features_df
+    if sub.empty:
+        sub = features_df
+    step = max(1, len(sub) // max(1, n_rows))
+    x = sub.iloc[::step][list(spec.features)].head(n_rows).astype(float)
+    windows: list[Any] = []
+    w = int(spec.window_rows)
+    for asset in assets:
+        g = df[df["asset_id"] == asset].sort_values("ts")
+        if len(g) < w:
+            continue
+        raw = g[list(SENSOR_COLUMNS)].astype(float).ffill().bfill().fillna(0.0).to_numpy()
+        for end in (w, len(raw) // 2, len(raw)):
+            windows.append(raw[end - w : end])
+    return x, windows
+
+
 def tool_register_model(
     validation: ValidationReport,
     artifact_path: Path,
@@ -960,19 +1006,23 @@ class RunState(TypedDict, total=False):
     next: str
 
 
-def _champion_artifact(gs: GraphState) -> str | None:
+def _champion_artifact_from(v: ValidationReport, cs: CandidateSet | None) -> str | None:
     """Champion artifact path: `notes[i] == 'champion_artifact=<path>'`, else candidate path."""
-    v = gs.validation
-    if v is None:
-        return None
     for note in v.notes:
         if note.startswith("champion_artifact="):
             return note.split("=", 1)[1].strip()
-    if gs.candidates is not None:
-        for c in gs.candidates.candidates:
+    if cs is not None:
+        for c in cs.candidates:
             if c.candidate_id == v.champion_id and c.artifact_path:
                 return c.artifact_path
     return None
+
+
+def _champion_artifact(gs: GraphState) -> str | None:
+    """Champion artifact path of the run's validation report (None before validation)."""
+    if gs.validation is None:
+        return None
+    return _champion_artifact_from(gs.validation, gs.candidates)
 
 
 def _telemetry(h: RunHandle, engine: Engine | None) -> pd.DataFrame:
@@ -1108,7 +1158,44 @@ def _validate(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
         raise RuntimeError("validate called without candidates")
     features_df, _ = _features_for(h, gs, engine)
     v = tool_validate(gs.candidates, features_df, gs.run_id)
+    # Edge-vs-centre parity on the untouched test assets: the exported ONNX + sidecar must
+    # reproduce the calibrated central probability, or the model cannot be promoted.
+    artifact = _champion_artifact_from(v, gs.candidates)
+    test_assets = list(v.split.test) if v.split is not None else []
+    if artifact is None:
+        parity = ParityReport(
+            passed=False,
+            n_rows=0,
+            max_abs_diff_probability=float("inf"),
+            tolerance_probability=1e-3,
+            notes=["no champion artifact to export"],
+        )
+    else:
+        x_hold, windows = _parity_inputs(
+            _telemetry(h, engine), features_df, gs.candidates.features, test_assets
+        )
+        parity = tool_check_parity(Path(artifact), gs.candidates.features, x_hold, windows)
+    v.parity = parity
+    v.gate.append(
+        GateCheck(
+            name="edge_parity",
+            passed=parity.passed,
+            value=parity.max_abs_diff_probability,
+            threshold=parity.tolerance_probability,
+            detail="; ".join(parity.notes),
+        )
+    )
+    v.passed = bool(v.passed and parity.passed)
     gs.validation = v
+    append_event(
+        gs,
+        gs.stage,
+        f"edge parity {'passed' if parity.passed else 'FAILED'}: "
+        f"max |dp| {parity.max_abs_diff_probability:.2e} over {parity.n_rows} held-out vectors, "
+        f"{parity.n_windows} raw windows",
+        tool="check_edge_parity",
+        payload={"passed": parity.passed, "notes": parity.notes},
+    )
     append_event(
         gs,
         gs.stage,

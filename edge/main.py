@@ -5,7 +5,8 @@ httpx / pydantic. Never imports from `apps/` or `agents/`.
 
 * Watches MODELS_DIR (default ./models) for `*.onnx` + `*.json` sidecars; loads the newest.
 * Subscribes to `telemetry/#`, keeps a per-asset rolling buffer of raw rows, computes the
-  canonical feature set with `edge.features`, runs onnxruntime and publishes
+  canonical feature set with `edge.features` (regime inferred from rpm / load against the
+  sidecar baseline), runs onnxruntime, applies the sidecar calibration and publishes
   `predictions/{asset_id}` = {asset_id, ts, failure_probability, model_version}; the same
   payloads are POSTed best-effort to `{CONTROL_PLANE_URL}/predictions` in batches (a JSON
   array of up to EDGE_POST_BATCH_ROWS rows, at most every EDGE_POST_INTERVAL_S seconds).
@@ -124,7 +125,8 @@ class EdgeState:
             log.debug("dropping malformed telemetry row: %s", exc)
             return None
         row["ts"] = payload.get("ts")
-        row["regime"] = payload.get("regime")
+        # No regime label is read from the payload: the regime is inferred from rpm / load
+        # inside edge.features, exactly as in training.
         with self.lock:
             buf = self.buffers.get(asset_id)
             if buf is None:
@@ -137,7 +139,7 @@ class EdgeState:
                 return None
             window = list(buf)[-model.window_rows :]
         try:
-            feats = compute_features_dict(window, model.baseline, regime=window[-1].get("regime"))
+            feats = compute_features_dict(window, model.baseline)
             p = predict_one(model, feats)
         except Exception as exc:  # noqa: BLE001 - never let one bad window kill the stream
             self.last_error = f"inference failed: {exc}"

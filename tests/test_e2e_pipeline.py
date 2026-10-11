@@ -110,6 +110,21 @@ def test_p0_chain_end_to_end(client: TestClient) -> None:
     assert state["candidates"]["features"]["baseline"] is not None
     assert state["validation"]["leakage"]["passed"] is True
     assert state["validation"]["champion_family"] in {"random_forest", "xgboost", "lightgbm"}
+    # the split was fixed first, the analysed asset is held out, metrics come from test assets
+    split = state["split"]
+    assert TARGET in split["test"] and TARGET not in split["train"]
+    assert state["validation"]["split"] == split
+    assert state["validation"]["backtest"][0]["test_assets"] == split["test"]
+    assert state["validation"]["test_metrics"]["n_assets"] == len(split["test"])
+    # edge-vs-centre parity was checked on real held-out vectors and raw windows, and passed
+    parity = state["validation"]["parity"]
+    assert parity["passed"] is True and parity["n_rows"] > 0 and parity["n_windows"] > 0, parity
+    assert parity["max_abs_diff_probability"] <= parity["tolerance_probability"]
+    assert parity["max_abs_diff_features"] <= parity["tolerance_features"]
+    gate = {g["name"]: g for g in state["validation"]["gate"]}
+    assert set(gate) == {"leakage", "test_failure_events", "recall", "lead_time", "edge_parity"}
+    assert state["validation"]["passed"] is True, gate
+    assert state["validation"]["thresholds"] == {"classification": 0.5, "early_warning": 0.3, "sustained_rows": 3}
 
     # 07
     contract = state["contract"]

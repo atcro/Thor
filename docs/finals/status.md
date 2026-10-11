@@ -74,3 +74,25 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
   fitted on train assets only, Optuna on the validation group, calibration on the
   calibration group, final metrics on untouched test assets; right-censor the last
   horizon of unlabelled rows; tests for leak-free + reproducible split.
+
+## 2026-10-11 14:25 — fix group 4 done: leak-free validation (defect 4)
+
+- **Commit:** "Fix the asset-level split first and fit nothing on held-out motors".
+- **Files:** new `agents/ml_architect/split.py` (`make_asset_split`, `rows_in`,
+  `completed_failure_assets`), `apps/api/schemas.py` (`AssetSplit`, `GateCheck`,
+  `FeatureSpec.fit_assets`, `RegimeReport.fit_assets`, `CandidateSet.split`,
+  `ValidationReport.split/gate/test_metrics`, `GraphState.split`), `agents/data_agent/profiling.py`
+  (`fit_assets`), `agents/ml_architect/features.py` (`fit_assets`, fixed `baseline`, `label_known`
+  right-censoring), `agents/ml_architect/automl.py` (split-aware `launch_trial`/`train_candidates`,
+  `legacy_split`), `agents/validation/checks.py` (`validate` rewritten), `apps/api/orchestrator.py`
+  (`tool_make_split`, split fixed in `_profile`, wired through train/validate/_features_for);
+  new `tests/test_asset_split.py`; updated orchestrator/validation/ml_architect tests.
+- **Arrangement for 24 motors:** 4 completed failures → train 2, test 1, tune 1; validation and
+  calibration share the tune group (documented in `AssetSplit.notes`; four separate groups when
+  ≥ 5 completed failures). The analysed asset is always forced into test.
+- **Tests run:** full `pytest` → 201 passed in 55 s; `ruff check .` clean.
+- **Next:** fix 5 (edge parity): export calibration as a serialisable transform in the sidecar,
+  edge applies it; edge `compute_features_np` uses the training baseline format (per-row
+  nearest-centroid regime from rpm/load); parity check (central vs edge calibrated probability
+  on held-out feature vectors + raw windows) recorded in `ValidationReport.parity`, failing
+  parity blocks `promote()`; fix `tests/test_edge.py` to the real format.
