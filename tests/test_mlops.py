@@ -339,27 +339,44 @@ def test_deploy_edge_exports_onnx_matching_predict_proba(
 
 
 @pytest.mark.parametrize("method", ["sigmoid", "isotonic"])
+@pytest.mark.parametrize("family", ["random_forest", "xgboost", "lightgbm"])
 def test_deploy_edge_exports_calibration_and_edge_reproduces_it(
-    engine, tmp_path: Path, data, method: str
+    engine, tmp_path: Path, data, method: str, family: str
 ) -> None:
-    """The ONNX graph is the raw tree; the sidecar carries the calibration transform; the edge
-    (edge.inference) reproduces the centre's calibrated probability."""
+    """The ONNX graph is the raw tree; the sidecar carries the calibration transform (and
+    whether sklearn fitted it on log-odds or on probabilities); the edge (edge.inference)
+    reproduces the centre's calibrated probability for every family."""
     from sklearn.frozen import FrozenEstimator
 
+    from agents.validation.checks import apply_calibration
     from edge.inference import load_model, predict_proba
 
     X, y, X_test = data
-    rf = RandomForestClassifier(n_estimators=15, random_state=0).fit(X[:300], y[:300])
-    cal = CalibratedClassifierCV(FrozenEstimator(rf), method=method).fit(X[300:], y[300:])
-    artifact = tmp_path / f"cal_{method}.joblib"
+    base = {
+        "random_forest": lambda: RandomForestClassifier(n_estimators=15, random_state=0),
+        "xgboost": lambda: XGBClassifier(n_estimators=30, max_depth=3, random_state=0),
+        "lightgbm": lambda: LGBMClassifier(
+            n_estimators=30, max_depth=3, random_state=0, verbose=-1
+        ),
+    }[family]().fit(X[:300], y[:300])
+    cal = CalibratedClassifierCV(FrozenEstimator(base), method=method).fit(X[300:], y[300:])
+    artifact = tmp_path / f"cal_{family}_{method}.joblib"
     joblib.dump(cal, artifact)
-    reg = lifecycle.register_model(make_validation(f"v3{method[:3]}"), artifact, engine=engine)
+    reg = lifecycle.register_model(
+        make_validation(f"v3{family[:2]}{method[:3]}", family=family), artifact, engine=engine
+    )
     dep = lifecycle.deploy_edge(reg, artifact, FEATURES, tmp_path / "models", engine=engine)
     sidecar = json.loads(Path(dep.onnx_path).with_suffix(".json").read_text())
     assert sidecar["calibration"]["method"] == method
+    expected_input = "decision_function" if hasattr(base, "decision_function") else "predict_proba"
+    assert sidecar["calibration"]["input"] == expected_input
     model = load_model(Path(dep.onnx_path), Path(dep.onnx_path).with_suffix(".json"))
     p_edge = predict_proba(model, X_test.to_numpy())
-    np.testing.assert_allclose(p_edge, cal.predict_proba(X_test)[:, 1], atol=1e-3)
+    expected = cal.predict_proba(X_test)[:, 1]
+    np.testing.assert_allclose(p_edge, expected, atol=1e-3)
+    # the sidecar alone is enough: the reference transform agrees with sklearn exactly
+    raw = base.predict_proba(X_test)[:, 1]
+    np.testing.assert_allclose(apply_calibration(raw, sidecar["calibration"]), expected, atol=1e-6)
 
 
 def test_deploy_edge_refuses_multi_fold_calibrator(engine, tmp_path: Path, data) -> None:
@@ -394,6 +411,13 @@ def test_check_edge_parity_passes_and_fails_honestly(tmp_path: Path, data) -> No
     joblib.dump(cal, good)
     report = lifecycle.check_edge_parity(good, FEATURES, X_test, window_rows=12, baseline=None)
     assert report.passed and report.n_rows == 20
+    lgbm = LGBMClassifier(n_estimators=30, max_depth=3, random_state=0, verbose=-1)
+    lgbm.fit(X[:300], y[:300])
+    cal_l = CalibratedClassifierCV(FrozenEstimator(lgbm), method="isotonic").fit(X[300:], y[300:])
+    good_l = tmp_path / "good_lgbm.joblib"
+    joblib.dump(cal_l, good_l)
+    report = lifecycle.check_edge_parity(good_l, FEATURES, X_test, window_rows=12, baseline=None)
+    assert report.passed, report.notes
     assert report.max_abs_diff_probability <= report.tolerance_probability
     assert report.calibration_method == "isotonic"
 

@@ -376,12 +376,14 @@ def calibrate_probabilities(
 def calibration_transform(model: Any) -> dict[str, Any]:
     """Export a fitted calibrator as an explicit, serialisable transform.
 
-    Input: the (possibly) calibrated champion. Output: {"method": "sigmoid", "a", "b"} for
-    Platt scaling (p_cal = 1 / (1 + exp(a * p + b))), {"method": "isotonic", "x": [...],
-    "y": [...]} for isotonic regression (linear interpolation of p on the fitted thresholds,
-    p clipped to [x[0], x[-1]] first), or {"method": "none"} when the model is not a
+    Input: the (possibly) calibrated champion. Output: {"method": "sigmoid", "input", "a",
+    "b"} for Platt scaling (p_cal = 1 / (1 + exp(a * x + b))), {"method": "isotonic", "input",
+    "x": [...], "y": [...]} for isotonic regression (linear interpolation of x on the fitted
+    thresholds, x clipped to [x_min, x_max] first), or {"method": "none"} when the model is not a
     single-estimator CalibratedClassifierCV (an uncalibrated tree model, or the identity
-    wrapper). Raises ValueError for a cross-validated calibrator with several folds: that
+    wrapper). `input` says what x is: "predict_proba" (the raw P(class 1)) or
+    "decision_function" (its log-odds -- what sklearn feeds the calibrator for LightGBM and
+    XGBoost). Raises ValueError for a cross-validated calibrator with several folds: that
     averages several base models and cannot be exported as one ONNX graph.
     """
     calibrated = getattr(model, "calibrated_classifiers_", None)
@@ -393,13 +395,19 @@ def calibration_transform(model: Any) -> dict[str, Any]:
             "calibrate a prefit (FrozenEstimator) model instead"
         )
     cal = calibrated[0].calibrators[0]
+    # sklearn fits the calibrator on decision_function when the base estimator has one
+    # (LightGBM / XGBoost log-odds), else on predict_proba[:, 1]; the edge only has the ONNX
+    # probability, so it must know which one to reconstruct (see `_calibrator_input`).
+    frozen = calibrated[0].estimator
+    inp = "decision_function" if hasattr(frozen, "decision_function") else "predict_proba"
     if hasattr(cal, "a_") and hasattr(cal, "b_"):
-        return {"method": "sigmoid", "a": float(cal.a_), "b": float(cal.b_)}
+        return {"method": "sigmoid", "input": inp, "a": float(cal.a_), "b": float(cal.b_)}
     if hasattr(cal, "X_thresholds_") and hasattr(cal, "y_thresholds_"):
         x = np.asarray(cal.X_thresholds_, dtype=float)
         y = np.asarray(cal.y_thresholds_, dtype=float)
         return {
             "method": "isotonic",
+            "input": inp,
             "x": [float(v) for v in x],
             "y": [float(v) for v in y],
             "x_min": float(getattr(cal, "X_min_", x[0])),
@@ -408,13 +416,26 @@ def calibration_transform(model: Any) -> dict[str, Any]:
     raise ValueError(f"unsupported calibrator {type(cal).__name__}")
 
 
+def _calibrator_input(p: np.ndarray, transform: dict[str, Any]) -> np.ndarray:
+    """What the calibrator was fitted on: the raw P(class 1), or -- when the base estimator
+    exposes `decision_function` (LightGBM, XGBoost log-odds) -- its logit, which sklearn's
+    CalibratedClassifierCV prefers. Probabilities are clipped away from 0 / 1 first."""
+    if transform.get("input") == "decision_function":
+        q = np.clip(p, 1e-12, 1.0 - 1e-12)
+        return np.log(q / (1.0 - q))
+    return p
+
+
 def apply_calibration(p_raw: np.ndarray, transform: dict[str, Any] | None) -> np.ndarray:
     """Apply a `calibration_transform` dict to raw P(class 1) values (reference implementation;
     `edge.inference.apply_calibration` is its numpy-only twin)."""
     p = np.asarray(p_raw, dtype=float)
     method = (transform or {}).get("method", "none")
+    if method == "none" or not transform:
+        return p
+    x_in = _calibrator_input(p, transform)
     if method == "sigmoid":
-        return 1.0 / (1.0 + np.exp(float(transform["a"]) * p + float(transform["b"])))
+        return 1.0 / (1.0 + np.exp(float(transform["a"]) * x_in + float(transform["b"])))
     if method == "isotonic":
         x = np.asarray(transform["x"], dtype=float)
         y = np.asarray(transform["y"], dtype=float)
@@ -422,7 +443,7 @@ def apply_calibration(p_raw: np.ndarray, transform: dict[str, Any] | None) -> np
             return np.full(p.shape, float(y[0]))
         lo = float(transform.get("x_min", x[0]))
         hi = float(transform.get("x_max", x[-1]))
-        return np.interp(np.clip(p, lo, hi), x, y)
+        return np.interp(np.clip(x_in, lo, hi), x, y)
     return p
 
 

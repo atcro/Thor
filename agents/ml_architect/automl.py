@@ -94,20 +94,25 @@ def infer_task(dq: DataQualityContract, df: pd.DataFrame, horizon_h: float = 48.
     n_fail_assets = 0
     pos_rate = 0.0
     if "failure_within_h" in df.columns and len(df):
+        from agents.ml_architect.split import completed_failure_assets
+
         fw = df["failure_within_h"].astype(float)
-        has = fw.notna()
         if "asset_id" in df.columns:
-            n_fail_assets = int(df.loc[has, "asset_id"].nunique())
+            # only COMPLETED failures are recorded events; an in-progress degradation is an
+            # unknown future and carries no label (same rule as build_feature_pipeline)
+            completed = completed_failure_assets(df)
+            n_fail_assets = len(completed)
+            fw = fw.where(df["asset_id"].astype(str).isin(set(completed)))
         pos_rate = float((fw <= horizon_h).fillna(False).mean())
     rationale = (
-        f"{n_fail_assets} asset(s) with a recorded failure; {pos_rate:.1%} of rows fall within "
+        f"{n_fail_assets} asset(s) with a completed, recorded failure; {pos_rate:.1%} of rows fall within "
         f"the {horizon_h:g} h horizon; data quality {dq.quality_score:.0f}/100 "
         f"({'trainable' if dq.trainable else 'NOT trainable'}); {len(dq.regimes.regimes)} operating "
         "regimes detected. Framing as horizon classification: sparse failure events make a "
         "calibrated probability with measured lead time more reliable than direct RUL regression."
     )
     if n_fail_assets == 0:
-        rationale += " WARNING: no failure events in the window; training will fail."
+        rationale += " WARNING: no completed failure events in the window; training will fail."
     return TaskSpec(
         task="classification",
         target="failure_within_h",

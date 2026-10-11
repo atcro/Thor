@@ -71,8 +71,16 @@ def parse_calibration(value: Any) -> dict[str, Any]:
     """
     if isinstance(value, dict):
         method = str(value.get("method", "none"))
+        inp = str(value.get("input", "predict_proba"))
+        if inp not in ("predict_proba", "decision_function"):
+            raise ValueError(f"unknown calibration input {inp!r}")
         if method == "sigmoid":
-            return {"method": "sigmoid", "a": float(value["a"]), "b": float(value["b"])}
+            return {
+                "method": "sigmoid",
+                "input": inp,
+                "a": float(value["a"]),
+                "b": float(value["b"]),
+            }
         if method == "isotonic":
             x = [float(v) for v in value["x"]]
             y = [float(v) for v in value["y"]]
@@ -80,6 +88,7 @@ def parse_calibration(value: Any) -> dict[str, Any]:
                 raise ValueError("isotonic calibration needs equal, non-empty x and y")
             return {
                 "method": "isotonic",
+                "input": inp,
                 "x": x,
                 "y": y,
                 "x_min": float(value.get("x_min", x[0])),
@@ -91,17 +100,30 @@ def parse_calibration(value: Any) -> dict[str, Any]:
     raise ValueError(f"calibration {value!r} has no parameters; expected a transform dict")
 
 
+def _calibrator_input(p: np.ndarray, transform: dict[str, Any]) -> np.ndarray:
+    """x the calibrator was fitted on: the raw P(class 1), or its logit when the sidecar says
+    `input: decision_function` (LightGBM / XGBoost log-odds, which sklearn's calibrator
+    prefers). Probabilities are clipped away from 0 / 1 before the logit."""
+    if transform.get("input") == "decision_function":
+        q = np.clip(p, 1e-12, 1.0 - 1e-12)
+        return np.log(q / (1.0 - q))
+    return p
+
+
 def apply_calibration(p_raw: np.ndarray, transform: dict[str, Any] | None) -> np.ndarray:
     """Apply the sidecar calibration transform to raw P(class 1) (numpy only).
 
-    sigmoid: 1 / (1 + exp(a * p + b)). isotonic: clip p to [x_min, x_max], then linear
-    interpolation on the fitted (x, y) thresholds. none: identity. Mirrors
-    `agents.validation.checks.apply_calibration` exactly.
+    x = p or logit(p) per `input`. sigmoid: 1 / (1 + exp(a * x + b)). isotonic: clip x to
+    [x_min, x_max], then linear interpolation on the fitted (x, y) thresholds. none: identity.
+    Mirrors `agents.validation.checks.apply_calibration` exactly.
     """
     p = np.asarray(p_raw, dtype=float)
     method = (transform or {}).get("method", "none")
+    if method == "none" or not transform:
+        return p
+    x_in = _calibrator_input(p, transform)
     if method == "sigmoid":
-        return 1.0 / (1.0 + np.exp(float(transform["a"]) * p + float(transform["b"])))
+        return 1.0 / (1.0 + np.exp(float(transform["a"]) * x_in + float(transform["b"])))
     if method == "isotonic":
         x = np.asarray(transform["x"], dtype=float)
         y = np.asarray(transform["y"], dtype=float)
@@ -109,7 +131,7 @@ def apply_calibration(p_raw: np.ndarray, transform: dict[str, Any] | None) -> np
             return np.full(p.shape, float(y[0]))
         lo = float(transform.get("x_min", x[0]))
         hi = float(transform.get("x_max", x[-1]))
-        return np.interp(np.clip(p, lo, hi), x, y)
+        return np.interp(np.clip(x_in, lo, hi), x, y)
     return p
 
 
