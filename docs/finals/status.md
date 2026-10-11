@@ -152,3 +152,9 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
 - **Tests run:** full `pytest` → 213 passed in 59 s; `ruff check .` clean; web build + 4 vitest passed.
 - **Next:** docs (CLAUDE.md §10/§16, DEMO.md, session-notes.md) commit; `docker compose build`
   (running); fresh-context re-audit (running); fix flags; final report.
+
+## 2026-10-11 15:45 — Docker build
+
+- `docker compose build` from the repo root: images `thor-main-api`, `thor-main-prep`,
+  `thor-main-edge`, `thor-main-replay`, `thor-main-web` built (exit 0); `docker compose config
+  --quiet` valid. Commit `81bb49d` holds the docs. Fresh-context re-audit in progress.
