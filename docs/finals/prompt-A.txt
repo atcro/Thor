@@ -125,6 +125,8 @@ work, so leave the codebase clean and documented.
 
 - **Commit after each working milestone,** in imperative mood. Any milestone can then be rolled
   back without losing the rest.
+- **Git:** commit only on the `finals` branch. Never push, never touch `main`, and never rewrite
+  history. The team pushes themselves.
 - **Testing budget.** Test where it protects the demo, not everywhere.
   - After each change, run only the tests for the code you touched. Run the full `pytest`,
     `ruff` and web suite at milestones, not after every edit.

@@ -148,6 +148,8 @@ how to build a better motor. You sign."*
 ## How to work
 
 - **Commit after each working milestone** so any step can be rolled back.
+- **Git:** commit only on the `finals` branch. Never push, never touch `main`, and never rewrite
+  history. The team pushes themselves.
 - **Testing budget.** Test where it protects the demo or a claim we make on stage, not everywhere.
   - After each change, run only the tests for the code you touched. Run the full `pytest`,
     `ruff` and web suite at milestones, not after every edit.

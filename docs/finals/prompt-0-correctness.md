@@ -147,8 +147,12 @@ The confirmed defects (file:line references were accurate as of today; re-verify
 
 ## How to work
 
-- **Checkpoint first.** The repo has no git history. Before any change, confirm `.env` is ignored,
-  run `git init`, and commit the current state as the baseline.
+- **Git.** The repo is on branch `finals`, tracking `github.com/atcro/Thor`. The current state is
+  committed as the baseline.
+  - Before any change, confirm the working tree is clean. If it isn't, commit what's there as a
+    baseline first.
+  - Commit only on `finals`. Never push, never touch `main`, and never rewrite history. The team
+    pushes themselves.
 - **Commit each fix separately** in imperative mood, so any one can be reverted.
 - **Fix in this order:** governance (1, 2), ground truth (3), thresholds (6), leakage (4),
   edge parity (5), analysis reuse (7), demo prep, then the training-substance work (model card,
