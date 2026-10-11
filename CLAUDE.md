@@ -189,12 +189,9 @@ scripts/demo_reset.sh   # (or .\scripts\demo_reset.ps1) wipe DB/model volumes, r
 
 ## 12. Working in this repo with Claude Code
 
-- This repo has the **ECC (Everything Claude Code)** plugin installed
-  ([affaan-m/ECC](https://github.com/affaan-m/ECC)) — a large agent/skill harness (dozens of
-  agents, hundreds of skills, reusable hooks). Before hand-rolling a workflow for testing,
-  security review, or research, check what's already available (`/agents`, `/skills`, or the
-  `ListSkills`/`ListPlugins` tools) and prefer an existing ECC agent/skill over writing new
-  instructions from scratch when one genuinely matches the task.
+- No Claude Code plugins are installed on the team laptop. The ECC plugin mentioned in older notes
+  is not present, so don't look for its agents or `ListSkills`/`ListPlugins` tools. The one
+  project skill is `.claude/skills/submission-positioning`.
 - Use a research/explore-style subagent for open-ended searches across this repo once it's
   larger than a handful of files; use a general-purpose subagent for multi-file changes that
   span more than one of the directories in §5.
@@ -222,7 +219,6 @@ item runs end to end:
 ## 14. References
 
 - Full architecture cheat sheet (diagram + every function): `docs/architecture.html`
-- ECC plugin: https://github.com/affaan-m/ECC
 - Anthropic Claude Code best practices: https://code.claude.com/docs/en/best-practices
 - AI4I 2020 Predictive Maintenance Dataset (UCI) — credibility benchmark, not primary demo data
 
@@ -315,3 +311,50 @@ Competing teams also build with Claude, so polish and a coherent story beat feat
 - Cut for time (from the external review): 120-motor scale, risk events and priority scoring,
   Decision Contract V2, maintenance outcomes, RAG metadata, Bolt tool expansion. They're roadmap
   material for the slides.
+
+## 16. Working on the team laptop (verified 2026-10-11)
+
+Facts that save exploration. Re-verify anything that looks wrong rather than trusting it blindly.
+
+- **Shell:** Windows 11, Windows PowerShell 5.1. There's no `&&` or `||`; use `;` or
+  `cmd; if ($?) { next }`. Tools installed mid-session may need the PATH refreshed:
+  `$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')`.
+- **Python:** the repo's `.venv` has every dependency, including dev extras, already installed.
+  - Use `.\.venv\Scripts\python.exe -m pytest` and `.\.venv\Scripts\python.exe -m ruff check .`.
+    The full suite has 180 tests; collecting them takes about 12 s.
+  - Set `MLFLOW_DISABLE_AGENT_HINT=1` to silence an MLflow banner.
+- **Web:** `npm --prefix apps/web run build` / `run test`. Its `node_modules` is already installed.
+- **Native end-to-end run** (preferred for checks):
+  - API: `uvicorn apps.api.main:app` with `SEED_ON_START=1` on SQLite, on port 8000.
+  - Replay: `python -m streaming.replay.replay`. It uses MQTT if a broker is up, otherwise it POSTs
+    to `/ingest`.
+  - Stop both when done.
+  - The Docker stack must be down first, or port 8000 clashes.
+- **Docker:** Docker Desktop runs on WSL2. Code is baked into the images (no source mounts), so
+  every Docker test means a 5–10 min rebuild: test natively, and build once at the end. The team
+  starts and stops the stack themselves. Compose project name is `thor-main` (run from the repo
+  root), and host ports are bound to 127.0.0.1.
+- **MQTT:** a native Mosquitto Windows service exists. It is deliberately stopped and set to
+  Manual, because it clashes with the compose broker on port 1883. Leave it alone.
+- **Slow operations:**
+  - A full "Run analysis" or training run (Optuna × 3 model families, backtests, calibration)
+    takes about 60–100 s. Use a few trials for intermediate checks.
+  - A Docker image rebuild takes 5–10 min.
+- **Git:** branch `finals`, tracking `github.com/atcro/Thor`. Line-ending conversion is off
+  (`core.autocrlf=false`), so shell scripts stay LF for the containers.
+  - Commit on `finals` only. Never push, touch `main`, or rewrite history; the team pushes.
+  - `.env` holds API keys and is ignored. Never print, read or commit its values.
+- **Where Phase 0's code lives:**
+
+  | Area | Files |
+  | --- | --- |
+  | Pipeline graph and the LLM | `apps/api/orchestrator.py` |
+  | Regimes | `agents/data_agent/profiling.py` |
+  | Features and baselines | `agents/ml_architect/features.py` |
+  | Search and asset split | `agents/ml_architect/automl.py` |
+  | Splits, calibration, lead time, gate | `agents/validation/checks.py` |
+  | Registry, promotion, ONNX export | `agents/mlops/lifecycle.py` |
+  | Edge scoring | `edge/features.py`, `edge/inference.py`, `edge/main.py` |
+  | Fleet health | `apps/api/routes/fleet.py` |
+  | Approvals | `apps/api/routes/approvals.py` |
+  | Replay | `streaming/replay/replay.py` |
