@@ -186,6 +186,46 @@ def test_promote_requires_matching_approval(engine, tmp_path: Path) -> None:
         lifecycle.promote(req.promotion_id, approval_for(req.promotion_id), engine=engine)
 
 
+def test_failed_validation_blocks_request_and_promote(engine, tmp_path: Path) -> None:
+    """Defect 2: `validation_passed = False` in the registry payload refuses both the request
+    and (if a request slipped through earlier) the promotion itself."""
+    from sqlalchemy import update
+
+    failed = make_validation("v10009").model_copy(
+        update={"passed": False, "notes": ["gate: leakage_ok=True recall=0.41 lead_time_median_h=36.0"]}
+    )
+    reg = lifecycle.register_model(failed, tmp_path / "m.joblib", engine=engine)
+    assert lifecycle.get_artifact_path(reg.name, reg.version, engine=engine) is not None
+    cmp = lifecycle.compare_champion(reg, engine=engine)
+    with pytest.raises(lifecycle.PromotionBlocked, match="failed validation"):
+        lifecycle.request_promotion(cmp, ModelStage.production, engine=engine)
+    assert lifecycle.list_promotions(engine=engine) == []
+
+    # a request opened while validation passed, then the row is marked failed -> promote refuses
+    ok = lifecycle.register_model(make_validation("v10010"), tmp_path / "n.joblib", engine=engine)
+    req = lifecycle.request_promotion(
+        lifecycle.compare_champion(ok, engine=engine), ModelStage.production, engine=engine
+    )
+    with engine.begin() as conn:
+        row = conn.execute(
+            db.select(db.model_registry).where(db.model_registry.c.version == "v10010")
+        ).mappings().first()
+        payload = dict(row["payload"])
+        payload["validation_passed"] = False
+        payload["validation_failures"] = ["recall 0.41 < 0.6"]
+        conn.execute(
+            update(db.model_registry)
+            .where(db.model_registry.c.version == "v10010")
+            .values(payload=payload)
+        )
+    with pytest.raises(ValueError, match="recall 0.41"):
+        lifecycle.promote(req.promotion_id, approval_for(req.promotion_id), engine=engine)
+    assert lifecycle.get_registered_model(ok.name, ok.version, engine=engine).stage == (
+        ModelStage.candidate
+    )
+    assert lifecycle.get_production_model(engine=engine) is None
+
+
 def test_request_promotion_rejects_backward_transition(engine, tmp_path: Path) -> None:
     reg = lifecycle.register_model(make_validation("v10004"), tmp_path / "m.joblib", engine=engine)
     cmp = lifecycle.compare_champion(reg, engine=engine)

@@ -3,6 +3,10 @@
 Decision contracts and approvals are insert-only. A second decision on the same contract or
 promotion is refused with 409. Nothing downstream (finalize, promote, deploy) runs without an
 approvals row.
+
+Two separate human decisions live here and never substitute for each other:
+  * `POST /approvals/{contract_id}/decision`  -- a maintenance action (Decision Contract);
+  * `POST /promotions/{promotion_id}/decision` -- a model promotion (ModelOps).
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ from sqlalchemy.engine import Engine
 from apps.api import db, orchestrator
 from apps.api.graph_state import state_from_json
 from apps.api.routes.models import list_promotions_db, registry_row_payload, set_promotion_status
-from apps.api.schemas import Approval, DecisionRequest, EvidenceBundle
+from apps.api.schemas import Approval, DecisionRequest, EvidenceBundle, FeatureSpec
 from apps.api.settings import get_settings
 
 log = logging.getLogger("thor.routes.approvals")
@@ -107,41 +111,41 @@ def decide_contract(contract_id: str, req: DecisionRequest) -> Approval:
     return record_decision(contract_id, req, db.get_engine())
 
 
-def _features_for_version(version: str, engine: Engine) -> list[str]:
-    """FeatureSpec.features of the run that produced `version`, else the canonical list."""
+def feature_spec_for_version(version: str, engine: Engine) -> FeatureSpec:
+    """The FeatureSpec (features, window_rows, regime baseline) of the run that trained
+    `version`. Falls back to the canonical feature list with no baseline when no run state
+    carries it (older rows), so an export still has the right input order."""
     for r in db.list_runs(engine=engine):
         try:
             gs = state_from_json(r["state"])
         except Exception:
             continue
         if gs.validation and gs.validation.model_version == version and gs.candidates:
-            return list(gs.candidates.features.features)
+            return gs.candidates.features
+    features: list[str] = []
     try:
         from agents.ml_architect.features import FEATURE_NAMES
 
-        return list(FEATURE_NAMES)
+        features = list(FEATURE_NAMES)
     except Exception:
-        return []
+        pass
+    return FeatureSpec(features=features, window_rows=12, description="canonical (no run state)")
 
 
-def _window_rows_for_version(version: str, engine: Engine) -> int:
-    for r in db.list_runs(engine=engine):
-        try:
-            gs = state_from_json(r["state"])
-        except Exception:
-            continue
-        if gs.validation and gs.validation.model_version == version and gs.candidates:
-            return int(gs.candidates.features.window_rows)
-    return 12
+def decide_promotion_db(
+    promotion_id: str, req: DecisionRequest, engine: Engine | None = None
+) -> dict[str, Any]:
+    """09 for ModelOps: record the promotion decision, then apply it.
 
-
-@router.post("/promotions/{promotion_id}/decision")
-def decide_promotion(promotion_id: str, req: DecisionRequest) -> dict[str, Any]:
-    """Record a promotion decision; on approval call lifecycle.promote + deploy_edge (best effort).
-
-    Response: the Approval fields plus `detail` describing promote/deploy outcomes or errors.
+    This is the ONLY path by which a model reaches production. It is independent of any
+    maintenance Decision Contract: a different approval row, a named approver, and its own
+    promotion_id. Approved -> `lifecycle.promote` (which re-checks validation and parity) and
+    then `deploy_edge` writes the ONNX + sidecar for the edge container. Rejected ->
+    `lifecycle.reject_promotion`; the model stays where it is.
+    Raises 404 for unknown promotions and 409 when already decided. Output: the Approval
+    fields plus `detail` = {promoted | rejected, edge, error}.
     """
-    engine = db.get_engine()
+    engine = engine or db.get_engine()
     pr = next((p for p in list_promotions_db(engine) if p.promotion_id == promotion_id), None)
     if pr is None:
         raise HTTPException(status_code=404, detail=f"unknown promotion {promotion_id}")
@@ -154,30 +158,48 @@ def decide_promotion(promotion_id: str, req: DecisionRequest) -> dict[str, Any]:
         try:
             rm = orchestrator.tool_promote(promotion_id, approval, engine)
             detail["promoted"] = {"name": rm.name, "version": rm.version, "stage": rm.stage.value}
+        except Exception as e:
+            # The approval row stands as the record of the decision; the model did not move
+            # and the request is closed so it cannot be retried by another click.
+            log.warning("promotion %s refused by lifecycle.promote: %s", promotion_id, e)
+            detail["error"] = f"{type(e).__name__}: {e}"
+            set_promotion_status(promotion_id, "rejected", engine)
+            detail["rejected"] = True
+            out = approval.model_dump(mode="json")
+            out["detail"] = detail
+            return out
+        try:
             payload = registry_row_payload(rm.name, rm.version, engine)
             artifact = payload.get("artifact_path")
             if not artifact:
                 raise RuntimeError("registry payload has no artifact_path; edge deploy skipped")
+            spec = feature_spec_for_version(rm.version, engine)
             dep = orchestrator.tool_deploy_edge(
                 rm,
                 Path(str(artifact)),
-                _features_for_version(rm.version, engine),
+                list(spec.features),
                 Path(get_settings().models_dir),
-                _window_rows_for_version(rm.version, engine),
+                int(spec.window_rows),
+                baseline=spec.baseline,
             )
             detail["edge"] = {"onnx_path": dep.onnx_path, "deployed_at": dep.deployed_at}
         except Exception as e:
-            log.warning("promotion %s: promote/deploy error: %s", promotion_id, e)
+            log.warning("promotion %s: edge deploy error: %s", promotion_id, e)
             detail["error"] = f"{type(e).__name__}: {e}"
     else:
         try:
             from agents.mlops.lifecycle import reject_promotion
 
-            reject_promotion(promotion_id, engine=engine)
-            detail["rejected"] = True
-        except Exception:
+            reject_promotion(promotion_id, approval, engine=engine)
+        except ImportError:
             set_promotion_status(promotion_id, "rejected", engine)
-            detail["rejected"] = True
+        detail["rejected"] = True
     out = approval.model_dump(mode="json")
     out["detail"] = detail
     return out
+
+
+@router.post("/promotions/{promotion_id}/decision")
+def decide_promotion(promotion_id: str, req: DecisionRequest) -> dict[str, Any]:
+    """record_decision() for a model promotion (ModelOps path). See `decide_promotion_db`."""
+    return decide_promotion_db(promotion_id, req, db.get_engine())

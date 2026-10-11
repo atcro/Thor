@@ -1,5 +1,6 @@
 """P0 end-to-end: ingest -> profile -> train 3 candidates -> validate -> champion -> SHAP ->
-cost recommendation -> human approval -> Decision Contract logged -> promote + edge ONNX.
+cost recommendation -> human approval -> Decision Contract logged; then, as a SEPARATE
+decision, model promotion through ModelOps -> edge ONNX.
 
 No toolbox is faked. Uses the conftest synthetic fleet (8 motors, 2 degrading) and the real
 manuals under data/manuals with the offline hashed embedding so no network is needed.
@@ -143,11 +144,25 @@ def test_p0_chain_end_to_end(client: TestClient) -> None:
     events = "\n".join(f"  [{e['stage']}] {e['tool']}: {e['message']}" for e in state["events"])
     assert state["stage"] == "approved", events
 
-    # 08: promotion + edge deployment happened as a consequence of the approval
+    # 08: the maintenance approval did NOT promote or deploy anything (CLAUDE.md section 7).
     models = client.get("/models").json()
-    assert any(m["stage"] == "production" for m in models), events
+    assert models and all(m["stage"] == "candidate" for m in models), events
+    assert not list(Path(get_settings().models_dir).glob("*.onnx")), events
+    pending = client.get("/approvals/pending").json()["promotions"]
+    assert len(pending) == 1 and pending[0]["status"] == "pending"
+
+    # Promotion is its own decision with its own approver, through the ModelOps path.
+    p = client.post(
+        f"/promotions/{pending[0]['promotion_id']}/decision",
+        json={"decision": "approved", "approver": "mlops@plant", "note": "e2e"},
+    )
+    assert p.status_code == 200, p.text
+    assert p.json()["detail"]["promoted"]["stage"] == "production", p.text
+    assert "edge" in p.json()["detail"], p.text
+    models = client.get("/models").json()
+    assert any(m["stage"] == "production" for m in models)
     onnx_files = list(Path(get_settings().models_dir).glob("*.onnx"))
-    assert onnx_files, events
+    assert onnx_files
     sidecar = onnx_files[0].with_suffix(".json")
     assert sidecar.exists()
 

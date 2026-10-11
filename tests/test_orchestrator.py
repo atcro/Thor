@@ -396,7 +396,12 @@ class FakeModel:
 
 def install_fake_toolbox(monkeypatch: pytest.MonkeyPatch, orchestrator: Any) -> dict[str, Any]:
     """Monkeypatch every `orchestrator.tool_*` seam with fast fakes; returns a call log."""
-    calls: dict[str, Any] = {"promote": [], "deploy_edge": [], "contracts": []}
+    calls: dict[str, Any] = {
+        "promote": [],
+        "deploy_edge": [],
+        "contracts": [],
+        "request_promotion": [],
+    }
 
     monkeypatch.setattr(
         orchestrator, "tool_profile_dataset", lambda df, asset_id: make_dq(asset_id)
@@ -477,10 +482,9 @@ def install_fake_toolbox(monkeypatch: pytest.MonkeyPatch, orchestrator: Any) -> 
             rationale="no champion",
         ),
     )
-    monkeypatch.setattr(
-        orchestrator,
-        "tool_request_promotion",
-        lambda comp, to_stage, engine: PromotionRequest(
+    def fake_request_promotion(comp: ChampionComparison, to_stage: ModelStage, engine: Any):
+        calls["request_promotion"].append(comp.challenger.version)
+        return PromotionRequest(
             promotion_id="promo_test_1",
             model_name=comp.challenger.name,
             version=comp.challenger.version,
@@ -488,8 +492,9 @@ def install_fake_toolbox(monkeypatch: pytest.MonkeyPatch, orchestrator: Any) -> 
             to_stage=to_stage,
             comparison=comp,
             created_at=datetime.now(UTC),
-        ),
-    )
+        )
+
+    monkeypatch.setattr(orchestrator, "tool_request_promotion", fake_request_promotion)
 
     def fake_promote(promotion_id: str, approval: Approval, engine: Any) -> RegisteredModel:
         assert approval.decision == "approved"
@@ -674,8 +679,12 @@ def test_full_run_pauses_at_gate_and_resumes(engine: Any, monkeypatch: pytest.Mo
     )
     out = orchestrator.resume(gs0.run_id, approval, engine=engine)
     assert out.stage == PipelineStage.approved
-    assert calls["promote"] == ["promo_test_1"]
-    assert len(calls["deploy_edge"]) == 1
+    # Governance (CLAUDE.md section 7): a maintenance approval never promotes or deploys a
+    # model. The promotion request opened at validation stays pending for ModelOps.
+    assert calls["request_promotion"] == ["v42"]
+    assert calls["promote"] == []
+    assert calls["deploy_edge"] == []
+    assert any(e.payload and e.payload.get("promotes_model") is False for e in out.events)
     persisted = orchestrator.get_run(gs0.run_id, engine)
     assert persisted is not None and persisted.stage == PipelineStage.approved
     assert persisted.approval is not None and persisted.approval.approver == "jane"
@@ -683,6 +692,48 @@ def test_full_run_pauses_at_gate_and_resumes(engine: Any, monkeypatch: pytest.Mo
         orchestrator.resume(gs0.run_id, approval, engine=engine)
     with pytest.raises(KeyError):
         orchestrator.resume("unknown-run", approval, engine=engine)
+
+
+def test_failed_validation_opens_no_promotion_request(
+    engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defect 2: a champion that failed the validation gate is registered (so ModelOps can see
+    why) but no promotion request is opened, and the reasons are in the run log."""
+    from apps.api import orchestrator
+
+    calls = install_fake_toolbox(monkeypatch, orchestrator)
+
+    def failed_validation(cs: CandidateSet, fdf: pd.DataFrame, run_id: str) -> ValidationReport:
+        v = make_validation(cs.asset_id)
+        return v.model_copy(
+            update={
+                "passed": False,
+                "ims": make_ims(0.4),
+                "notes": v.notes + ["gate: leakage_ok=True recall=0.40 lead_time_median_h=36.0"],
+            }
+        )
+
+    monkeypatch.setattr(orchestrator, "tool_validate", failed_validation)
+    gs0 = orchestrator.start_run("MTR-042", engine=engine)
+    gs = wait_for_stage(orchestrator, gs0.run_id, {"awaiting_approval", "failed"}, engine)
+    assert gs.stage == PipelineStage.awaiting_approval, gs.error
+    assert calls["request_promotion"] == []
+    tools = [e.tool for e in gs.events]
+    assert "register_model" in tools and "request_promotion" not in tools
+    blocked = [e for e in gs.events if e.payload and e.payload.get("reasons")]
+    assert blocked and "promotion blocked" in blocked[0].message
+    assert blocked[0].payload["reasons"]
+    # approving the maintenance contract still cannot promote anything
+    approval = Approval(
+        approval_id="a3",
+        contract_id=gs.contract.contract_id,
+        decision="approved",
+        approver="jane",
+        decided_at=datetime.now(UTC),
+    )
+    out = orchestrator.resume(gs0.run_id, approval, engine=engine)
+    assert out.stage == PipelineStage.approved
+    assert calls["promote"] == [] and calls["deploy_edge"] == []
 
 
 def test_finalize_refuses_without_approval(engine: Any, monkeypatch: pytest.MonkeyPatch) -> None:

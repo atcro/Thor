@@ -942,13 +942,6 @@ def _champion_artifact(gs: GraphState) -> str | None:
     return None
 
 
-def _promotion_id_of(gs: GraphState) -> str | None:
-    for e in reversed(gs.events):
-        if e.tool == "request_promotion" and e.payload and e.payload.get("promotion_id"):
-            return str(e.payload["promotion_id"])
-    return None
-
-
 def _telemetry(h: RunHandle, engine: Engine | None) -> pd.DataFrame:
     df = h.cache.get("df")
     if df is None:
@@ -1054,30 +1047,60 @@ def _validate(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
         tool="validate",
         payload={"champion_id": v.champion_id, "passed": v.passed, "ims_total": v.ims.total},
     )
-    if not v.passed:
-        append_event(
-            gs, gs.stage, "validation thresholds NOT met -- human review required", tool="validate"
-        )
-    # Register the champion so ModelOps has something to approve (best effort, P1).
+    # Register the champion as a *candidate* so ModelOps can see it. A promotion request is
+    # opened only when validation passed; the engineer still has to approve it in ModelOps
+    # (that approval is a separate decision from any maintenance approval, CLAUDE.md section 7).
     artifact = _champion_artifact(gs)
     try:
         if artifact is None:
             raise RuntimeError("no champion artifact path")
         rm = tool_register_model(v, Path(artifact), engine)
+        append_event(
+            gs,
+            gs.stage,
+            f"registered {rm.name} {rm.version} (stage {rm.stage.value})",
+            tool="register_model",
+            payload={"version": rm.version, "name": rm.name, "validation_passed": v.passed},
+        )
+    except Exception as e:
+        log.warning("model registration skipped: %s", e)
+        append_event(gs, gs.stage, f"model registration skipped: {e}", tool="register_model")
+        return
+    if not v.passed:
+        reasons = _validation_failure_reasons(v)
+        append_event(
+            gs,
+            gs.stage,
+            "validation gate FAILED; promotion blocked: " + "; ".join(reasons),
+            tool="validate",
+            payload={"validation_passed": False, "reasons": reasons},
+        )
+        return
+    try:
         comparison = tool_compare_champion(rm, engine)
         pr = tool_request_promotion(comparison, ModelStage.production, engine)
         h.cache["promotion_id"] = pr.promotion_id
         append_event(
             gs,
             gs.stage,
-            f"registered {rm.name} {rm.version} (stage {rm.stage.value}); "
-            f"promotion {pr.promotion_id} pending",
+            f"promotion {pr.promotion_id} requested ({rm.version} -> production); "
+            "awaiting a ModelOps decision",
             tool="request_promotion",
             payload={"promotion_id": pr.promotion_id, "version": rm.version, "name": rm.name},
         )
     except Exception as e:
-        log.warning("model registration skipped: %s", e)
-        append_event(gs, gs.stage, f"model registration skipped: {e}", tool="register_model")
+        log.warning("promotion request skipped: %s", e)
+        append_event(gs, gs.stage, f"promotion request skipped: {e}", tool="request_promotion")
+
+
+def _validation_failure_reasons(v: ValidationReport) -> list[str]:
+    """Why a ValidationReport failed its gate, for the run log (never raises)."""
+    try:
+        from agents.mlops.lifecycle import validation_failures
+
+        return validation_failures(v)
+    except Exception:  # noqa: BLE001 - toolbox may be absent in unit tests
+        return [n for n in v.notes if n.startswith("gate:")] or ["validation thresholds not met"]
 
 
 def plant_now(asset_id: str, engine: Engine | None) -> datetime:
@@ -1212,41 +1235,17 @@ def _finalize(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
     append_event(
         gs, gs.stage, f"approved by {approval.approver}: {approval.note or '-'}", tool="finalize"
     )
-    promotion_id = h.cache.get("promotion_id") or _promotion_id_of(gs)
-    if not promotion_id:
-        append_event(
-            gs, gs.stage, "no promotion request linked to this run; deploy skipped", tool="promote"
-        )
-        return
-    try:
-        promo_approval = approval.model_copy(update={"promotion_id": promotion_id})
-        rm = tool_promote(promotion_id, promo_approval, engine)
-        append_event(
-            gs, gs.stage, f"promoted {rm.name} {rm.version} -> {rm.stage.value}", tool="promote"
-        )
-        artifact = _champion_artifact(gs)
-        features = gs.candidates.features.features if gs.candidates else []
-        window_rows = gs.candidates.features.window_rows if gs.candidates else 12
-        baseline = gs.candidates.features.baseline if gs.candidates else None
-        if artifact:
-            dep = tool_deploy_edge(
-                rm,
-                Path(artifact),
-                features,
-                Path(get_settings().models_dir),
-                window_rows,
-                baseline=baseline,
-            )
-            append_event(
-                gs,
-                gs.stage,
-                f"edge deployment written: {dep.onnx_path}",
-                tool="deploy_edge",
-                payload={"onnx_path": dep.onnx_path},
-            )
-    except Exception as e:  # promotion/edge are P1; the approval itself stands
-        log.warning("promote/deploy_edge skipped: %s", e)
-        append_event(gs, gs.stage, f"promote/deploy skipped: {e}", tool="promote")
+    # A maintenance approval authorises exactly one thing: the recommended maintenance action,
+    # handed to the plant's CMMS as a work order. It never promotes or deploys a model; that is
+    # a separate ModelOps decision with its own approver (routes/approvals.py decide_promotion).
+    append_event(
+        gs,
+        gs.stage,
+        "maintenance decision recorded; work order handed to the plant. "
+        "Model promotion is a separate ModelOps decision and was not touched.",
+        tool="finalize",
+        payload={"promotes_model": False},
+    )
 
 
 NodeFn = Callable[[GraphState, RunHandle, Engine | None], None]
@@ -1382,9 +1381,9 @@ def start_run(
 def resume(run_id: str, approval: Approval, engine: Engine | None = None) -> GraphState:
     """Continue a run paused at the approval gate once `record_decision()` stored `approval`.
 
-    Runs `finalize`: approved -> promote + deploy_edge (best effort) and stage=approved;
-    rejected -> stage=rejected. Raises KeyError for unknown runs and ValueError if the run is
-    not awaiting approval.
+    Runs `finalize`: approved -> stage=approved (the maintenance action is handed to the
+    plant; no model is promoted or deployed); rejected -> stage=rejected. Raises KeyError for
+    unknown runs and ValueError if the run is not awaiting approval.
     """
     raw = db.load_run(run_id, engine=engine)
     if raw is None:

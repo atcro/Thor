@@ -109,6 +109,25 @@ def _dataset_version(validation: ValidationReport) -> str | None:
     return hashlib.sha256(",".join(sorted(ids)).encode()).hexdigest()[:16]
 
 
+def validation_failures(validation: ValidationReport) -> list[str]:
+    """Human-readable reasons a ValidationReport did not pass (empty when it passed).
+
+    Input: a 06 `ValidationReport`. Output: one line per failed condition, taken from the
+    report's `gate` checklist when present, else derived from the leakage / recall / lead-time
+    fields. Stored in the registry payload so ModelOps can show *why* a model is blocked.
+    """
+    if validation.passed:
+        return []
+    gate = getattr(validation, "gate", None) or []
+    reasons = [f"{g.name}: {g.detail}" for g in gate if not g.passed]
+    if reasons:
+        return reasons
+    if not validation.leakage.passed:
+        reasons.append("leakage check failed: " + "; ".join(validation.leakage.notes or ["-"]))
+    reasons.append(f"recall {validation.ims.recall:.2f}, lead time {validation.lead_time.median_h:.1f} h")
+    return reasons
+
+
 def _registry_payload(validation: ValidationReport, artifact_path: Path) -> dict[str, Any]:
     ims = validation.ims
     return {
@@ -116,6 +135,7 @@ def _registry_payload(validation: ValidationReport, artifact_path: Path) -> dict
         "asset_id": validation.asset_id,
         "champion_id": validation.champion_id,
         "validation_passed": validation.passed,
+        "validation_failures": validation_failures(validation),
         "metrics": {
             "ims_total": ims.total,
             "recall": ims.recall,
@@ -140,6 +160,29 @@ def _mlflow_register(validation: ValidationReport, name: str) -> None:
         mlflow.register_model(f"runs:/{validation.champion_mlflow_run_id}/model", name)
     except Exception as exc:  # noqa: BLE001 - MLflow is never load-bearing
         log.warning("mlflow.register_model skipped: %s", exc)
+
+
+class PromotionBlocked(ValueError):
+    """Raised when a model may not be promoted: it failed validation (or, once the parity
+    check exists, edge-vs-centre parity). A ValueError so existing callers keep working."""
+
+
+def _assert_promotable(row: Any) -> None:
+    """Refuse promotion of a registry row whose validation did not pass.
+
+    Input: a `model_registry` row mapping. Raises `PromotionBlocked` (a ValueError) naming the
+    recorded failure reasons when `payload.validation_passed` is False. Rows registered before
+    the flag existed (no `validation_passed` key) are treated as not validated and refused too:
+    a model with no recorded validation must never reach production.
+    """
+    payload = dict(row.get("payload") or {})
+    if payload.get("validation_passed") is True:
+        return
+    reasons = payload.get("validation_failures") or ["no validation result recorded"]
+    raise PromotionBlocked(
+        f"model {row['name']}:{row['version']} failed validation; promotion refused "
+        f"({'; '.join(str(r) for r in reasons)})"
+    )
 
 
 def _fetch_row(conn: Any, name: str, version: str) -> Any:
@@ -324,12 +367,19 @@ def request_promotion(
     Inputs: a `ChampionComparison` and the requested `to_stage` (must be strictly later in
     STAGE_ORDER than the challenger's current stage; `archived` is not allowed). Output:
     `PromotionRequest` with status=pending. Nothing moves until `promote()` sees an approval.
+    Raises `PromotionBlocked` (ValueError) when the challenger's registry row records
+    `validation_passed = False`: a model that failed validation cannot even be proposed.
     """
     engine = engine or db.get_engine()
     challenger = comparison.challenger
     from_stage = challenger.stage
     if to_stage not in STAGE_ORDER:
         raise ValueError(f"cannot request promotion to '{to_stage}'")
+    with engine.connect() as conn:
+        row = _fetch_row(conn, challenger.name, challenger.version)
+    if row is None:
+        raise ValueError(f"model {challenger.name}:{challenger.version} not in registry")
+    _assert_promotable(row)
     if from_stage not in STAGE_ORDER or STAGE_ORDER.index(to_stage) <= STAGE_ORDER.index(
         from_stage
     ):
@@ -425,6 +475,7 @@ def promote(promotion_id: str, approval: Approval, engine: Engine | None = None)
     Stage order is enforced (candidate -> validated -> shadow -> production); a request that
     was explicitly approved for a later stage jumps straight to it. Promotion to production
     archives every other production row of the same name. Marks the request approved.
+    Raises `PromotionBlocked` (ValueError) if the registry row records a failed validation.
     Output: the updated `RegisteredModel`.
     """
     _check_approval(promotion_id, approval, "approved")
@@ -447,6 +498,9 @@ def promote(promotion_id: str, approval: Approval, engine: Engine | None = None)
                 f"model {req.model_name}:{req.version} is at stage '{row['stage']}', "
                 f"request expected '{req.from_stage.value}'"
             )
+        # Re-checked at promotion time, not only at request time: the registry row is the
+        # source of truth and a request opened before a later validation failure must not win.
+        _assert_promotable(row)
         if req.to_stage == ModelStage.production:
             conn.execute(
                 update(db.model_registry)

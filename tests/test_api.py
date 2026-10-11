@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from apps.api import db
+from apps.api.settings import get_settings
 from tests.test_orchestrator import configure_env, install_fake_toolbox, seed_small_fleet
 
 
@@ -133,7 +134,9 @@ def test_pipeline_run_to_approval(client: TestClient, monkeypatch: pytest.Monkey
     final = _poll(client, run_id, {"approved", "rejected", "failed"})
     assert final["stage"] == "approved"
     assert final["approval"]["approver"] == "jane@plant"
-    assert calls["promote"] == ["promo_test_1"] and len(calls["deploy_edge"]) == 1
+    # the maintenance approval recorded the decision and nothing else
+    assert calls["request_promotion"] == ["v42"]
+    assert calls["promote"] == [] and calls["deploy_edge"] == []
 
     r = client.post(f"/approvals/{contract_id}/decision", json=decision)
     assert r.status_code == 409
@@ -144,6 +147,113 @@ def test_pipeline_run_to_approval(client: TestClient, monkeypatch: pytest.Monkey
     asset = client.get("/assets/MTR-042").json()
     assert asset["contracts"][0]["contract_id"] == contract_id
     assert asset["runs"][0]["stage"] == "approved"
+
+
+def _register_pending_promotion(engine: Any, version: str, passed: bool = True) -> str:
+    """Register a tiny real model and open a promotion request through lifecycle."""
+    import joblib
+    import numpy as np
+    from sklearn.ensemble import RandomForestClassifier
+
+    from agents.mlops import lifecycle
+    from apps.api.schemas import ModelStage
+    from tests.test_orchestrator import make_validation
+
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(60, 4))
+    y = (X[:, 0] > 0).astype(int)
+    artifact = Path(get_settings().models_dir) / f"{version}.joblib"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(RandomForestClassifier(n_estimators=5, random_state=0).fit(X, y), artifact)
+    val = make_validation("MTR-042").model_copy(update={"model_version": version, "passed": passed})
+    rm = lifecycle.register_model(val, artifact, engine=engine)
+    if not passed:
+        return rm.version
+    req = lifecycle.request_promotion(
+        lifecycle.compare_champion(rm, engine=engine), ModelStage.production, engine=engine
+    )
+    return req.promotion_id
+
+
+def test_promotion_decision_is_its_own_approval(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defect 1: model promotion is a separate ModelOps decision with a named approver, and
+    both approve and reject work (reject used to crash on a missing argument)."""
+    from apps.api import orchestrator
+    from apps.api.schemas import EdgeDeployment
+
+    deployed: list[str] = []
+
+    def fake_deploy(model: Any, artifact_path: Path, features: list[str], models_dir: Path,
+                    window_rows: int, baseline: dict[str, Any] | None = None) -> EdgeDeployment:
+        deployed.append(model.version)
+        from datetime import UTC, datetime
+
+        return EdgeDeployment(model_name=model.name, version=model.version,
+                              onnx_path=str(models_dir / "m.onnx"), deployed_at=datetime.now(UTC),
+                              input_features=features)
+
+    # real lifecycle.promote through the route; only the ONNX export is faked
+    monkeypatch.setattr(orchestrator, "tool_deploy_edge", fake_deploy)
+    engine = db.get_engine()
+    pid_reject = _register_pending_promotion(engine, "v70001")
+    pid_approve = _register_pending_promotion(engine, "v70002")
+    pending = client.get("/approvals/pending").json()
+    assert {p["promotion_id"] for p in pending["promotions"]} == {pid_reject, pid_approve}
+
+    r = client.post(
+        f"/promotions/{pid_reject}/decision",
+        json={"decision": "rejected", "approver": "mlops@plant", "note": "not yet"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["promotion_id"] == pid_reject and body["approver"] == "mlops@plant"
+    assert body["detail"] == {"rejected": True}
+    promos = {p["promotion_id"]: p for p in client.get("/models/promotions").json()}
+    assert promos[pid_reject]["status"] == "rejected"
+    assert all(m["stage"] != "production" for m in client.get("/models").json())
+
+    r = client.post(
+        f"/promotions/{pid_approve}/decision",
+        json={"decision": "approved", "approver": "mlops@plant", "note": "ship it"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["detail"]["promoted"]["stage"] == "production"
+    assert "edge" in body["detail"] and deployed == ["v70002"]
+    stages = {m["version"]: m["stage"] for m in client.get("/models").json()}
+    assert stages["v70002"] == "production" and stages["v70001"] == "candidate"
+    # second decision on either request is refused; the approval rows are insert-only
+    assert client.post(
+        f"/promotions/{pid_approve}/decision",
+        json={"decision": "rejected", "approver": "x", "note": ""},
+    ).status_code == 409
+    assert client.post(
+        "/promotions/pr_nope/decision", json={"decision": "approved", "approver": "x"}
+    ).status_code == 404
+    assert len(db.approvals_for(promotion_id=pid_approve, engine=engine)) == 1
+    assert db.approvals_for(promotion_id=pid_approve, engine=engine)[0].contract_id is None
+
+
+def test_failed_validation_cannot_be_promoted(client: TestClient) -> None:
+    """Defect 2: a model whose validation failed gets no promotion request, and the reasons
+    are recorded in the registry payload."""
+    from agents.mlops import lifecycle
+    from apps.api.routes.models import registry_row_payload
+    from apps.api.schemas import ModelStage
+
+    engine = db.get_engine()
+    version = _register_pending_promotion(engine, "v70003", passed=False)
+    rm = lifecycle.get_registered_model(lifecycle.DEFAULT_MODEL_NAME, version, engine=engine)
+    assert rm is not None and rm.stage == ModelStage.candidate
+    payload = registry_row_payload(rm.name, rm.version, engine)
+    assert payload["validation_passed"] is False and payload["validation_failures"]
+    with pytest.raises(ValueError, match="failed validation"):
+        lifecycle.request_promotion(
+            lifecycle.compare_champion(rm, engine=engine), ModelStage.production, engine=engine
+        )
+    assert client.get("/approvals/pending").json()["promotions"] == []
 
 
 def test_rejection_path(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -103,7 +103,7 @@ graph, not services; the five web screens are Fleet, Asset 360, AutoML Studio, M
 | 06 | Validation | `detect_leakage()`, `run_backtest()`, `calibrate_probabilities()`, `compute_lead_time()`, `estimate_rul_interval()` | Validation Report + Champion → 07, 08 |
 | 07 | Reliability | `explain()`, `retrieve_manual_context()`, `calculate_failure_cost()`, `find_maintenance_window()`, `run_whatif()`, `create_decision_contract()` | Decision Contract + recommendation → 09 |
 | 08 | MLOps | `register_model()`, `compare_champion()`, `promote()`, `detect_drift()`, `deploy_edge()` | Promotion request → 09; on drift, re-triggers 05 |
-| 09 | Human Approval Gate | `present_evidence()`, `record_decision()` | Approved action → Edge deploy or logged Decision Contract |
+| 09 | Human Approval Gate | `present_evidence()`, `record_decision()` | Two separate decisions, never substitutable: a **maintenance** approval (contract) → logged Decision Contract handed to the plant as a work order, nothing else; a **promotion** approval (ModelOps, `decide_promotion_db()`) → `promote()` + edge deploy. A failed validation gets no promotion request and `promote()` refuses it |
 
 `promote()` models the lifecycle (`candidate → validated → shadow → production`) as a **database
 enum**, not live traffic-splitting — there is no real production traffic to shadow-test against
