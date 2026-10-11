@@ -117,3 +117,38 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
   registration (no contract); `POST /pipeline/run` 409 without a production model; fleet
   scoring helper with the production model; Asset 360 "Run analysis", Studio/ModelOps "Train
   new model"; drift check uses the production baseline.
+
+## 2026-10-11 15:05 — fix group 6 done: analysis reuses the production model (defect 7)
+
+- **Commit:** `f08cfc4` "Reuse the production model for Run analysis and make training an explicit run".
+- **Files:** `apps/api/schemas.py` (`RunMode`, `ModelRef`, `PipelineStage.trained`, `GraphState.mode/model_ref`,
+  `PipelineRunRequest.mode`), `apps/api/orchestrator.py` (`next_node_for`, `_load_production`,
+  `_finish_training`, `tool_production_bundle`, `tool_score_asset`), new `apps/api/scoring.py`,
+  `apps/api/routes/pipeline.py` (`mode`, 409 without a model, `POST /pipeline/score`),
+  `apps/api/routes/models.py` (drift uses the production baseline), `agents/mlops/lifecycle.py`
+  (`production_bundle`, validation report stored in the registry payload), web (mode-aware stepper,
+  Studio "Train new model"); tests rewritten to the real demo flow.
+- **Tests run:** full `pytest` → 209 passed in 59 s (after fixing the e2e poll's terminal set, which had
+  cost 4 min); `ruff check .` clean; web build + 4 vitest passed.
+
+## 2026-10-11 15:22 — demo prep run (real numbers) and the parity gate catching a bug
+
+- First prep run (`scripts/demo_prep.py --n-trials 6`): the gate REFUSED promotion: edge parity
+  max |Δp| 0.90 (isotonic LightGBM). Root cause: scikit-learn calibrates on `decision_function`
+  (log-odds) for LightGBM/XGBoost, the edge fed probabilities. Fixed in `74dc94b` (transform
+  records `input`, both `apply_calibration` twins take the logit); tests now cover all three
+  families × sigmoid/isotonic.
+- Second prep run: trained lightgbm v57257 in 55 s, gate all pass (parity 0.0), promoted via
+  `POST /promotions/.../decision` as demo-prep@thor, fleet scored (24/24). Record:
+  `docs/finals/prep-report.json`. Commit `9a9e548` (prep script, compose `prep` service, reset scripts).
+- **Numbers:** test recall 0.865, precision 1.000, F1 0.928, AUROC 0.933, Brier 0.0021, lead time
+  41.5 h (1 event), IMS 0.844. Written to `docs/finals/metrics.md` and `model-card.md` (`646e6e0`).
+
+## 2026-10-11 15:30 — training substance done
+
+- `646e6e0`: model card, metrics.md, AutoML Studio split/trials/gate/parity view, AI4I rerun
+  (lightgbm, recall 0.784, precision 0.896, AUROC 0.974, 2,502 held-out rows; command in §10),
+  Bolt eval cases "Approve MTR-042" (53/53 pass, template mode).
+- **Tests run:** full `pytest` → 213 passed in 59 s; `ruff check .` clean; web build + 4 vitest passed.
+- **Next:** docs (CLAUDE.md §10/§16, DEMO.md, session-notes.md) commit; `docker compose build`
+  (running); fresh-context re-audit (running); fix flags; final report.

@@ -167,14 +167,21 @@ a full Playwright e2e suite.
 Create these exactly as the project is scaffolded — don't invent different entrypoints:
 
 ```bash
-docker compose up --build        # everything: api, web, postgres/timescale, mqtt, mlflow, edge
+docker compose up --build        # everything: api, prep (train+promote once), web, timescale, mqtt, mlflow, edge, replay
 uvicorn apps.api.main:app --reload   # api only, for fast iteration
+python -m scripts.demo_prep --api http://localhost:8000   # train, validate, promote (as demo-prep@thor), export, score the fleet
 npm --prefix apps/web run dev    # frontend only
 pytest                            # all Python tests
 ruff check .                      # lint
 npm --prefix apps/web run build && npm --prefix apps/web run test  # frontend build + smoke tests
-scripts/demo_reset.sh   # (or .\scripts\demo_reset.ps1) wipe DB/model volumes, reseed 80%, replay the rest live
+scripts/demo_reset.sh   # (or .\scripts\demo_reset.ps1) wipe DB/model volumes, reseed 80%, run prep, replay the rest live
+python -m data.benchmark.ai4i_benchmark --n-trials 6 --seed 0   # AI4I credibility benchmark
+python evals/bolt/run_bolt_eval.py --min-pass 0.95              # Bolt copilot eval (template mode)
 ```
+
+Two run modes on `POST /pipeline/run`: `mode=analyze` (default; what "Run analysis" sends) reuses the
+production model and takes seconds; `mode=train` is the explicit AutoML run (AutoML Studio
+"Train new model") and ends at stage `trained` with a pending promotion request for ModelOps.
 
 ## 11. Code style
 
@@ -325,7 +332,14 @@ Facts that save exploration. Re-verify anything that looks wrong rather than tru
   - Set `MLFLOW_DISABLE_AGENT_HINT=1` to silence an MLflow banner.
 - **Web:** `npm --prefix apps/web run build` / `run test`. Its `node_modules` is already installed.
 - **Native end-to-end run** (preferred for checks):
-  - API: `uvicorn apps.api.main:app` with `SEED_ON_START=1` on SQLite, on port 8000.
+  - API: `uvicorn apps.api.main:app` with `SEED_ON_START=1` on SQLite. Use port 8010 and point
+    `DATABASE_URL`, `MODELS_DIR`, `CHROMA_PATH`, `MLFLOW_TRACKING_URI` at a scratch directory so a
+    native run can never touch the Docker stack on 8000 or the repo's `thor.db`.
+  - Keys: `.env` holds real provider keys, and PowerShell's `$env:X = ""` deletes a variable
+    instead of blanking it, so the API will go to LLM mode. Set `$env:ANTHROPIC_API_KEY = " "`
+    and `$env:OPENAI_API_KEY = " "` (a space) to force template mode for a native check.
+  - Prep: `python -m scripts.demo_prep --api http://127.0.0.1:8010 --report docs/finals/prep-report.json`
+    (about 60 s with 6 trials). The 2026-10-11 run is committed as `docs/finals/prep-report.json`.
   - Replay: `python -m streaming.replay.replay`. It uses MQTT if a broker is up, otherwise it POSTs
     to `/ingest`.
   - Stop both when done.
@@ -348,7 +362,11 @@ Facts that save exploration. Re-verify anything that looks wrong rather than tru
 
   | Area | Files |
   | --- | --- |
-  | Pipeline graph and the LLM | `apps/api/orchestrator.py` |
+  | Pipeline graph, run modes and the LLM | `apps/api/orchestrator.py` |
+  | Asset split | `agents/ml_architect/split.py` |
+  | Shared metrics, lead time, IMS | `agents/metrics.py` |
+  | Production-model scoring | `apps/api/scoring.py` |
+  | Demo prep | `scripts/demo_prep.py`, compose service `prep` |
   | Regimes | `agents/data_agent/profiling.py` |
   | Features and baselines | `agents/ml_architect/features.py` |
   | Search and asset split | `agents/ml_architect/automl.py` |
