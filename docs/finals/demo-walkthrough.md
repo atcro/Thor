@@ -288,7 +288,12 @@ passes until the work order), so the approval can wait as long as the Q&A needs.
 that matters is the six-minute slot: in LLM mode the analysis plus three Bolt answers take about
 1.5 minutes.
 
-## Phase A.3 beats (after step 8; measured natively on 2026-10-12 at 900×, Docker stack also running)
+## Phase A.3 beats (after step 8; measured on the Docker stack on 2026-10-12, driver `scripts/rehearse_a3.py`)
+
+Docker timings of the whole run (what the stage will do): train 59 s, sign-off 3 s, red 60 s
+later, analysis 6 s, Bolt < 1 s each, approve → offline 3 s → green 16 s, finding at once,
+recall < 1 s, retrain with the finding 127 s (gate passed), Key Up reply 12 s, Key Down reply
+0.1 s, same numbers. Native figures below where they differ are from the earlier native run.
 
 Scenario 1 runs with the key **Down** throughout: train, sign off, MTR-042 red, Run analysis
 (the contract chip says *template*), Bolt, approve, offline, back green. Say: "everything you

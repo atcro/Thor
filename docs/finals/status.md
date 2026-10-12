@@ -627,6 +627,18 @@ on branch `finals`; the team rebuilds Docker.
 - **Final verification (native, 2026-10-12):** `ruff check .` clean; `pytest` **263 passed** (100 s;
   252 before A.3); vitest **8 files / 28 tests** (6 / 24 before); `npm run build` ok; Bolt eval
   template mode **66/66**. New files normalised to LF.
+- **Docker rehearsal (the stage stack, rebuilt images, after `demo_reset.ps1`; driver
+  `scripts/rehearse_a3.py`, key Down from start):** train **58.6 s** (RF v7981, gate passed, test
+  recall 0.919 / precision 0.962 / lead 53.1 h / IMS 0.893) → sign-off 2.7 s → 24 green at once →
+  **MTR-042 critical 60.1 s after the sign-off** → Run analysis 6.1 s (template, 0 LLM calls) →
+  Bolt 0.1 / 0.5 / 0.3 s (template) → Key Up while red: LLM 12.6 s with the same 0.81 / 0.78 /
+  critical as the template → approval → offline 3.1 s → healthy + work order completed 15.7 s;
+  alarm → signed decision 49.9 s → finding 201 (trust 1 / 1) → recall cites the finding by work
+  order and name → ledger queued → **retrain with the finding 127.2 s, RF v8237, gate PASSED**
+  (recall 0.915, precision 0.980, lead 49.5 h on five test motors, IMS 0.880, parity 4.7e-6),
+  promotion rejected → Scenario 2: Up (`provider openai`, container env from `.env`) 11.7 s LLM,
+  Down 0.1 s template, same 0.000 / 0.78 / healthy → refusal explicit. The stack was reset again
+  afterwards for the team.
 - **Honest limits (for Q&A).** The intervention time is not a failure time (model card §12); the
   retrained model passing the gate is one run, not evidence that findings improve the model; the
   plant has one failure mode so far, so "same failure mode" matching is bearing vocabulary plus
