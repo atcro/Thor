@@ -73,9 +73,9 @@ Write-Host "==> production model:" $(if ($prod) { "$($prod.name) $($prod.version
 Write-Host "==> replay: released=$($replay.released) paused=$($replay.paused) plant time $($replay.plant_time)"
 # Invoke-WebRequest + ConvertFrom-Json: on Windows PowerShell 5.1 Invoke-RestMethod can hand a
 # JSON array back as one object, which made this line count "1 motor".
-$fleet = @((Invoke-WebRequest -UseBasicParsing http://localhost:8000/fleet).Content | ConvertFrom-Json)
+$fleet = ConvertFrom-Json (Invoke-WebRequest -UseBasicParsing http://localhost:8000/fleet).Content
 $noPred = @($fleet | Where-Object { $null -eq $_.health_score }).Count
-Write-Host "==> fleet: $($fleet.Count) motors, $noPred without a prediction yet"
+Write-Host "==> fleet: $(@($fleet).Count) motors, $noPred without a prediction yet"
 Write-Host ""
 Write-Host "==> done. Open http://localhost:5173 (lands on Fleet: every motor grey, 'no prediction yet')."
 Write-Host "    1. AutoML Studio > Train new model (2-3 min; talk over the split, trials, gate, parity)"
