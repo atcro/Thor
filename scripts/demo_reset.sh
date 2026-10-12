@@ -77,6 +77,6 @@ echo
 echo "==> done. Open http://localhost:5173 (lands on Fleet: every motor grey, 'no prediction yet')."
 echo "    1. AutoML Studio > Train new model (2-3 min; talk over the split, trials, gate, parity)"
 echo "    2. ModelOps > Approve promotion with your name -> the fleet turns green and the replay starts"
-echo "    3. MTR-042 goes amber then red on its own ~20-60 s later; Run analysis, ask Bolt, approve"
+echo "    3. MTR-042 goes red on its own about a minute later (latched); Run analysis, ask Bolt, approve"
 echo "    Recovery: Pause/Resume in the top bar; fallback training: scripts/demo_reset.sh --prep"
 echo "    Full click path and timings: docs/finals/demo-walkthrough.md"
