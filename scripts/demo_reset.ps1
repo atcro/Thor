@@ -69,12 +69,14 @@ $models = @(Invoke-RestMethod http://localhost:8000/models)
 $prod = $models | Where-Object { $_.stage -eq "production" }
 Write-Host "==> production model:" $(if ($prod) { "$($prod.name) $($prod.version) $($prod.family) IMS $($prod.ims_total)" } else { "none (expected before the demo)" })
 Write-Host "==> replay: released=$($replay.released) paused=$($replay.paused) plant time $($replay.plant_time)"
-$fleet = @(Invoke-RestMethod http://localhost:8000/fleet)
+# Invoke-WebRequest + ConvertFrom-Json: on Windows PowerShell 5.1 Invoke-RestMethod can hand a
+# JSON array back as one object, which made this line count "1 motor".
+$fleet = @((Invoke-WebRequest -UseBasicParsing http://localhost:8000/fleet).Content | ConvertFrom-Json)
 $noPred = @($fleet | Where-Object { $null -eq $_.health_score }).Count
 Write-Host "==> fleet: $($fleet.Count) motors, $noPred without a prediction yet"
 Write-Host ""
 Write-Host "==> done. Open http://localhost:5173 (lands on Fleet: every motor grey, 'no prediction yet')."
-Write-Host "    1. AutoML Studio > Train new model (about 60 s; talk over the split, trials, gate, parity)"
+Write-Host "    1. AutoML Studio > Train new model (2-3 min; talk over the split, trials, gate, parity)"
 Write-Host "    2. ModelOps > Approve promotion with your name -> the fleet turns green and the replay starts"
 Write-Host "    3. MTR-042 goes amber then red on its own ~20-60 s later; Run analysis, ask Bolt, approve"
 Write-Host "    Recovery: Pause/Resume in the top bar; fallback training: .\scripts\demo_reset.ps1 -Prep"

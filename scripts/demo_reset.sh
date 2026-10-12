@@ -74,7 +74,7 @@ echo "==> fleet"
 curl -s http://localhost:8000/fleet | python -c "import sys,json; f=json.load(sys.stdin); print(f'  {len(f)} motors, {sum(1 for x in f if x[\"health_score\"] is None)} without a prediction yet')" 2>/dev/null || true
 echo
 echo "==> done. Open http://localhost:5173 (lands on Fleet: every motor grey, 'no prediction yet')."
-echo "    1. AutoML Studio > Train new model (about 60 s; talk over the split, trials, gate, parity)"
+echo "    1. AutoML Studio > Train new model (2-3 min; talk over the split, trials, gate, parity)"
 echo "    2. ModelOps > Approve promotion with your name -> the fleet turns green and the replay starts"
 echo "    3. MTR-042 goes amber then red on its own ~20-60 s later; Run analysis, ask Bolt, approve"
 echo "    Recovery: Pause/Resume in the top bar; fallback training: scripts/demo_reset.sh --prep"
