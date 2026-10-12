@@ -229,7 +229,6 @@ def compute_fleet(engine: Engine | None = None) -> list[FleetAsset]:
                 stage=stage,
                 work_order=wo,
                 status=alarms.asset_status(af["alarm"], p_fail, live.bus.data_state(a.asset_id), wo),
-                sandbox=bool(p and p.get("sandbox")) or bool(ev and ev.sandbox and af["alarm"]),
                 **af,
             )
         )
@@ -290,7 +289,6 @@ def get_asset(asset_id: str) -> dict[str, Any]:
         "model_version": pred["model_version"] if pred else None,
         "health_score": _health_score(p_fail),
         "status": alarms.asset_status(af["alarm"], p_fail, live.bus.data_state(asset_id), newest_wo),
-        "sandbox": bool(pred and pred.get("sandbox")),
         **af,
         "thresholds": Thresholds(),
         "contracts": contracts,

@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SandboxState, TwinEventBatch, TwinSnapshot } from "../api/types";
+import type { TwinEventBatch, TwinSnapshot } from "../api/types";
 
 // The scene needs WebGL; the smoke test checks the page around it and that the scene
 // receives the API snapshot (the stub prints the line names it was given).
@@ -89,9 +89,6 @@ const snapshot: TwinSnapshot = {
       alarm: "critical",
       alarm_since: "2025-08-27T00:00:00Z",
       alarm_reason: "sustained p >= 0.5 over 3 rows",
-      alarm_sandbox: false,
-      sandbox: false,
-      sandbox_override: null,
     },
     {
       asset: {
@@ -122,9 +119,6 @@ const snapshot: TwinSnapshot = {
       alarm: null,
       alarm_since: null,
       alarm_reason: null,
-      alarm_sandbox: false,
-      sandbox: false,
-      sandbox_override: null,
     },
   ],
   model: {
@@ -149,27 +143,6 @@ const snapshot: TwinSnapshot = {
 
 const batch: TwinEventBatch = { since: 0, next: 0, events: [], dropped: 0, live };
 
-const sandboxIdle: SandboxState = { active: false, overrides: [], retired_prediction_max_id: 0, last_reset_at: null, events: [] };
-const sandboxFaulted: SandboxState = {
-  active: true,
-  overrides: [
-    {
-      asset_id: "MTR-042",
-      rpm: null,
-      load_pct: null,
-      bearing_temp_c: null,
-      fault: true,
-      fault_since: "2025-08-27T02:00:00Z",
-      fault_ramp_h: 6,
-      set_at: "2026-10-11T18:00:05Z",
-      note: "Troubleshoot MTR-042",
-    },
-  ],
-  retired_prediction_max_id: 0,
-  last_reset_at: null,
-  events: [],
-};
-
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
 }
@@ -191,12 +164,10 @@ describe("3-D Digital Twin route", () => {
     // No socket in jsdom: the hook must fall back to polling /twin/events.
     vi.stubGlobal("WebSocket", undefined);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (globalThis as any).fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    (globalThis as any).fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/twin/events")) return jsonResponse(batch);
       if (url.endsWith("/twin")) return jsonResponse(snapshot);
-      if (url.endsWith("/sandbox/fault") && init?.method === "POST") return jsonResponse(sandboxFaulted);
-      if (url.endsWith("/sandbox")) return jsonResponse(sandboxIdle);
       return new Response("not found", { status: 404 });
     });
   });
@@ -228,41 +199,15 @@ describe("3-D Digital Twin route", () => {
     expect(counters).toHaveTextContent("24.5 /s");
     expect(counters).toHaveTextContent("1.8 / 3.2 ms");
     expect(counters).toHaveTextContent("640 / 910 ms");
-    expect(counters).toHaveTextContent("poll 500 ms");
+    expect(counters).toHaveTextContent("up / up");
     // legend states the encoding in words: green means "within healthy baseline"
     const legend = screen.getByTestId("twin-legend");
     expect(legend).toHaveTextContent("critical");
     expect(legend).toHaveTextContent("healthy · within healthy baseline");
     expect(legend).toHaveTextContent("ring: state running");
-    // the twin sits at /twin; no sandbox banner while the sandbox is off
-    expect(screen.queryByTestId("sandbox-banner")).toBeNull();
-  });
-
-  it("Sandbox: the toggle opens the panel with a banner; Troubleshoot POSTs /sandbox/fault and lists the override from the response", async () => {
-    renderTwin();
-    await screen.findByText("Packaging Line 3 | Compressor Hall");
-    const toggle = screen.getByRole("button", { name: "Sandbox" });
-    expect(toggle).toHaveAttribute("aria-pressed", "false");
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByTestId("sandbox-banner")).toHaveTextContent("SANDBOX — simulated readings");
-    const panel = await screen.findByTestId("sandbox-panel");
-    // default motor is MTR-042; the sliders start from its recorded readings (API values)
-    expect(panel).toHaveTextContent("MTR-042");
-    expect(within(panel).getByTestId("sandbox-rpm-value")).toHaveTextContent("1,478");
-    expect(within(panel).getByTestId("sandbox-temp-value")).toHaveTextContent("81");
-    expect(within(panel).getByRole("slider", { name: "speed (rpm)" })).toHaveAttribute("max", "1800");
-    expect(within(panel).getByRole("slider", { name: "bearing temperature (°C)" })).toHaveAttribute("max", "120");
-    // Troubleshoot posts the fault for the selected motor; the override list comes from the response
-    fireEvent.click(within(panel).getByRole("button", { name: "Troubleshoot MTR-042" }));
-    const overrides = within(panel).getByTestId("sandbox-overrides");
-    expect(await within(overrides).findByText("MTR-042")).toBeInTheDocument();
-    expect(overrides).toHaveTextContent("fault since 08-27 02:00");
-    expect(overrides).toHaveTextContent("active overrides: 1");
-    const calls = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls;
-    const fault = calls.find((c) => String(c[0]).endsWith("/sandbox/fault"));
-    expect(fault).toBeDefined();
-    expect(JSON.parse(String((fault![1] as RequestInit).body))).toEqual({ asset_id: "MTR-042" });
+    // a live-state twin: no sandbox and no performance-mode controls
+    expect(screen.queryByRole("button", { name: "Sandbox" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Performance mode" })).toBeNull();
     // no visible "regime" anywhere on the twin page
     expect(document.body.textContent).not.toMatch(/regime/i);
   });

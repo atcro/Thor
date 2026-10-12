@@ -6,7 +6,6 @@
  *   glow, halo, glyph     <- asset.status        (rewind: rewind.statuses[asset_id])
  *   status word + p       <- STATUS_GLYPH.word, asset.failure_probability (rewind.probabilities)
  *   state ring            <- asset.regime (operating state)
- *   SANDBOX tag           <- asset.sandbox || asset.sandbox_override
  *   decision badge        <- asset.decision_state (DECISION_WORD)
  *   work-order tag        <- asset.work_order.status
  *   pulses                <- props.pulseQueue (ingest / prediction events from the API)
@@ -33,7 +32,6 @@ import "./scene.css";
 
 const EMPTY_SNAPSHOT = { lines: [], assets: [] };
 const PULSE_CAP = 400;
-const PULSE_CAP_PERF = 120;
 
 /** rad/s of visual spin for one asset, or 0 when nothing should move. */
 function omegaFor(a: TwinAsset, frozen: boolean): number {
@@ -126,14 +124,6 @@ function AssetGroup(props: AssetGroupProps) {
           {DECISION_WORD[decision]}
         </SceneLabel>
       )}
-      {props.showBadge && (twin.sandbox || twin.sandbox_override !== null) && (
-        <SceneLabel
-          position={[placement.machine[0], h + (decision !== "none" ? 1.55 : 0.9), placement.machine[2]]}
-          className="tw-badge tw-badge-sandbox"
-        >
-          sandbox
-        </SceneLabel>
-      )}
       {props.showBadge && wo?.status === "in_progress" && (
         <SceneLabel position={[placement.machine[0], h + 0.25, placement.machine[2]]} className="tw-wo">
           work order in progress
@@ -198,8 +188,8 @@ function FrameStats({ onFps }: { onFps?: (fps: number) => void }) {
   return null;
 }
 
-function Resources({ palette, perf, children }: { palette: TwinPalette; perf: boolean; children: React.ReactNode }) {
-  const res = useMemo(() => createResources(palette, perf), [palette, perf]);
+function Resources({ palette, children }: { palette: TwinPalette; children: React.ReactNode }) {
+  const res = useMemo(() => createResources(palette), [palette]);
   useEffect(() => () => res.dispose(), [res]);
   return <ResourcesContext.Provider value={res}>{children}</ResourcesContext.Provider>;
 }
@@ -213,7 +203,7 @@ function layoutKey(s: SceneProps["snapshot"]): string {
 }
 
 export default function PlantScene(props: SceneProps) {
-  const { snapshot, rewind, palette, performanceMode, xray, selected, hovered } = props;
+  const { snapshot, rewind, palette, xray, selected, hovered } = props;
   const key = layoutKey(snapshot);
   const layout = useMemo(
     () => computeLayout(snapshot ?? EMPTY_SNAPSHOT),
@@ -234,7 +224,7 @@ export default function PlantScene(props: SceneProps) {
 
   return (
     <Canvas
-      dpr={performanceMode ? 1 : [1, 1.5]}
+      dpr={[1, 1.5]}
       gl={{ antialias: true, powerPreference: "high-performance", alpha: false }}
       shadows={false}
       frameloop="always"
@@ -247,7 +237,7 @@ export default function PlantScene(props: SceneProps) {
       <hemisphereLight args={["#c6d6ec", palette.floor, 1.7]} />
       <directionalLight position={[30, 50, 20]} intensity={2.2} color="#ffffff" />
 
-      <Resources palette={palette} perf={performanceMode}>
+      <Resources palette={palette}>
         <Floor layout={layout} palette={palette} rewind={frozen} onSelect={props.onSelect} />
 
         {assets.map((twin) => {
@@ -270,8 +260,8 @@ export default function PlantScene(props: SceneProps) {
               omega={omegaFor(twin, frozen)}
               selected={isSel}
               hovered={isHov}
-              showWord={focused || (xray && !performanceMode)}
-              showBadge={!frozen && (focused || !performanceMode)}
+              showWord={focused || xray}
+              showBadge={!frozen}
               palette={palette}
               onSelect={props.onSelect}
               onHover={props.onHover}
@@ -285,7 +275,7 @@ export default function PlantScene(props: SceneProps) {
         <EdgeNode position={layout.edge} label={showStructureLabels} />
         <ControlPlane position={layout.controlPlane} label={showStructureLabels} />
         <PathLines layout={layout} palette={palette} />
-        <Pulses layout={layout} queue={props.pulseQueue} palette={palette} cap={performanceMode ? PULSE_CAP_PERF : PULSE_CAP} />
+        <Pulses layout={layout} queue={props.pulseQueue} palette={palette} cap={PULSE_CAP} />
       </Resources>
 
       <CameraRig layout={layout} focus={props.focus} focusNonce={props.focusNonce} />

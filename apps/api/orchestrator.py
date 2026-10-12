@@ -251,8 +251,7 @@ a contract: the three cost_options with expected costs, which one is recommended
 the procedure passages (the contract's manual_citations, plus search_manuals if needed), and \
 close with: the contract is approved or rejected on Asset 360 -- you never approve.
 Status words: healthy means within the healthy baseline; critical is LATCHED -- say it \
-stays critical until a work order completes, even if the probability has fallen back. A \
-contract or alarm flagged sandbox is a 'sandbox scenario'; say so.
+stays critical until a work order completes, even if the probability has fallen back.
 
 TOOLS
 For failure mechanisms, inspection or maintenance procedures, thresholds, or plant policy, \
@@ -755,10 +754,8 @@ def tool_create_decision_contract(
     explanation_text: str,
     explanation_source: Literal["llm", "template"],
     engine: Engine | None,
-    sandbox_scenario: bool = False,
 ) -> DecisionContract:
-    """07: `agents.reliability.contract.create_decision_contract(...)` (inserts the row).
-    `sandbox_scenario` marks a contract drawn from sandbox readings."""
+    """07: `agents.reliability.contract.create_decision_contract(...)` (inserts the row)."""
     from agents.reliability.contract import create_decision_contract
 
     return create_decision_contract(
@@ -767,19 +764,7 @@ def tool_create_decision_contract(
         explanation_text,
         explanation_source,
         engine=engine,
-        sandbox_scenario=sandbox_scenario,
     )
-
-
-def _window_is_sandbox(h: RunHandle, gs: GraphState, spec: FeatureSpec) -> bool:
-    """True when the analysed asset's latest feature window holds a sandbox reading."""
-    df = h.cache.get("df")
-    if df is None or "sandbox" not in df.columns or "asset_id" not in df.columns:
-        return False
-    sub = df[df["asset_id"] == gs.asset_id]
-    if "ts" in sub.columns:
-        sub = sub.sort_values("ts")
-    return bool(sub.tail(int(spec.window_rows))["sandbox"].fillna(False).astype(bool).any())
 
 
 def tool_check_parity(
@@ -1133,15 +1118,14 @@ ANALYZE_RECENT_H = 72.0
 def _telemetry(h: RunHandle, engine: Engine | None) -> pd.DataFrame:
     """The fleet's stored telemetry for a TRAIN run: the recorded history only.
 
-    Sandbox readings are excluded (a sandbox scenario is never training data, a validation
-    metric or a drift baseline), and so are rows that carry no outcome -- the live replay
+    Rows that carry no outcome are excluded -- the live replay
     publishes observable sensors only, so a replayed degradation has no label and would train
     as a negative. Training therefore uses the rows whose simulator ground truth is stored
     (the seeded history with its completed failures), whatever the replay has streamed since.
     """
     df = h.cache.get("df")
     if df is None:
-        df = db.read_telemetry(engine=engine, include_sandbox=False)
+        df = db.read_telemetry(engine=engine)
         if "health" in df.columns and df["health"].notna().any():
             df = df[df["health"].notna()].reset_index(drop=True)
         h.cache["df"] = df
@@ -1597,9 +1581,7 @@ def _explain(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
     if _llm_enabled():
         gs.llm_calls += 1
     append_event(gs, gs.stage, f"explanation drafted ({source})", tool="draft_explanation")
-    contract = tool_create_decision_contract(
-        bundle, gs.run_id, text, source, engine, sandbox_scenario=_window_is_sandbox(h, gs, spec)
-    )
+    contract = tool_create_decision_contract(bundle, gs.run_id, text, source, engine)
     gs.contract = contract
     append_event(
         gs,
@@ -1849,7 +1831,7 @@ def get_run(run_id: str, engine: Engine | None = None) -> GraphState | None:
 
 
 def whatif(run_id: str, scenario: dict[str, float], engine: Engine | None = None) -> WhatIfResult:
-    """Re-score the run's champion with feature overrides (P2 sandbox).
+    """Re-score the run's champion with feature overrides (P2 what-if).
 
     Needs the run's cached model + latest feature row (rebuilt from the artifact if the process
     restarted). Raises KeyError for unknown runs, RuntimeError when no champion exists yet.
@@ -1914,7 +1896,6 @@ def _fleet_rows(engine: Engine | None) -> list[dict[str, Any]]:
                 "alarm": fa.alarm.value if fa.alarm else None,
                 "alarm_since": fa.alarm_since.isoformat() if fa.alarm_since else None,
                 "alarm_reason": fa.alarm_reason,
-                "sandbox": bool(fa.sandbox),
             }
         )
     # compute_fleet already orders worst-first with unscored assets last; keep that order
@@ -1946,7 +1927,7 @@ def _plain_drivers(top_features: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _contract_detail(dc: DecisionContract, engine: Engine | None) -> dict[str, Any]:
     """The 'details' view of one Decision Contract for Bolt: ids, recommendation, numbers,
     window, plain-named drivers, the cost options, the manual citations (source, section and
-    a short excerpt) and the sandbox flag. Every value is copied from the stored contract."""
+    a short excerpt). Every value is copied from the stored contract."""
     payload = db.dump_model(dc)
     citations = []
     for p in dc.manual_context:
@@ -1977,7 +1958,6 @@ def _contract_detail(dc: DecisionContract, engine: Engine | None) -> dict[str, A
             for o in dc.cost_comparison.options
         ],
         "manual_citations": citations,
-        "sandbox_scenario": bool(dc.sandbox_scenario),
     }
 
 
@@ -1998,13 +1978,12 @@ def copilot_get_asset(asset_id: str, engine: Engine | None = None) -> dict[str, 
     """Tool: everything Bolt needs to say what is happening with one asset.
 
     Returns {"asset": fleet row (health, failure_probability, operating state in `regime`,
-    status, alarm, alarm_since, sandbox ...), "status", "alarm": {level, since, reason,
-    sandbox} | None, "trend": rising|falling|flat|None over the last COPILOT_TREND_ROWS
+    status, alarm, alarm_since ...), "status", "alarm": {level, since, reason} | None, "trend": rising|falling|flat|None over the last COPILOT_TREND_ROWS
     per-sample predictions, "recent_predictions": the newest COPILOT_RECENT_PREDICTIONS rows
     as {ts, p} oldest first, "latest_telemetry": the observable sensors only,
     "contracts": up to five summaries, "contract": the newest contract's details (id,
     recommendation, probability, expected cost, window, plain-named drivers, cost options,
-    manual citations with a short excerpt, sandbox_scenario) or None, "runs". Simulator
+    manual citations with a short excerpt) or None, "runs". Simulator
     ground truth (health, failure_within_h, the simulator's regime label) never appears.
     """
     asset_id = asset_id.upper()
@@ -2027,7 +2006,6 @@ def copilot_get_asset(asset_id: str, engine: Engine | None = None) -> dict[str, 
             "level": row["alarm"],
             "since": row["alarm_since"],
             "reason": row["alarm_reason"],
-            "sandbox": row["sandbox"],
         }
     # Per-sample prediction history and trend: the same helpers the X-Ray HUD uses.
     trend = None
@@ -2051,7 +2029,6 @@ def copilot_get_asset(asset_id: str, engine: Engine | None = None) -> dict[str, 
             "failure_probability": c.failure_probability,
             "expected_cost": c.expected_cost,
             "status": db.contract_status(c.contract_id, engine=engine),
-            "sandbox_scenario": bool(c.sandbox_scenario),
         }
         for c in stored[:5]
     ]
@@ -2310,11 +2287,11 @@ COPILOT_TOOLS: list[dict[str, Any]] = [
         "description": (
             "Everything about one asset id (e.g. MTR-042): status (healthy | warning | critical "
             "| no_prediction | offline | no_data), the latched alarm (level, since = plant time, "
-            "reason, sandbox), the probability trend over the last 36 predictions, the last 6 "
+            "reason), the probability trend over the last 36 predictions, the last 6 "
             "predictions {ts, p}, the latest sensor readings, its operating state (field "
             "`regime`; say 'state'), contract summaries, and `contract` = the newest Decision "
             "Contract's details (id, recommendation, probability, expected cost, window, "
-            "top_features_plain, cost_options, manual_citations, sandbox_scenario) or null when "
+            "top_features_plain, cost_options, manual_citations) or null when "
             "no analysis has produced one yet."
         ),
         "input_schema": {
@@ -2523,9 +2500,8 @@ def _template_asset_text(res: dict[str, Any]) -> str:
     )
     if res["contracts"]:
         c = res["contracts"][0]
-        sandbox = " (sandbox scenario)" if c.get("sandbox_scenario") else ""
         text += (
-            f" Latest decision contract {c['contract_id']}{sandbox}: {c['recommendation']} "
+            f" Latest decision contract {c['contract_id']}: {c['recommendation']} "
             f"(p_fail {c['failure_probability']:.2f}, expected cost {c['expected_cost']:.0f}), "
             f"status {c['status']}."
         )
@@ -2602,17 +2578,16 @@ def _status_sentence(res: dict[str, Any]) -> str:
     trend_bit = f"the trend is {trend}" if trend else "no trend yet (fewer than 6 predictions)"
     alarm = res.get("alarm") or {}
     since = _plant_ts(alarm.get("since"))
-    sandbox = " from sandbox readings" if alarm.get("sandbox") else ""
     reason = str(alarm.get("reason") or "").replace(" (latched)", "")
     if status == "critical":
         head = (
-            f"{aid} is critical -- the alarm latched at {since}{sandbox} after "
+            f"{aid} is critical -- the alarm latched at {since} after "
             f"{reason or '3 consecutive predictions >= 0.5'} and stays critical until a work "
             "order completes"
         )
     elif status == "warning":
         head = (
-            f"{aid} is in warning -- raised at {since}{sandbox} after "
+            f"{aid} is in warning -- raised at {since} after "
             f"{reason or '3 consecutive predictions >= 0.3'}"
         )
     elif status == "healthy":
@@ -2640,19 +2615,16 @@ def _readings_line(res: dict[str, Any]) -> str:
         f"kurtosis {t['vibration_kurtosis']:.1f}, crest {t['vibration_crest']:.1f}, "
         f"bearing temp {t['bearing_temp_c']:.1f} C, motor temp {t['motor_temp_c']:.1f} C, "
         f"current {t['current_a']:.1f} A, {t['rpm']:.0f} rpm, load {t['load_pct']:.0f} %, "
-        f"state {_state_name(res['asset'].get('regime'))}"
-        + (" (sandbox readings)" if t.get("sandbox") else "")
-        + "."
+        f"state {_state_name(res['asset'].get('regime'))}."
     )
 
 
 def _contract_line(dc: dict[str, Any]) -> str:
-    sandbox = " (sandbox scenario)" if dc.get("sandbox_scenario") else ""
     window = ""
     if dc.get("window_start"):
         window = f", window {_plant_ts(dc['window_start'])} to {_plant_ts(dc['window_end'])}"
     return (
-        f"Decision Contract {dc['contract_id']}{sandbox} recommends "
+        f"Decision Contract {dc['contract_id']} recommends "
         f"{_rec_phrase(dc['recommendation'])}: failure probability "
         f"{dc['failure_probability']:.2f}, expected cost {_money(dc['expected_cost'])} under the "
         f"configured plant-cost assumptions{window}; status {dc['status']}."

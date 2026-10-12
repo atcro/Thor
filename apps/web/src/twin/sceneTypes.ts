@@ -48,7 +48,6 @@ export interface SceneProps {
   /** Bump to re-trigger a fly-to on the same focus (e.g. the "overview" button). */
   focusNonce: number;
   xray: boolean;
-  performanceMode: boolean;
   palette: TwinPalette;
   /** Measured frames per second, reported about once a second. */
   onFps?: (fps: number) => void;

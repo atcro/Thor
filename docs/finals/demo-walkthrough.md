@@ -9,7 +9,7 @@ The replay streams the recorded history at 900× (`REPLAY_SPEED`; one plant hour
 of the story (the six days after the seed point) is about ten minutes of wall clock, after which
 the same six days play again with plant time continuing (see "Later passes").
 
-## Dry run, as built (the hero path in 12 clicks)
+## Dry run, as built (the hero path in 11 clicks)
 
 Run from `C:\Thor-main` in PowerShell. Docker Desktop must be running.
 
@@ -30,10 +30,9 @@ prediction yet`. Open http://localhost:5173 (Chrome). Then, in this order:
 | 6 | **Copilot · Bolt**, asset context `MTR-042`, ask: "What's happening with MTR-042?" then "Give me the details." then "What are the possible fixes?" | < 1 s each (template) / 7–30 s each (LLM); the last answer points to the approval on Asset 360 | "Reads the same evidence, adds precedent from real work orders, no write tools." |
 | 7 | **Fleet** → MTR-042 card → scroll to the Decision Contract → name → **Approve** | Panel locks; approval row appears | "The engineer signs after asking Bolt and reading the evidence. Thor stops here." |
 | 8 | **Fleet** | `offline · in maintenance` within 3 s, green with the work order completed within ~15 s | "The plant took it offline and brought it back on its healthy baseline. The registry did not change." |
-| 9 | **3-D Digital Twin** (last menu item) → **Overview** → **X-Ray** → **Line 3** → click MTR-042's label → **Open in Asset 360** or close | Lines in physical space, live counters bottom-left, the HUD with status line, sensors, drivers, decision, provenance, PLC tags, MES feed | "Point at any pixel and we can trace it to its source." |
+| 9 | **3-D Digital Twin** (last menu item) → **Overview** → **X-Ray** → **Line 3** → click MTR-042's label → **Open in Asset 360** or close | Lines in physical space, live counters bottom-left, model provenance top-right; the HUD with probability and status line, state and sensors, top drivers, decision (PLC tags and MES feed folded under **Plant integration**) | "Point at any pixel and we can trace it to its source." |
 | 10 | (optional, the team may drop it) **Rewind** → **Load stored predictions** → **critical alarm** / **work order** | Two figures side by side: this run's lead time and the validated 53.1 h | |
-| 11 | (optional, the team may drop it) **Sandbox** → **Troubleshoot MTR-042** or **Random fault** → wait ~12 s → red; **Reset sandbox** | Violet `SANDBOX — simulated readings` banner; a sandbox motor can be analysed and approved like MTR-042 | |
-| 12 | Done. To run it again: `.\scripts\demo_reset.ps1` | | |
+| 11 | Done. To run it again: `.\scripts\demo_reset.ps1` | | |
 
 Recovery: training fails or stalls → `.\scripts\demo_reset.ps1 -Prep` (trains and promotes as
 `demo-prep@thor`, then continue at step 4); a step stalls → **Pause** / **Resume** in the top
@@ -69,15 +68,12 @@ promotion is approved, and the `edge` and `replay` no longer wait for `prep`. Ev
    production model yet`. The Fleet page's System panel shows LLM `template mode` or the provider.
 3. **Browser:** Chrome, http://localhost:5173, zoom 110 % on the 1080p projector (the cards and
    the HUD stay readable; the twin keeps its fps). Close other tabs.
-4. **Twin performance mode:** open the 3-D Digital Twin once, press **Performance mode** if the
-   `render` counter in the bottom-left badge shows under 45 fps on the venue's display, press
-   **Overview**, then return to Fleet. The setting persists.
-5. **Template mode if Wi-Fi drops:** nothing to do; if the provider is unreachable the API falls
+4. **Template mode if Wi-Fi drops:** nothing to do; if the provider is unreachable the API falls
    back to the deterministic template for the explanation and for Bolt (the chip says
    "template"). To force it on purpose, start the stack with the key blank in `.env`.
-6. Do **not** train before the judges arrive: the model and the sign-off are the story.
+5. Do **not** train before the judges arrive: the model and the sign-off are the story.
 
-## The 10 steps (click path, what to say, measured timings)
+## The 9 steps (click path, what to say, measured timings)
 
 Timings are from the moment of the click. `t` is demo time.
 
@@ -193,9 +189,9 @@ not change."
 ### 9. 3-D Digital Twin (t ≈ 5:20)
 
 Screen: **3-D Digital Twin** (last item in the side menu). Press **Overview**, turn on **X-Ray**,
-hover MTR-042 (glyph + three facts), click it (HUD: status line, raw probability sparkline, state,
-live sensors, drivers from the contract, decision and work order, provenance, PLC tags, the
-simulated MES feed). Press **Rewind** → **Load stored predictions** → **early warning** /
+hover MTR-042 (glyph + three facts), click it (HUD: probability, status line and raw sparkline,
+state and live sensors, the top three drivers from the contract, decision and work order; PLC tags
+and the simulated MES feed are folded under **Plant integration** for Q&A). Press **Rewind** → **Load stored predictions** → **early warning** /
 **critical alarm** / **work order**: the bar shows **this run: first sustained warning → motor
 taken offline** (24–39 h in the rehearsals; it depends on how long the motor sat red) next to
 **validated on held-out motors** (53 h).
@@ -203,18 +199,6 @@ taken offline** (24–39 h in the rehearsals; it depends on how long the motor s
 Say: "More than a 3-D fleet: each line in physical space, the live data path with measured
 rates, and a rewind over stored predictions that makes the lead time visible — this run's next
 to the validated figure."
-
-### 10. Sandbox (t ≈ 5:45)
-
-Screen: twin → **Sandbox**. The banner `SANDBOX — simulated readings` appears. Move the rpm or
-temperature slider on the selected motor (the state ring follows; no alarm unless the model scores
-it as risky), press **Troubleshoot <motor>** (red within about 15 s), **Random fault**, **Shake up
-operations** (nothing breaks), **Reset sandbox**. Any sandbox motor that went red can be analysed
-and approved like MTR-042 and comes back green; the contract and the work order are labelled
-"sandbox scenario".
-
-Say: "Sandbox readings take the real path — replay, MQTT, edge, control plane — and are tagged
-all the way through; they never enter training."
 
 **Timing budget:** nothing in the data heals MTR-042 (its degradation is held across replay
 passes until the work order), so the approval can wait as long as the Q&A needs. The one clock

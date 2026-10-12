@@ -26,7 +26,6 @@ from apps.api.routes import (
     models,
     pipeline,
     replay,
-    sandbox,
     twin,
     work_orders,
 )
@@ -149,4 +148,3 @@ app.include_router(copilot.router)
 app.include_router(work_orders.router)
 app.include_router(twin.router)
 app.include_router(replay.router)
-app.include_router(sandbox.router)

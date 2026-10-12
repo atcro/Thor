@@ -144,7 +144,6 @@ class EdgeState:
             log.debug("dropping malformed telemetry row: %s", exc)
             return None
         row["ts"] = payload.get("ts")
-        row["sandbox"] = bool(payload.get("sandbox", False))
         row["_dt"] = _parse_ts(row["ts"])
         # No regime label is read from the payload: the regime is inferred from rpm / load
         # inside edge.features, exactly as in training.
@@ -153,10 +152,6 @@ class EdgeState:
             if buf is None:
                 buf = deque(maxlen=self.cfg.buffer_rows)
                 self.buffers[asset_id] = buf
-            if buf and bool(buf[-1].get("sandbox", False)) != row["sandbox"]:
-                # Sandbox readings start or stop: never score a window that mixes sandbox
-                # and recorded rows, so every prediction's sandbox flag is exact.
-                buf.clear()
             if buf and self._gap(buf, row["_dt"]):
                 # The motor was off (an approved work order): its window restarts.
                 buf.clear()
@@ -182,8 +177,6 @@ class EdgeState:
             "failure_probability": round(float(p), 6),
             "model_version": model.version,
             "source": "edge",
-            # Scored from sandbox readings (the window is never mixed, see process_row).
-            "sandbox": bool(row["sandbox"]),
             # Measured wall time of feature computation + ONNX inference for this row. The
             # control plane's twin reports its p50/p95; it is never stored with the prediction.
             "inference_ms": round(inference_ms, 3),

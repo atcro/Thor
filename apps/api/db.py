@@ -79,9 +79,6 @@ telemetry = Table(
     Column("regime", String(16)),
     Column("health", Float),
     Column("failure_within_h", Float),
-    # Sandbox readings (3-D twin sandbox) are tagged so training, validation, drift and the
-    # rewind's lead time can exclude them.
-    Column("sandbox", Boolean, nullable=False, default=False, server_default="0"),
 )
 Index("ix_telemetry_ts", telemetry.c.ts)
 
@@ -94,8 +91,6 @@ predictions = Table(
     Column("model_version", String(64), nullable=False),
     Column("failure_probability", Float, nullable=False),
     Column("source", String(16), nullable=False, default="edge"),
-    # True when the scored window contained sandbox readings.
-    Column("sandbox", Boolean, nullable=False, default=False, server_default="0"),
 )
 # One row per (asset, ts, model, source). The replay loops forever and the edge re-scores every
 # row on each pass, so inserts are ON CONFLICT DO NOTHING against this key -- otherwise the table
@@ -185,7 +180,7 @@ work_order_events = Table(
 )
 
 # Alarm transitions (apps/api/alarms.py). Insert-only: the current level of a motor is its
-# newest row; a latched critical clears only through a work-order or sandbox-reset event.
+# newest row; a latched critical clears only through a work-order event.
 alarm_events = Table(
     "alarm_events",
     metadata,
@@ -198,21 +193,6 @@ alarm_events = Table(
     Column("recorded_at", DateTime(timezone=True), nullable=False),
     Column("probability", Float),
     Column("model_version", String(64)),
-    Column("sandbox", Boolean, nullable=False, default=False, server_default="0"),
-)
-
-# Sandbox actions (3-D twin sandbox). Insert-only; the active override of a motor is derived
-# from its newest `set` / `fault` / `shake` event after the newest `reset`.
-sandbox_events = Table(
-    "sandbox_events",
-    metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("event_id", String(64), nullable=False, unique=True),
-    Column("kind", String(16), nullable=False),
-    Column("asset_id", String(32), index=True),
-    Column("payload", JSON, nullable=False, default=dict),
-    Column("recorded_at", DateTime(timezone=True), nullable=False),
-    Column("note", Text, nullable=False, default=""),
 )
 
 model_registry = Table(
@@ -292,8 +272,6 @@ def init_db(engine: Engine | None = None) -> Engine:
     metadata.create_all(engine)
     _ensure_predictions_key(engine)
     _ensure_assets_role(engine)
-    _ensure_column(engine, "telemetry", "sandbox", "BOOLEAN NOT NULL DEFAULT FALSE")
-    _ensure_column(engine, "predictions", "sandbox", "BOOLEAN NOT NULL DEFAULT FALSE")
     if is_postgres(engine):
         with engine.begin() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS timescaledb"))
@@ -435,19 +413,15 @@ def read_telemetry(
     end: datetime | None = None,
     limit: int | None = None,
     engine: Engine | None = None,
-    include_sandbox: bool = True,
 ) -> pd.DataFrame:
     """Return telemetry as a DataFrame sorted by (asset_id, ts). Empty frame if none.
 
-    `limit` returns the most recent N rows (per query, not per asset). `include_sandbox=False`
-    drops rows tagged as sandbox readings (training, validation metrics and drift use that).
+    `limit` returns the most recent N rows (per query, not per asset).
     """
     engine = engine or get_engine()
     q = select(telemetry)
     if asset_id:
         q = q.where(telemetry.c.asset_id == asset_id)
-    if not include_sandbox:
-        q = q.where(telemetry.c.sandbox.is_(False))
     if start:
         q = q.where(telemetry.c.ts >= start)
     if end:
@@ -498,7 +472,7 @@ def insert_predictions(rows: Iterable[dict[str, Any]], engine: Engine | None = N
     Output: number of rows inserted. The edge posts these in batches of a few hundred.
     """
     engine = engine or get_engine()
-    payload = [{"source": "edge", "sandbox": False, **r} for r in rows]
+    payload = [{"source": "edge", **r} for r in rows]
     if not payload:
         return 0
     if is_postgres(engine):
@@ -519,7 +493,6 @@ def insert_prediction(
     failure_probability: float,
     source: str = "edge",
     engine: Engine | None = None,
-    sandbox: bool = False,
 ) -> None:
     insert_predictions(
         [
@@ -529,7 +502,6 @@ def insert_prediction(
                 "model_version": model_version,
                 "failure_probability": failure_probability,
                 "source": source,
-                "sandbox": sandbox,
             }
         ],
         engine=engine,
@@ -549,7 +521,6 @@ def latest_prediction_rows(
     """
     engine = engine or get_engine()
     p = predictions
-    retired = sandbox_retired_max_id(engine)
     rn = (
         func.row_number()
         .over(partition_by=p.c.asset_id, order_by=(p.c.ts.desc(), p.c.id.desc()))
@@ -561,13 +532,8 @@ def latest_prediction_rows(
         p.c.model_version,
         p.c.failure_probability,
         p.c.source,
-        p.c.sandbox,
         rn,
     )
-    if retired:
-        # Sandbox rows at or below the newest sandbox reset are retired: after "Reset sandbox"
-        # a motor shows its last recorded-stream prediction, not the scenario's.
-        base = base.where((p.c.sandbox.is_(False)) | (p.c.id > retired))
     ranked = base.subquery("ranked")
     q = (
         select(ranked)
@@ -590,7 +556,6 @@ def latest_prediction_rows(
                 "ts": ts,
                 "model_version": str(r["model_version"]),
                 "source": str(r["source"]),
-                "sandbox": bool(r["sandbox"]),
             }
     for aid, entry in out.items():
         vals = sorted(probs.get(aid, [entry["failure_probability"]]))
@@ -600,26 +565,6 @@ def latest_prediction_rows(
         )
         entry["n_rows"] = len(vals)
     return out
-
-
-def sandbox_retired_max_id(engine: Engine | None = None) -> int:
-    """predictions.id recorded by the newest sandbox `reset` event (0 when none): sandbox
-    prediction rows at or below it are retired from display and from the alarm walk."""
-    engine = engine or get_engine()
-    q = (
-        select(sandbox_events.c.payload)
-        .where(sandbox_events.c.kind == "reset")
-        .order_by(sandbox_events.c.recorded_at.desc(), sandbox_events.c.id.desc())
-        .limit(1)
-    )
-    with engine.connect() as conn:
-        row = conn.execute(q).first()
-    if not row or not row[0]:
-        return 0
-    try:
-        return int(dict(row[0]).get("retired_prediction_max_id") or 0)
-    except (TypeError, ValueError):
-        return 0
 
 
 def latest_predictions(engine: Engine | None = None) -> dict[str, float]:
@@ -883,7 +828,6 @@ def list_work_orders(asset_id: str | None = None, engine: Engine | None = None) 
                 status=status,  # type: ignore[arg-type]
                 started_ts=started,
                 completed_ts=completed,
-                sandbox_scenario=bool(dc.sandbox_scenario),
             )
         )
     return out

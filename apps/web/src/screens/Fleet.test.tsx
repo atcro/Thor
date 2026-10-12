@@ -28,7 +28,6 @@ const fleet: FleetAsset[] = [
     alarm: "critical",
     alarm_since: "2026-09-13T08:30:00Z",
     alarm_reason: "sustained p >= 0.5 over 3 rows",
-    sandbox: false,
   },
   {
     asset: {
@@ -51,7 +50,6 @@ const fleet: FleetAsset[] = [
     alarm: null,
     alarm_since: null,
     alarm_reason: null,
-    sandbox: true,
   },
   {
     asset: {
@@ -81,13 +79,11 @@ const fleet: FleetAsset[] = [
       status: "in_progress",
       started_ts: "2025-08-27T02:00:00Z",
       completed_ts: null,
-      sandbox_scenario: false,
     },
     status: "offline",
     alarm: null,
     alarm_since: null,
     alarm_reason: null,
-    sandbox: false,
   },
 ];
 
@@ -207,10 +203,9 @@ describe("Fleet screen", () => {
     // tier is also written as text so colour is never the only cue
     expect(screen.getByText("critical")).toBeInTheDocument();
     expect(screen.getByText("within healthy baseline")).toBeInTheDocument();
-    // the latched alarm and the sandbox flag are API fields shown as pills
+    // the latched alarm is an API field shown as a pill
     const latched = screen.getByText("latched since 09-13 08:30");
     expect(latched).toHaveAttribute("title", "sustained p >= 0.5 over 3 rows");
-    expect(screen.getByText("sandbox scenario")).toBeInTheDocument();
     expect(screen.getAllByText("State: running")).toHaveLength(3);
   });
 

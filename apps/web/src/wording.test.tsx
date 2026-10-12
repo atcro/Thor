@@ -6,7 +6,7 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FleetAsset, SandboxState, SystemHealth, TwinEventBatch, TwinSnapshot } from "./api/types";
+import type { FleetAsset, SystemHealth, TwinEventBatch, TwinSnapshot } from "./api/types";
 import { Fleet } from "./screens/Fleet";
 import { SCENE_FIXTURE } from "./twin/scene/fixture";
 import { hudFixture } from "./twin/testFixtures";
@@ -38,12 +38,10 @@ const fleet: FleetAsset[] = SCENE_FIXTURE.assets.map((a) => ({
   alarm: a.alarm,
   alarm_since: a.alarm_since,
   alarm_reason: a.alarm_reason,
-  sandbox: a.sandbox,
 }));
 
 const health: SystemHealth = { db: "ok", mqtt: true, mlflow: true, edge: true, n_telemetry_rows: 1000, last_ingest_ts: SCENE_FIXTURE.plant_time };
 const batch: TwinEventBatch = { since: 0, next: 0, events: [], dropped: 0, live: SCENE_FIXTURE.live };
-const sandbox: SandboxState = { active: false, overrides: [], retired_prediction_max_id: 0, last_reset_at: null, events: [] };
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -60,7 +58,6 @@ describe("visible wording", () => {
       if (url.includes("/twin/hud/")) return jsonResponse(hudFixture);
       if (url.includes("/twin/events")) return jsonResponse(batch);
       if (url.endsWith("/twin")) return jsonResponse(SCENE_FIXTURE);
-      if (url.endsWith("/sandbox")) return jsonResponse(sandbox);
       return new Response("not found", { status: 404 });
     });
   });

@@ -74,7 +74,6 @@ def create_decision_contract(
     explanation_text: str,
     explanation_source: Literal["llm", "template"],
     engine: Any = None,
-    sandbox_scenario: bool = False,
 ) -> DecisionContract:
     """Create and persist the immutable Decision Contract for one recommendation.
 
@@ -109,7 +108,6 @@ def create_decision_contract(
         lead_time_h=float(bundle.validation.lead_time.median_h),
         calibration_brier=float(bundle.validation.calibration.brier_after),
         data_quality_score=float(bundle.data_quality_score),
-        sandbox_scenario=bool(sandbox_scenario),
         explanation_text=explanation_text,
         explanation_source=explanation_source,
         evidence_hash=evidence_hash(bundle),

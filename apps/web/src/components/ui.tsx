@@ -93,19 +93,16 @@ export const STATUS_WORD: Record<TwinStatus, string> = {
 
 /**
  * Alarm facts next to a HealthPill: "latched since <plant time>" while the alarm is critical
- * (critical stays until a completed work order clears it) and "sandbox scenario" when the
- * displayed prediction came from sandbox readings. Both are API fields; nothing is derived.
+ * (critical stays until a completed work order clears it). API fields; nothing is derived.
  */
 export function AlarmPills({
   alarm,
   alarmSince,
   alarmReason,
-  sandbox,
 }: {
   alarm: AlarmLevel | null | undefined;
   alarmSince: string | null | undefined;
   alarmReason: string | null | undefined;
-  sandbox: boolean | undefined;
 }) {
   return (
     <>
@@ -114,17 +111,7 @@ export function AlarmPills({
           latched since {fmtShort(alarmSince)}
         </Pill>
       )}
-      {sandbox && <SandboxPill />}
     </>
-  );
-}
-
-/** Marks a value that came from sandbox (simulated) readings. */
-export function SandboxPill({ title = "Sandbox scenario: produced from simulated sandbox readings, not the recorded plant history" }: { title?: string }) {
-  return (
-    <Pill tone="warn" title={title}>
-      sandbox scenario
-    </Pill>
   );
 }
 
@@ -298,13 +285,12 @@ export const WORK_ORDER_WORD: Record<WorkOrderStatus, string> = {
 /** Plant-reported status of the work order behind an approved contract. Thor only displays it. */
 export function WorkOrderPill({ wo }: { wo: WorkOrder }) {
   const tone: Tone = wo.status === "completed" ? "good" : wo.status === "in_progress" ? "warn" : "info";
-  const base =
+  const title =
     wo.status === "scheduled"
       ? `Approved by ${wo.approver}. Plant window ${fmtDateTime(wo.window_start)} → ${fmtDateTime(wo.window_end)} (plant time). Executed by the plant CMMS, not by Thor.`
       : wo.status === "in_progress"
         ? `Taken offline by plant maintenance at ${fmtDateTime(wo.started_ts)} (plant time); ${wo.planned_downtime_h} h planned downtime.`
         : `Returned to service by plant maintenance at ${fmtDateTime(wo.completed_ts)} (plant time).`;
-  const title = wo.sandbox_scenario ? `${base} Sandbox scenario: the contract was raised on simulated sandbox readings.` : base;
   return (
     <Pill tone={tone} title={title}>
       {WORK_ORDER_WORD[wo.status]}

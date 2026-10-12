@@ -1,4 +1,4 @@
-"""Pipeline routes (02 -> 03): start runs, poll/stream GraphState, what-if sandbox."""
+"""Pipeline routes (02 -> 03): start runs, poll/stream GraphState, what-if."""
 
 from __future__ import annotations
 
@@ -108,7 +108,7 @@ def get_pipeline_run(run_id: str) -> dict[str, Any]:
 
 @router.post("/whatif", response_model=WhatIfResult)
 def whatif(req: WhatIfRequest) -> WhatIfResult:
-    """Re-score the run's champion under feature overrides (P2 reliability sandbox)."""
+    """Re-score the run's champion under feature overrides (P2 what-if)."""
     try:
         return orchestrator.whatif(req.run_id, req.scenario, engine=db.get_engine())
     except KeyError as e:

@@ -78,7 +78,7 @@ export function Motor({ status, regime, omega, selected, palette }: MotorProps) 
     [r.haloTexture],
   );
   useEffect(() => () => haloMat.dispose(), [haloMat]);
-  const haloOpacity = r.perf ? 0 : HALO_FACTOR[status] * palette.glow;
+  const haloOpacity = HALO_FACTOR[status] * palette.glow;
   useEffect(() => {
     haloMat.color.set(STATUS_GLYPH[status].color);
     haloMat.opacity = haloOpacity;

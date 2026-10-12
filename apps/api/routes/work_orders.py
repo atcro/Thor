@@ -10,7 +10,6 @@ replay's simulated CMMS (`streaming/replay/work_orders.py`).
 
 from __future__ import annotations
 
-import logging
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
@@ -18,7 +17,6 @@ from fastapi import APIRouter, HTTPException
 from apps.api import alarms, db
 from apps.api.schemas import WorkOrder, WorkOrderEvent, WorkOrderEventRequest
 
-log = logging.getLogger("thor.routes.work_orders")
 router = APIRouter(tags=["work-orders"])
 
 
@@ -65,14 +63,6 @@ def post_work_order_event(contract_id: str, req: WorkOrderEventRequest) -> WorkO
         engine=engine,
     )
     updated = next(o for o in db.list_work_orders(engine=engine) if o.contract_id == contract_id)
-    if req.status == "in_progress" and updated.sandbox_scenario:
-        # Approving a sandbox motor's contract ends its sandbox fault: the plant's repair wins.
-        from apps.api import sandbox
-
-        try:
-            sandbox.clear_asset(current.asset_id, f"work order {contract_id} started", engine)
-        except Exception as exc:  # noqa: BLE001 - the plant's report must never be lost
-            log.warning("could not clear the sandbox override of %s: %s", current.asset_id, exc)
     if req.status == "completed":
         # A completed work order is the only thing that clears a latched critical alarm.
         alarms.clear_alarm(
@@ -80,6 +70,5 @@ def post_work_order_event(contract_id: str, req: WorkOrderEventRequest) -> WorkO
             "work_order_completed",
             req.plant_ts,
             engine=engine,
-            sandbox=updated.sandbox_scenario,
         )
     return updated

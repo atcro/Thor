@@ -125,7 +125,7 @@ def test_pipeline_run_to_approval(client: TestClient, monkeypatch: pytest.Monkey
     assert ev["evidence"]["manual_context"][0]["section"] == "4.2"
     assert client.get("/approvals/dc_nope").status_code == 404
 
-    # what-if sandbox is available once a champion exists
+    # what-if is available once a champion exists
     r = client.post("/whatif", json={"run_id": run_id, "scenario": {"load_mean": 40}})
     assert r.status_code == 200 and r.json()["delta"] == -0.28
 

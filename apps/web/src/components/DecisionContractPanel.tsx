@@ -3,7 +3,7 @@ import { Bar, BarChart, Cell, ReferenceLine, ResponsiveContainer, Tooltip, XAxis
 import type { Approval, Decision, DecisionContract, MaintenanceOption } from "../api/types";
 import { fmtDateTime, fmtHours, fmtMoney, fmtNum, fmtPct, humanise, OPTION_LABEL, shortHash } from "../lib/format";
 import { AXIS_TICK, CHART, ChartTip } from "./charts";
-import { Kv, Mono, Pill, SandboxPill, SourceChip, Stat } from "./ui";
+import { Kv, Mono, Pill, SourceChip, Stat } from "./ui";
 
 const OPTION_ORDER: MaintenanceOption[] = ["maintain_now", "maintain_later", "run_to_failure"];
 
@@ -149,12 +149,6 @@ export function DecisionContractPanel({
           <>
             <span className="dot off pulse" />
             Decision Contract awaiting engineer approval — no action executes until recorded
-          </>
-        )}
-        {contract.sandbox_scenario && (
-          <>
-            {" "}
-            <SandboxPill title="Sandbox scenario: this contract was raised on simulated sandbox readings, not the recorded plant history" />
           </>
         )}
       </div>

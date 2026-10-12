@@ -128,14 +128,6 @@ def after_last_gap(df_asset: pd.DataFrame) -> pd.DataFrame:
     return df_asset.iloc[int(gaps.index[-1]) :].reset_index(drop=True)
 
 
-def window_is_sandbox(df_asset: pd.DataFrame, ts: datetime, window_rows: int) -> bool:
-    """True when any of the `window_rows` raw rows ending at `ts` is a sandbox reading."""
-    if "sandbox" not in df_asset.columns or df_asset.empty:
-        return False
-    sub = df_asset[pd.to_datetime(df_asset["ts"], utc=True) <= pd.Timestamp(ts)].tail(window_rows)
-    return bool(sub["sandbox"].fillna(False).astype(bool).any())
-
-
 def latest_feature_row(
     df_asset: pd.DataFrame, spec: FeatureSpec, horizon_h: float = 48.0
 ) -> tuple[pd.DataFrame, datetime] | None:
@@ -187,7 +179,6 @@ def score_assets(
                     "model_version": ref.version,
                     "failure_probability": p,
                     "source": source,
-                    "sandbox": window_is_sandbox(tail, ts, int(spec.window_rows)),
                 }
             )
         x, ts = windows[-1]

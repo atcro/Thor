@@ -70,7 +70,6 @@ def test_db_rows_carry_ground_truth_but_responses_do_not(client: TestClient) -> 
         "current_a",
         "rpm",
         "load_pct",
-        "sandbox",  # an observable tag on the reading itself, never ground truth
     }
     series = client.get("/assets/MTR-042/telemetry", params={"hours": 24}).json()
     assert series
@@ -84,7 +83,7 @@ def test_db_rows_carry_ground_truth_but_responses_do_not(client: TestClient) -> 
     _assert_no_ground_truth(twin, "GET /twin")
     for a in twin["assets"]:
         assert a["latest"] is not None
-        assert set(a["latest"]) == {"asset_id", "ts", "sandbox", *SENSOR_COLUMNS}
+        assert set(a["latest"]) == {"asset_id", "ts", *SENSOR_COLUMNS}
         assert not (set(_keys(a)) & set(GROUND_TRUTH_COLUMNS))
     for path in ("/twin/hud/MTR-042", "/twin/rewind", "/twin/events"):
         r = client.get(path)

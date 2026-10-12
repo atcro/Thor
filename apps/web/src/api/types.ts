@@ -25,8 +25,6 @@ export interface ObservedTelemetryRow {
   current_a: number;
   rpm: number;
   load_pct: number;
-  /** True when the row was produced under a sandbox override (simulated readings). */
-  sandbox?: boolean;
 }
 
 /** Rows accepted by POST /ingest (same observable shape). */
@@ -358,8 +356,6 @@ export interface DecisionContract {
   explanation_text: string;
   explanation_source: ExplanationSource;
   evidence_hash: string;
-  /** True when the analysed prediction came from sandbox readings ("sandbox scenario"). */
-  sandbox_scenario: boolean;
 }
 
 export type Decision = "approved" | "rejected";
@@ -513,13 +509,11 @@ export interface WorkOrder {
   status: WorkOrderStatus;
   started_ts: ISODate | null;
   completed_ts: ISODate | null;
-  /** The contract behind it was a sandbox scenario. */
-  sandbox_scenario: boolean;
 }
 
 /**
  * Alarm level of one motor (apps/api/alarms.py): healthy (within healthy baseline) / warning /
- * critical. Critical is LATCHED: it stays until a completed work order (or a sandbox reset)
+ * critical. Critical is LATCHED: it stays until a completed work order
  * clears it, whatever the probability does afterwards.
  */
 export type AlarmLevel = "healthy" | "warning" | "critical";
@@ -534,7 +528,6 @@ export interface AlarmEvent {
   recorded_at: ISODate;
   probability: number | null;
   model_version: string | null;
-  sandbox: boolean;
 }
 
 export interface FleetAsset {
@@ -558,8 +551,6 @@ export interface FleetAsset {
   alarm: AlarmLevel | null;
   alarm_since: ISODate | null;
   alarm_reason: string | null;
-  /** True when the displayed prediction came from sandbox readings ("sandbox scenario"). */
-  sandbox: boolean;
 }
 
 export interface PipelineRunRequest {
@@ -637,8 +628,6 @@ export interface PredictionRow {
   failure_probability: number;
   model_version: string;
   source: string;
-  /** Scored from sandbox readings. */
-  sandbox: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -658,62 +647,6 @@ export interface ReplayState {
   /** Rows seeded at start-up (the recorded history the replay continues from). */
   seeded_until: ISODate | null;
   paused_at: ISODate | null;
-}
-
-// ---------------------------------------------------------------------------
-// Sandbox (3-D Digital Twin): overrides the replay applies to its recorded stream.
-// ---------------------------------------------------------------------------
-
-/** The active sandbox override of one motor (the newest non-reset event for it). */
-export interface SandboxOverride {
-  asset_id: string;
-  /** Absolute setpoints applied to the recorded rows (null = leave the recorded value). */
-  rpm: number | null;
-  load_pct: number | null;
-  bearing_temp_c: number | null;
-  /** Drive-end bearing fault ramping from 0 at `fault_since` to 1 over `fault_ramp_h` plant hours. */
-  fault: boolean;
-  fault_since: ISODate | null;
-  fault_ramp_h: number | null;
-  set_at: ISODate;
-  note: string;
-}
-
-/** Insert-only record of every sandbox action. */
-export interface SandboxEvent {
-  event_id: string;
-  kind: "set" | "fault" | "shake" | "reset";
-  asset_id: string | null;
-  payload: Record<string, unknown>;
-  recorded_at: ISODate;
-  note: string;
-}
-
-/** GET /sandbox and every POST /sandbox/* response. */
-export interface SandboxState {
-  active: boolean;
-  overrides: SandboxOverride[];
-  retired_prediction_max_id: number;
-  last_reset_at: ISODate | null;
-  events: SandboxEvent[];
-}
-
-/** POST /sandbox/reset: the new state plus the alarms the reset cleared. */
-export interface SandboxResetResponse extends SandboxState {
-  reset_event?: SandboxEvent;
-  alarms_cleared: string[];
-}
-
-export interface SandboxSetRequest {
-  asset_id: string;
-  rpm?: number;
-  load_pct?: number;
-  bearing_temp_c?: number;
-}
-
-export interface SandboxFaultRequest {
-  asset_id: string;
-  ramp_h?: number;
 }
 
 /** Run summary rows returned by GET /pipeline?asset_id= and inside GET /assets/:id. */
@@ -753,7 +686,6 @@ export interface AssetDetail {
   alarm: AlarmLevel | null;
   alarm_since: ISODate | null;
   alarm_reason: string | null;
-  sandbox: boolean;
 }
 
 /** GET /approvals/pending */
@@ -823,15 +755,10 @@ export interface TwinAsset {
   msgs_last_60s: number;
   open_contract_id: string | null;
   work_order: WorkOrder | null;
-  /** Latched alarm behind `status`: level (null = healthy), raised at (plant time), rule, sandbox-raised. */
+  /** Latched alarm behind `status`: level (null = healthy), raised at (plant time), rule. */
   alarm: AlarmLevel | null;
   alarm_since: ISODate | null;
   alarm_reason: string | null;
-  alarm_sandbox: boolean;
-  /** True when the displayed prediction came from sandbox readings ("sandbox scenario"). */
-  sandbox: boolean;
-  /** The active sandbox override on this motor, if any. */
-  sandbox_override: SandboxOverride | null;
 }
 
 /** Simulated MES feed: context only, feeds no model, score or decision. */
@@ -925,8 +852,6 @@ export interface PredictionPoint {
   failure_probability: number;
   model_version: string;
   source: string;
-  /** Scored from sandbox readings. */
-  sandbox: boolean;
 }
 
 export interface DriverSource {

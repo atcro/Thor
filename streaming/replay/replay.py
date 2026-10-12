@@ -47,7 +47,7 @@ from data.simulator.generate import (
     generate_fleet,
     write_outputs,
 )
-from streaming.replay.sandbox import ReplayGate, SandboxApplier, SandboxClient
+from streaming.replay.gate import ReplayGate
 from streaming.replay.work_orders import RepairSimulator, UnrepairedFault, WorkOrderClient
 
 log = logging.getLogger("thor.replay")
@@ -61,7 +61,7 @@ DEFAULT_BATCH = 500
 #: and are removed at the publish boundary: a real plant cannot observe its own remaining
 #: life, and the control plane, fleet view, Bolt, Decision Contracts and edge never see them.
 #: `regime` is the simulator's label; the control plane infers the operating state from
-#: rpm/load. `sandbox` is NOT excluded: it is an observable tag on the readings themselves.
+#: rpm/load.
 PUBLIC_EXCLUDE: frozenset[str] = frozenset({"health", "failure_within_h", "regime"})
 
 
@@ -255,22 +255,8 @@ def publish_http(
     return sent
 
 
-def _rated_kw(out_dir: Path) -> dict[str, float]:
-    """Rated kW per asset id from the simulator's assets.json (for the sandbox's current)."""
-    import json
-
-    path = Path(out_dir) / "assets.json"
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        return {str(a["asset_id"]): float(a.get("rated_kw", 75.0)) for a in raw}
-    except (OSError, ValueError, TypeError, KeyError) as exc:
-        log.warning("could not read %s (%s); using 75 kW for every motor", path, exc)
-        return {}
-
-
 def main() -> None:
-    """CLI entrypoint. Env: REPLAY_SPEED, MQTT_BROKER_URL, CONTROL_PLANE_URL, REPLAY_GATE,
-    REPLAY_SANDBOX."""
+    """CLI entrypoint. Env: REPLAY_SPEED, MQTT_BROKER_URL, CONTROL_PLANE_URL, REPLAY_GATE."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)  # the work-order poll would log every 3 s
     host_default, port_default = parse_broker_url(
@@ -312,12 +298,6 @@ def main() -> None:
         default=os.getenv("REPLAY_GATE", "1").strip().lower() in {"0", "false", "no"},
         help="stream immediately instead of waiting for a production model (GET /replay)",
     )
-    parser.add_argument(
-        "--no-sandbox",
-        action="store_true",
-        default=os.getenv("REPLAY_SANDBOX", "1").strip().lower() in {"0", "false", "no"},
-        help="ignore the control plane's sandbox overrides (GET /sandbox)",
-    )
     args = parser.parse_args()
 
     df = load_telemetry(args.parquet)
@@ -349,11 +329,6 @@ def main() -> None:
     if not args.no_gate and args.speed > 0:
         gate = ReplayGate(args.control_plane)
         log.info("replay held until %s reports a production model (GET /replay)", args.control_plane)
-    sandbox: SandboxApplier | None = None
-    if not args.no_sandbox and args.speed > 0:
-        rated = _rated_kw(args.parquet.parent)
-        sandbox = SandboxApplier(rated, SandboxClient(args.control_plane))
-        log.info("sandbox overrides applied from %s (GET /sandbox)", args.control_plane)
 
     # The story the replay tells is the tail of the recorded history (after the seed point):
     # pass 0 streams it as recorded and every later pass streams the SAME tail shifted by its
@@ -388,8 +363,6 @@ def main() -> None:
             rows = broken.apply(rows)  # a looped recording does not heal a bearing
         if gate is not None:
             rows = gate.apply(rows)  # pause / resume
-        if sandbox is not None:
-            rows = sandbox.apply(rows)  # sandbox readings, tagged
         if repairs is not None:
             rows = repairs.apply(rows)  # the plant's work orders win over everything
         try:

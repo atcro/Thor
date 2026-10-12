@@ -244,7 +244,6 @@ def compute_twin_assets(
     inputs = load_fleet_inputs(engine)
     contract_states = _newest_contract_states(engine)
     live_stats = live.bus.asset_live_stats(now)
-    overrides = sandbox_overrides_by_asset(engine)
     out: list[TwinAsset] = []
     for a in inputs.assets:
         row = inputs.latest_by_asset.get(a.asset_id)
@@ -284,24 +283,10 @@ def compute_twin_assets(
                 msgs_last_60s=stats[1] if stats else 0,
                 open_contract_id=inputs.open_contracts.get(a.asset_id),
                 work_order=wo,
-                alarm_sandbox=bool(ev and ev.sandbox and af["alarm"]),
-                sandbox=bool(p and p.get("sandbox")),
-                sandbox_override=overrides.get(a.asset_id),
                 **af,
             )
         )
     return inputs, out
-
-
-def sandbox_overrides_by_asset(engine: Engine) -> dict[str, Any]:
-    """Active sandbox overrides keyed by asset (empty when the sandbox module is idle)."""
-    try:
-        from apps.api import sandbox
-
-        return {o.asset_id: o for o in sandbox.active_overrides(engine)}
-    except Exception as exc:  # noqa: BLE001 - a label, never a failure of the snapshot
-        log.debug("sandbox overrides unavailable: %s", exc)
-        return {}
 
 
 def model_provenance(engine: Engine) -> ModelProvenance | None:
@@ -410,7 +395,7 @@ def _prediction_history(engine: Engine, asset_id: str, limit: int) -> list[Predi
     """Newest `limit` per-sample prediction rows for one asset, returned oldest first."""
     p = db.predictions
     q = (
-        select(p.c.ts, p.c.failure_probability, p.c.model_version, p.c.source, p.c.sandbox)
+        select(p.c.ts, p.c.failure_probability, p.c.model_version, p.c.source)
         .where(p.c.asset_id == asset_id)
         .order_by(p.c.ts.desc(), p.c.id.desc())
         .limit(limit)
@@ -423,9 +408,8 @@ def _prediction_history(engine: Engine, asset_id: str, limit: int) -> list[Predi
             failure_probability=float(prob),
             model_version=str(version),
             source=str(source),
-            sandbox=bool(sandbox),
         )
-        for ts, prob, version, source, sandbox in rows
+        for ts, prob, version, source in rows
     ]
     out.reverse()
     return out
@@ -513,9 +497,7 @@ def _rewind_rows(
         .over(partition_by=p.c.asset_id, order_by=(p.c.ts.desc(), p.c.id.desc()))
         .label("rn")
     )
-    ranked = select(p.c.asset_id, p.c.ts, p.c.id, p.c.failure_probability, rn).where(
-        p.c.sandbox.is_(False)  # the rewind and its lead time are plant readings only
-    )
+    ranked = select(p.c.asset_id, p.c.ts, p.c.id, p.c.failure_probability, rn)
     if asset_id:
         ranked = ranked.where(p.c.asset_id == asset_id)
     ranked = ranked.subquery("ranked")
@@ -576,7 +558,7 @@ def rewind_series(
     classification: the latch) and the plant's work-order events (`started_ts` /
     `completed_ts`). Contract and approval wall-clock times are never placed on this axis.
     `lead_time_h` is work_order_started - early_warning in plant hours when both exist. The
-    same rule as apps/api/alarms.py; sandbox predictions are not in `points`.
+    same rule as apps/api/alarms.py.
     """
     probs = [p for _, p in points]
     markers: list[RewindMarker] = []

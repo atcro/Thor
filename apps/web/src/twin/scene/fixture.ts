@@ -11,7 +11,6 @@ import type {
   Asset,
   DecisionState,
   ObservedTelemetryRow,
-  SandboxOverride,
   TwinAsset,
   TwinLine,
   TwinSnapshot,
@@ -83,8 +82,6 @@ interface Spec {
   alarm?: AlarmLevel | null;
   alarmSince?: string | null;
   alarmReason?: string | null;
-  sandbox?: boolean;
-  sandboxOverride?: SandboxOverride | null;
 }
 
 function asset(spec: Spec): TwinAsset {
@@ -131,9 +128,6 @@ function asset(spec: Spec): TwinAsset {
             ? "sustained p >= 0.3 over 3 rows"
             : null
         : spec.alarmReason,
-    alarm_sandbox: false,
-    sandbox: spec.sandbox ?? false,
-    sandbox_override: spec.sandboxOverride ?? null,
   };
 }
 
@@ -185,7 +179,6 @@ for (const lineNo of [1, 2, 3, 4, 5]) {
             status: "in_progress",
             started_ts: "2025-09-22T13:40:00Z",
             completed_ts: null,
-            sandbox_scenario: false,
           },
         }),
       );
@@ -206,22 +199,9 @@ for (const lineNo of [1, 2, 3, 4, 5]) {
           latest: latestRow(id, 1490, 88, { bearing_temp_c: 66.5, vibration_rms: 3.2 }) }),
       );
     } else if (id === "MTR-018") {
-      // A sandbox override is active on this motor: its readings and prediction are simulated.
       assets.push(
         asset({ id, line, role, name, status: "healthy", p: 0.07, regime: "R3",
-          latest: latestRow(id, 1485, 84, { sandbox: true }),
-          sandbox: true,
-          sandboxOverride: {
-            asset_id: id,
-            rpm: 1485,
-            load_pct: null,
-            bearing_temp_c: null,
-            fault: false,
-            fault_since: null,
-            fault_ramp_h: null,
-            set_at: RECEIVED_AT,
-            note: "fixture",
-          } }),
+          latest: latestRow(id, 1485, 84) }),
       );
     } else if (id === "MTR-007" || id === "MTR-024") {
       assets.push(

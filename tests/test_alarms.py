@@ -1,4 +1,4 @@
-"""The one status rule (apps/api/alarms.py), the replay gate and the sandbox invariants.
+"""The one status rule (apps/api/alarms.py) and the replay gate.
 
 Pinned here (CLAUDE.md section 15, finals hero demo):
 
@@ -6,9 +6,7 @@ Pinned here (CLAUDE.md section 15, finals hero demo):
 * latch: once critical, a motor stays critical until a completed work order clears it;
 * a warning clears only after WARNING_CLEAR_ROWS consecutive rows below the line;
 * start-up produces no model and no predictions, and the replay is held until a production
-  model exists (`GET /replay`);
-* sandbox rows are excluded from training, sandbox contracts and work orders are labelled,
-  and "Reset sandbox" clears the alarms sandbox readings alone raised.
+  model exists (`GET /replay`).
 
 Everything runs through the FastAPI app on a temp SQLite file; no broker, no LLM.
 """
@@ -23,14 +21,13 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from apps.api import alarms, db, live, replay_control, sandbox
+from apps.api import alarms, db, live, replay_control
 from apps.api.alarms import ALARM_RAISE_ROWS, WARNING_CLEAR_ROWS, asset_status, evaluate
 from apps.api.schemas import (
     EARLY_WARNING_SUSTAINED_ROWS,
     AlarmLevel,
     Approval,
     DataState,
-    TelemetryRow,
     TwinStatus,
     WorkOrder,
 )
@@ -58,7 +55,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         yield c
 
 
-def _post(client: TestClient, asset_id: str, probs: list[float], start: datetime, sandbox: bool = False) -> list[datetime]:
+def _post(client: TestClient, asset_id: str, probs: list[float], start: datetime) -> list[datetime]:
     stamps = [start + timedelta(minutes=10 * i) for i in range(len(probs))]
     body = [
         {
@@ -66,7 +63,6 @@ def _post(client: TestClient, asset_id: str, probs: list[float], start: datetime
             "ts": ts.isoformat(),
             "model_version": "v9",
             "failure_probability": p,
-            "sandbox": sandbox,
         }
         for ts, p in zip(stamps, probs, strict=True)
     ]
@@ -203,116 +199,6 @@ def test_replay_is_released_only_once_a_production_model_exists(client: TestClie
         )
     r = client.get("/replay").json()
     assert r["released"] is True and r["production_model_version"] == "v2"
-
-
-# --------------------------------------------------------------------------------------
-# Sandbox
-# --------------------------------------------------------------------------------------
-
-
-def test_sandbox_rows_are_excluded_from_training(client: TestClient) -> None:
-    engine = db.get_engine()
-    row = TelemetryRow(
-        asset_id="MTR-001", ts=NOW + timedelta(minutes=10), vibration_rms=9.0, vibration_kurtosis=8.0,
-        vibration_crest=6.0, bearing_temp_c=95.0, motor_temp_c=55.0, current_a=40.0, rpm=1480.0,
-        load_pct=55.0, sandbox=True,
-    )
-    assert client.post("/ingest", json=row.model_dump(mode="json")).status_code == 200
-    full = db.read_telemetry(asset_id="MTR-001", engine=engine)
-    clean = db.read_telemetry(asset_id="MTR-001", engine=engine, include_sandbox=False)
-    assert len(full) == len(clean) + 1 and bool(full["sandbox"].iloc[-1]) is True
-    assert not clean["sandbox"].astype(bool).any()
-    # the training loader is the exclusion point
-    from apps.api import orchestrator
-
-    h = orchestrator.RunHandle("run_t", "MTR-001", 48.0, 1, engine)
-    assert not orchestrator._telemetry(h, engine)["sandbox"].astype(bool).any()
-    # the observed row still leaves the API (it is a reading), with its tag
-    latest = client.get("/assets/MTR-001").json()["latest"]
-    assert latest["sandbox"] is True and latest["vibration_rms"] == 9.0
-
-
-def test_sandbox_contracts_and_work_orders_are_labelled(client: TestClient) -> None:
-    from agents.reliability.contract import create_decision_contract
-
-    engine = db.get_engine()
-    bundle = make_bundle("MTR-042")
-    dc = create_decision_contract(bundle, "run_s", "t", "template", engine=engine, sandbox_scenario=True)
-    assert dc.sandbox_scenario is True
-    assert db.get_decision_contract(dc.contract_id, engine=engine).sandbox_scenario is True
-    db.insert_approval(
-        Approval(approval_id="ap_s", contract_id=dc.contract_id, decision="approved",
-                 approver="engineer@plant", decided_at=datetime.now(UTC)),
-        engine=engine,
-    )
-    wo = client.get("/work-orders").json()[0]
-    assert wo["sandbox_scenario"] is True
-    hud = client.get("/twin/hud/MTR-042").json()
-    assert hud["contract"]["sandbox_scenario"] is True
-    # the plant starting the sandbox work order ends that motor's override (and only that one)
-    client.post("/sandbox/fault", json={"asset_id": "MTR-042"})
-    client.post("/sandbox/fault", json={"asset_id": "MTR-001"})
-    ev = {"status": "in_progress", "plant_ts": (NOW + timedelta(hours=1)).isoformat()}
-    assert client.post(f"/work-orders/{dc.contract_id}/events", json=ev).status_code == 200
-    assert [o["asset_id"] for o in client.get("/sandbox").json()["overrides"]] == ["MTR-001"]
-    assert client.get("/sandbox").json()["events"][-1]["kind"] == "clear"
-    # a plain contract is not labelled
-    dc2 = create_decision_contract(make_bundle("MTR-002"), "run_p", "t", "template", engine=engine)
-    assert dc2.sandbox_scenario is False
-
-
-def test_reset_clears_sandbox_only_alarms_and_retires_sandbox_predictions(client: TestClient) -> None:
-    client.post("/ingest", json={**_row_dict("MTR-042", NOW)})
-    client.post("/ingest", json={**_row_dict("MTR-002", NOW)})
-    # a recorded alarm on MTR-002 and a sandbox-raised one on MTR-042
-    _post(client, "MTR-002", [0.6, 0.6, 0.6], NOW)
-    _post(client, "MTR-042", [0.05, 0.05, 0.05], NOW)  # recorded, healthy
-    _post(client, "MTR-042", [0.9, 0.9, 0.9], NOW + timedelta(hours=1), sandbox=True)
-    f = _fleet(client)
-    assert f["MTR-042"]["status"] == "critical" and f["MTR-042"]["sandbox"] is True
-    assert f["MTR-002"]["status"] == "critical" and f["MTR-002"]["sandbox"] is False
-    assert sandbox.state(db.get_engine()).active is False
-    # Troubleshoot + sliders make an override; reset removes it
-    assert client.post("/sandbox/fault", json={"asset_id": "MTR-042"}).json()["active"] is True
-    st = client.post("/sandbox/set", json={"asset_id": "MTR-042", "rpm": 1500.0}).json()
-    ov = {o["asset_id"]: o for o in st["overrides"]}["MTR-042"]
-    assert ov["fault"] is True and ov["rpm"] == 1500.0 and ov["fault_since"] is not None
-    assert client.post("/sandbox/fault", json={"asset_id": "MTR-999"}).status_code == 404
-    twin = {a["asset"]["asset_id"]: a for a in client.get("/twin").json()["assets"]}
-    assert twin["MTR-042"]["sandbox_override"]["fault"] is True
-    assert twin["MTR-042"]["alarm_sandbox"] is True and twin["MTR-002"]["alarm_sandbox"] is False
-
-    out = client.post("/sandbox/reset").json()
-    assert out["active"] is False and out["overrides"] == []
-    assert out["alarms_cleared"] == ["MTR-042"]
-    f = _fleet(client)
-    # MTR-042: sandbox alarm cleared, sandbox predictions retired -> the recorded 0.05 shows
-    assert f["MTR-042"]["status"] == "healthy" and f["MTR-042"]["alarm"] is None
-    assert f["MTR-042"]["failure_probability"] == 0.05 and f["MTR-042"]["sandbox"] is False
-    # MTR-002's plant alarm is untouched: a reset never hides a real alarm
-    assert f["MTR-002"]["status"] == "critical"
-    events = client.get("/alarms", params={"asset_id": "MTR-042"}).json()
-    assert events[-1]["reason"] == "sandbox_reset" and events[-1]["sandbox"] is True
-    # new sandbox predictions after the reset count again
-    _post(client, "MTR-042", [0.9, 0.9, 0.9], NOW + timedelta(hours=2), sandbox=True)
-    assert _fleet(client)["MTR-042"]["status"] == "critical"
-
-
-def test_shake_and_random_fault_skip_offline_motors(client: TestClient) -> None:
-    from tests.test_api import _decided_contract
-
-    engine = db.get_engine()
-    wo_id = _decided_contract(engine, "MTR-003", "maintain_now")
-    ev = {"status": "in_progress", "plant_ts": (NOW + timedelta(hours=1)).isoformat()}
-    assert client.post(f"/work-orders/{wo_id}/events", json=ev).status_code == 200
-    st = client.post("/sandbox/shake").json()
-    ids = {o["asset_id"] for o in st["overrides"]}
-    assert "MTR-003" not in ids and ids == {"MTR-001", "MTR-002", "MTR-042"}
-    for o in st["overrides"]:
-        assert 0.0 <= o["load_pct"] <= 100.0 and 0.0 <= o["rpm"] <= 1600.0 and o["fault"] is False
-    st = client.post("/sandbox/random-fault").json()
-    faulted = [o["asset_id"] for o in st["overrides"] if o["fault"]]
-    assert len(faulted) == 1 and faulted[0] != "MTR-003"
 
 
 def _row_dict(asset_id: str, ts: datetime) -> dict[str, Any]:

@@ -13,7 +13,39 @@
 
 .twin-theme .xray-num,
 .twin-theme .xray-table td.v,
-.twin-theme .xray-big {
+.twin-theme /* Collapsed plant-integration section (PLC tags, MES): open on demand. */
+.xray-more > summary {
+  cursor: pointer;
+  list-style: none;
+  margin-bottom: 0;
+}
+
+.xray-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.xray-more > summary::before {
+  content: "▸";
+}
+
+.xray-more[open] > summary {
+  margin-bottom: 6px;
+}
+
+.xray-more[open] > summary::before {
+  content: "▾";
+}
+
+.xray-state {
+  margin-bottom: 6px;
+  color: var(--tw-ink-2);
+}
+
+.xray-state b {
+  color: var(--tw-ink);
+}
+
+.xray-big {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
@@ -453,12 +485,6 @@
   overflow-wrap: anywhere;
 }
 
-.xray-chips {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
 .xray-chip {
   display: inline-flex;
   align-items: center;
@@ -473,26 +499,9 @@
   transition: box-shadow 120ms, color 120ms;
 }
 
-.xray-chip.lit {
-  color: var(--tw-ink);
-  border-color: var(--chip-color, var(--tw-accent));
-  box-shadow: inset 0 0 0 1px var(--chip-color, var(--tw-accent)), 0 0 calc(10px * var(--tw-glow)) var(--chip-color, var(--tw-accent));
-}
-
 .xray-chip.sim {
   color: var(--tw-primary);
   border-color: rgba(232, 255, 71, 0.45);
-  font-size: 10.5px;
-  padding: 0 6px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  cursor: help;
-}
-
-/* Sandbox scenario: the warning amber (never the brand / primary yellow). */
-.xray-chip.sandbox {
-  color: var(--tw-sandbox, #c77dff);
-  border-color: var(--tw-sandbox, #c77dff);
   font-size: 10.5px;
   padding: 0 6px;
   letter-spacing: 0.06em;
@@ -637,10 +646,6 @@
 
 .xray-warn {
   color: var(--tw-warn);
-}
-
-.xray-sandbox {
-  color: var(--tw-sandbox, #c77dff);
 }
 
 .xray-dim {

@@ -92,7 +92,7 @@ function AssetCard({ item, style, xray }: { item: FleetAsset; style: SpriteStyle
         <span className="id">{asset.asset_id}</span>
         <span className="row wrap" style={{ gap: 4, justifyContent: "flex-end" }}>
           <HealthPill score={item.health_score} />
-          <AlarmPills alarm={item.alarm} alarmSince={item.alarm_since} alarmReason={item.alarm_reason} sandbox={item.sandbox} />
+          <AlarmPills alarm={item.alarm} alarmSince={item.alarm_since} alarmReason={item.alarm_reason} />
         </span>
       </div>
       <div className="name">{asset.name}</div>

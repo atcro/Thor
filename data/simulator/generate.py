@@ -66,7 +66,6 @@ except ModuleNotFoundError:  # pragma: no cover - replay container ships only da
         regime: str | None = None
         health: float | None = Field(default=None, ge=0.0, le=1.0)
         failure_within_h: float | None = None
-        sandbox: bool = False
 
     class Asset(BaseModel):  # type: ignore[no-redef]
         """Local mirror of apps.api.schemas.Asset."""
@@ -289,32 +288,6 @@ def _lag_alpha(step_min: int, tau_min: float) -> float:
 def rated_current_a(rated_kw: float) -> float:
     """Rated current of a 400 V motor at ~0.88 pf and ~94 % efficiency (A)."""
     return float(rated_kw * 1000.0 / (np.sqrt(3) * 400.0 * 0.88 * 0.94))
-
-
-def bearing_fault_delta(
-    severity: float,
-    load_pct: float,
-    rated_a: float,
-    rng: np.random.Generator,
-    amp: float = 1.0,
-) -> dict[str, float]:
-    """The drive-end bearing fault signature for ONE row at `severity` in [0, 1].
-
-    The same per-sensor relations `_simulate_asset` applies (vibration RMS, kurtosis, crest
-    factor, bearing housing temperature target and current), as additive deltas, so the twin's
-    sandbox injects exactly the fault the model was trained on. Inputs: severity, load (%),
-    rated current (A), a Generator for the signature's noise, amplitude. Output: deltas for
-    `vibration_rms`, `vibration_kurtosis`, `vibration_crest`, `bearing_target_c` (the lagged
-    housing temperature's target, +30 C at full severity) and `current_a`.
-    """
-    s = float(min(1.0, max(0.0, severity)))
-    return {
-        "vibration_rms": amp * s * (5.5 + 0.4 * load_pct / 55.0) + float(rng.normal(0, 1)) * 0.35 * s,
-        "vibration_kurtosis": amp * 4.5 * s + abs(float(rng.normal(0, 1))) * 1.5 * s,
-        "vibration_crest": amp * 2.2 * s + float(rng.normal(0, 1)) * 0.25 * s,
-        "bearing_target_c": amp * 30.0 * s,
-        "current_a": amp * 0.03 * rated_a * s,
-    }
 
 
 def fault_severity(

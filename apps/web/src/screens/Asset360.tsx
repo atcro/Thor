@@ -5,7 +5,7 @@ import type { Approval, Decision, GraphState, PipelineStage, RunSummary, WhatIfR
 import { TERMINAL_STAGES } from "../api/types";
 import { CHART, TimeSeriesChart, type TimePoint } from "../components/charts";
 import { DecisionContractPanel } from "../components/DecisionContractPanel";
-import { AlarmPills, EmptyState, ErrorState, HealthPill, Loaded, LoadingState, Panel, Pill, SandboxPill, StageChip, Stat, StateBadge, STATUS_WORD, WorkOrderPill } from "../components/ui";
+import { AlarmPills, EmptyState, ErrorState, HealthPill, Loaded, LoadingState, Panel, Pill, StageChip, Stat, StateBadge, STATUS_WORD, WorkOrderPill } from "../components/ui";
 import { usePolling } from "../hooks/usePolling";
 import { STAGE_LABEL, fmtNum, fmtPct, fmtRel, fmtShort, fmtTime, probTone } from "../lib/format";
 
@@ -349,7 +349,7 @@ export function Asset360() {
                 Status: {STATUS_WORD[detail.data.status]}
               </Pill>
             )}
-            <AlarmPills alarm={detail.data?.alarm} alarmSince={detail.data?.alarm_since} alarmReason={detail.data?.alarm_reason} sandbox={detail.data?.sandbox} />
+            <AlarmPills alarm={detail.data?.alarm} alarmSince={detail.data?.alarm_since} alarmReason={detail.data?.alarm_reason} />
             {currentP !== null && (
               <Pill tone={probTone(currentP)}>p(fail) {fmtPct(currentP)}</Pill>
             )}
@@ -459,7 +459,7 @@ export function Asset360() {
       )}
 
       {run.state?.validation && runId && (
-        <Panel title="What-if · reliability sandbox">
+        <Panel title="What-if">
           <WhatIfForm runId={runId} baseline={currentP} />
         </Panel>
       )}
@@ -485,12 +485,6 @@ export function Asset360() {
                   <tr key={c.contract_id}>
                     <td className="mono">
                       {c.contract_id}
-                      {c.sandbox_scenario && (
-                        <>
-                          {" "}
-                          <SandboxPill title="This contract was raised on simulated sandbox readings" />
-                        </>
-                      )}
                     </td>
                     <td className="mono small">{fmtRel(c.created_at)}</td>
                     <td className="mono">{c.model_version}</td>

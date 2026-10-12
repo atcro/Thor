@@ -63,8 +63,6 @@ class PredictionIn(BaseModel):
     #: Edge-reported inference time for this row (ms). Measured, not stored: it feeds the
     #: twin's live counters (apps/api/live.py) and is ignored by the database insert.
     inference_ms: float | None = None
-    #: True when the scored window contained sandbox readings (stored with the row).
-    sandbox: bool = False
 
 
 class PredictionOut(BaseModel):
@@ -72,7 +70,6 @@ class PredictionOut(BaseModel):
     failure_probability: float
     model_version: str
     source: str
-    sandbox: bool = False
 
 
 def _as_utc(ts: datetime) -> datetime:
@@ -164,7 +161,6 @@ def get_asset_predictions(
             failure_probability=float(r["failure_probability"]),
             model_version=str(r["model_version"]),
             source=str(r["source"]),
-            sandbox=bool(r["sandbox"]),
         )
         for r in rows
     ]
@@ -192,7 +188,6 @@ def post_prediction(
                 "model_version": p.model_version,
                 "failure_probability": float(p.failure_probability),
                 "source": p.source,
-                "sandbox": bool(p.sandbox),
             }
             for p in preds
         ],

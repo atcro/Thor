@@ -21,7 +21,6 @@ function Harness() {
   const [focus, setFocus] = useState<CameraFocus>({ kind: "overview" });
   const [nonce, setNonce] = useState(0);
   const [xray, setXray] = useState(true);
-  const [perf, setPerf] = useState(false);
   const [feed, setFeed] = useState(true);
   const [rewind, setRewind] = useState<RewindFrame | null>(null);
   const [fps, setFps] = useState(0);
@@ -75,7 +74,6 @@ function Harness() {
         focus={focus}
         focusNonce={nonce}
         xray={xray}
-        performanceMode={perf}
         palette={palette}
         onFps={setFps}
       />
@@ -104,7 +102,6 @@ function Harness() {
         <button onClick={() => fly({ kind: "line", line: "Packaging Line 3" })}>line 3</button>
         <button onClick={() => fly({ kind: "asset", assetId: "MTR-042" })}>MTR-042</button>
         <button onClick={() => setXray((v) => !v)}>xray {xray ? "on" : "off"}</button>
-        <button onClick={() => setPerf((v) => !v)}>perf {perf ? "on" : "off"}</button>
         <button onClick={() => setFeed((v) => !v)}>feed {feed ? "on" : "off"}</button>
         <button onClick={toggleRewind}>rewind {rewind ? "on" : "off"}</button>
         <span>sel {selected ?? "-"} hov {hovered ?? "-"}</span>

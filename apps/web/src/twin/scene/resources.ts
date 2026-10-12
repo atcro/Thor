@@ -1,6 +1,6 @@
 /**
  * Geometries, materials and textures shared by every machine and motor in the scene.
- * Created once per (palette, performanceMode) and disposed when either changes, so the
+ * Created once per palette and disposed when it changes, so the
  * per-frame path allocates nothing. Everything here is procedural: no fonts, HDRIs or models.
  */
 import { createContext, useContext } from "react";
@@ -11,7 +11,6 @@ import type { TwinPalette } from "../palette";
 import { STATUS_COLOR } from "../palette";
 
 export interface SceneResources {
-  perf: boolean;
   segments: number;
   geo: {
     box: THREE.BoxGeometry;
@@ -144,8 +143,8 @@ function haloTexture(): THREE.Texture {
   return tex;
 }
 
-export function createResources(palette: TwinPalette, perf: boolean): SceneResources {
-  const segments = perf ? 8 : 16;
+export function createResources(palette: TwinPalette): SceneResources {
+  const segments = 16;
   const lambert = (color: string, extra: Partial<THREE.MeshLambertMaterialParameters> = {}) =>
     new THREE.MeshLambertMaterial({ color, ...extra });
   const basic = (color: string, extra: Partial<THREE.MeshBasicMaterialParameters> = {}) =>
@@ -162,10 +161,10 @@ export function createResources(palette: TwinPalette, perf: boolean): SceneResou
 
   const ringR = 1.15;
   const regimeGeo = {
-    R1: dashedRingGeometry(ringR, ringR + 0.14, 4, 0.35, perf ? 8 : 14),
-    R2: dashedRingGeometry(ringR, ringR + 0.14, 1, 0, perf ? 32 : 56),
-    R3: dashedRingGeometry(ringR, ringR + 0.14, 12, 0.4, perf ? 3 : 5),
-    unknown: dashedRingGeometry(ringR, ringR + 0.06, 2, 0.5, perf ? 12 : 24),
+    R1: dashedRingGeometry(ringR, ringR + 0.14, 4, 0.35, 14),
+    R2: dashedRingGeometry(ringR, ringR + 0.14, 1, 0, 56),
+    R3: dashedRingGeometry(ringR, ringR + 0.14, 12, 0.4, 5),
+    unknown: dashedRingGeometry(ringR, ringR + 0.06, 2, 0.5, 24),
   };
   const regimeMat = {
     R1: basic(palette.regime.R1, { side: THREE.DoubleSide }),
@@ -180,10 +179,10 @@ export function createResources(palette: TwinPalette, perf: boolean): SceneResou
     roller: new THREE.CylinderGeometry(0.5, 0.5, 1, 6),
     disc: new THREE.CylinderGeometry(0.5, 0.5, 1, segments),
     pin: new THREE.CylinderGeometry(0.5, 0.5, 1, 6),
-    torus: new THREE.TorusGeometry(1, 0.06, 6, perf ? 24 : 40),
+    torus: new THREE.TorusGeometry(1, 0.06, 6, 40),
     sphere: new THREE.SphereGeometry(0.5, segments, Math.max(4, segments / 2)),
     pulse: new THREE.SphereGeometry(0.5, 8, 6),
-    selectRing: new THREE.RingGeometry(1.42, 1.52, perf ? 24 : 48),
+    selectRing: new THREE.RingGeometry(1.42, 1.52, 48),
     glyph: glyphGeo,
     regime: regimeGeo,
   };
@@ -212,7 +211,7 @@ export function createResources(palette: TwinPalette, perf: boolean): SceneResou
     halo.dispose();
   };
 
-  return { perf, segments, geo, mat, haloTexture: halo, dispose };
+  return { segments, geo, mat, haloTexture: halo, dispose };
 }
 
 export const ResourcesContext = createContext<SceneResources | null>(null);

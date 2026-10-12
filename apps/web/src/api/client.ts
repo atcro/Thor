@@ -23,10 +23,6 @@ import type {
   RegisteredModel,
   ReplayState,
   RunSummary,
-  SandboxFaultRequest,
-  SandboxResetResponse,
-  SandboxSetRequest,
-  SandboxState,
   SystemHealth,
   TelemetryRow,
   TwinEventBatch,
@@ -104,15 +100,6 @@ export const getAlarms = (assetId?: string) =>
 export const getReplay = () => apiFetch<ReplayState>("/replay");
 export const pauseReplay = () => post<ReplayState>("/replay/pause", {});
 export const resumeReplay = () => post<ReplayState>("/replay/resume", {});
-
-// --- routes/sandbox.py (3-D Digital Twin sandbox) ---------------------------
-
-export const getSandbox = () => apiFetch<SandboxState>("/sandbox");
-export const sandboxSet = (req: SandboxSetRequest) => post<SandboxState>("/sandbox/set", req);
-export const sandboxFault = (req: SandboxFaultRequest) => post<SandboxState>("/sandbox/fault", req);
-export const sandboxRandomFault = () => post<SandboxState>("/sandbox/random-fault", {});
-export const sandboxShake = () => post<SandboxState>("/sandbox/shake", {});
-export const sandboxReset = () => post<SandboxResetResponse>("/sandbox/reset", {});
 
 // --- routes/telemetry.py ----------------------------------------------------
 

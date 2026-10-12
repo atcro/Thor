@@ -95,8 +95,8 @@ Run `ls` for the tree. Non-obvious: `agents/*` are tool modules imported by `app
 graph, not services; the six web screens are Fleet (`/`, the landing view: the isometric/pixel
 fleet), Asset 360, AutoML Studio, ModelOps, Copilot (Bolt) and the 3-D Digital Twin (`/twin`,
 listed under Bolt in the side menu). The twin's code lives in `apps/web/src/twin/` (palette,
-X-Ray HUD, rewind, sandbox panel, `scene/` for three.js) and its API in `apps/api/routes/twin.py`
-(+ `apps/api/live.py`, `apps/api/plant.py`, `apps/api/sandbox.py`). The ONE status rule (alarm
+X-Ray HUD, rewind, `scene/` for three.js) and its API in `apps/api/routes/twin.py`
+(+ `apps/api/live.py`, `apps/api/plant.py`). The ONE status rule (alarm
 on-delay, latch, clear) is `apps/api/alarms.py`; the replay gate is `apps/api/replay_control.py`.
 The plant layout (five packaging lines plus a compressor hall) and the measured reasoning behind
 it live in `data/simulator/layout.py`. Person-visible wording says **"state"** (operating state),
@@ -175,12 +175,10 @@ a full Playwright e2e suite.
    raise a critical that stays latched until a completed work order clears it, a warning clears
    after six consecutive predictions below 0.3. Fleet, twin, HUD, rewind markers and Bolt all read
    it; the raw per-sample probabilities stay visible.
-   **Sandbox (3-D twin):** sliders, "Troubleshoot <motor>", "Random fault", "Shake up operations"
-   and "Reset sandbox" are insert-only `sandbox_events`; the replay applies them to its own
-   stream (`streaming/replay/sandbox.py`), so sandbox readings take the real path replay → MQTT →
-   edge → control plane and are scored like plant data. Every such reading, prediction, alarm,
-   contract and work order carries a `sandbox` tag; training, validation, drift and the rewind's
-   lead time exclude tagged rows; "Reset sandbox" clears alarms sandbox readings alone raised.
+   **The 3-D twin is a live-state twin (decided 2026-10-12):** it shows the plant's live state and
+   stored history only. There is no sandbox (no overrides, injected faults or "what if" on the
+   twin) and no performance mode; the HUD stays short (probability + status, state and sensors,
+   top three drivers, decision; PLC tags and the MES feed folded under "Plant integration").
    **After an approval, the plant acts, not Thor.** The replay doubles as a simulated CMMS
    (`streaming/replay/work_orders.py`): once plant time reaches the approved window it takes the
    motor offline for the contract's planned downtime (no rows) and then streams that motor's own
@@ -307,7 +305,7 @@ Competing teams also build with Claude, so polish and a coherent story beat feat
   stays red (latched); 5. Run analysis; 6. Bolt answers "What's happening with MTR-042?", "Give
   me the details.", "What are the possible fixes?"; 7. approve the Decision Contract on Asset 360;
   8. the motor goes offline and comes back green; 9. the 3-D Digital Twin (HUD, physical layout,
-  rewind with "this run" vs "validated" lead time side by side); 10. the twin's sandbox. Click
+  rewind with "this run" vs "validated" lead time side by side). Click
   path, measured timings and recovery moves: `docs/finals/demo-walkthrough.md`.
 - **Phase B — Bolt Designer.** This is Bolt's design mode, with its own nav item, Bolt's chat on
   the left and a spec workbench on the right. It answers a judge's question ("could it be used to
@@ -451,16 +449,14 @@ Facts that save exploration. Re-verify anything that looks wrong rather than tru
   | X-Ray HUD, tooltip, toggle, rewind scrubber | `apps/web/src/twin/{XRayHud,XRayTooltip,XRayToggle,RewindBar,TwinThemeRoot}.tsx`, `useXRay.ts`, `xray.css` |
   | Fleet (the landing view; "Dashboard" during Phase A) | `apps/web/src/screens/Fleet.tsx` |
 
-- **Where Phase A.1's code lives (hero demo, latch, replay gate, sandbox):**
+- **Where Phase A.1's code lives (hero demo, latch, replay gate):**
 
   | Area | Files |
   | --- | --- |
-  | Fault timing (`FAULTY_ASSETS`, `DEMO_ONSET`, `FAULT_RAMP_H`, `bearing_fault_delta`) | `data/simulator/generate.py` |
+  | Fault timing (`FAULTY_ASSETS`, `DEMO_ONSET`, `FAULT_RAMP_H`) | `data/simulator/generate.py` |
   | The one status rule: on-delay, latch, warning clear, `asset_status` | `apps/api/alarms.py`, `GET /alarms` in `routes/fleet.py` |
-  | Replay gate and pause/resume | `apps/api/replay_control.py`, `apps/api/routes/replay.py`, `streaming/replay/sandbox.py::ReplayGate` |
+  | Replay gate and pause/resume | `apps/api/replay_control.py`, `apps/api/routes/replay.py`, `streaming/replay/gate.py::ReplayGate` |
   | Sign-off consequences (edge refresh + fleet scoring) | `apps/api/routes/approvals.py::decide_promotion_db` |
-  | Sandbox API and replay-side applier | `apps/api/sandbox.py`, `apps/api/routes/sandbox.py`, `streaming/replay/sandbox.py::SandboxApplier` |
-  | Sandbox tags (telemetry, predictions, contracts, work orders) | `apps/api/schemas.py`, `apps/api/db.py`, `apps/api/scoring.py`, `edge/main.py` |
-  | Replay indicator, Fleet rename, nav, sandbox panel, state wording | `apps/web/src/components/Layout.tsx`, `apps/web/src/screens/Fleet.tsx`, `apps/web/src/twin/SandboxPanel.tsx` |
+  | Replay indicator, Fleet rename, nav, state wording | `apps/web/src/components/Layout.tsx`, `apps/web/src/screens/Fleet.tsx` |
   | Compose profile `prep`, reset scripts | `infra/docker-compose.yml`, `scripts/demo_reset.ps1`, `scripts/demo_reset.sh` |
   | Tests | `tests/test_alarms.py`, `tests/test_twin.py`, `tests/test_simulator.py` |

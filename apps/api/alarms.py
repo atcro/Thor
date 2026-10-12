@@ -12,8 +12,7 @@ Rules (constants below; thresholds from `apps.api.schemas`):
   after `ALARM_RAISE_ROWS` consecutive predictions at or above `CLASSIFICATION_THRESHOLD`.
   A single spike never changes a colour.
 * **Latch.** Once `critical`, a motor stays `critical` until a completed work order clears it
-  (`clear_alarm(reason="work_order_completed")`) -- or, for an alarm raised by sandbox readings
-  alone, until the sandbox is reset. A model whose probability later drops back does not
+  (`clear_alarm(reason="work_order_completed")`). A model whose probability later drops back does not
   silently cancel an alarm an engineer has not acted on.
 * **Off-delay for warnings.** A `warning` returns to `healthy` only after `WARNING_CLEAR_ROWS`
   consecutive predictions below `EARLY_WARNING_THRESHOLD`. Why 6: twice the on-delay (one
@@ -21,8 +20,7 @@ Rules (constants below; thresholds from `apps.api.schemas`):
   to raise and can never chatter between amber and green on a borderline probability.
 
 Transitions are recorded as insert-only `alarm_events` rows (plant time of the triggering
-prediction, the probability and model that triggered it, and whether that prediction came from
-sandbox readings). The current level of a motor is its newest event. `update_alarms()` is
+prediction, the probability and model that triggered it). The current level of a motor is its newest event. `update_alarms()` is
 called after every prediction insert; it walks only the rows that arrived since the last call,
 so the cost per batch is a handful of tiny queries.
 
@@ -108,7 +106,7 @@ def step(level: AlarmLevel, runs: _Runs, p: float, thresholds: Thresholds | None
     runs.crit = runs.crit + 1 if p >= t.classification else 0
     runs.clear = runs.clear + 1 if p < t.early_warning else 0
     if level == AlarmLevel.critical:
-        return level  # latched: only a work order (or a sandbox reset) clears it
+        return level  # latched: only a work order clears it
     if runs.crit >= ALARM_RAISE_ROWS:
         return AlarmLevel.critical
     if level == AlarmLevel.healthy and runs.warn >= ALARM_RAISE_ROWS:
@@ -195,7 +193,6 @@ def _new_event(
     plant_ts: datetime,
     probability: float | None,
     model_version: str | None,
-    sandbox: bool,
 ) -> AlarmEvent:
     return AlarmEvent(
         event_id=uuid4().hex,
@@ -206,14 +203,13 @@ def _new_event(
         recorded_at=db.now_utc(),
         probability=probability,
         model_version=model_version,
-        sandbox=sandbox,
     )
 
 
 def _rows_after(engine: Engine, asset_id: str, last_id: int, limit: int | None = None) -> list[Any]:
     p = db.predictions
     q = (
-        select(p.c.id, p.c.ts, p.c.failure_probability, p.c.model_version, p.c.sandbox)
+        select(p.c.id, p.c.ts, p.c.failure_probability, p.c.model_version)
         .where(p.c.asset_id == asset_id, p.c.id > last_id)
         .order_by(p.c.ts, p.c.id)
     )
@@ -285,7 +281,7 @@ def update_alarms(engine: Engine | None = None, asset_ids: list[str] | None = No
                 cur = _rebuild_cursor(engine, asset_id, newest_all.get(asset_id))
                 _cursors[asset_id] = cur
             rows = _rows_after(engine, asset_id, cur.last_id)
-            for row_id, ts, prob, version, sandbox in rows:
+            for row_id, ts, prob, version in rows:
                 new = step(cur.level, cur.runs, float(prob))
                 cur.last_id = max(cur.last_id, int(row_id))
                 cur.recent_ts.append(db._as_utc(ts))
@@ -297,9 +293,7 @@ def update_alarms(engine: Engine | None = None, asset_ids: list[str] | None = No
                         AlarmLevel.critical: f"{ALARM_RAISE_ROWS} consecutive predictions >= {CLASSIFICATION_THRESHOLD:g} (latched)",
                         AlarmLevel.healthy: f"{WARNING_CLEAR_ROWS} consecutive predictions < {EARLY_WARNING_THRESHOLD:g}",
                     }[new]
-                    ev = _new_event(
-                        asset_id, new, reason, since, float(prob), str(version), bool(sandbox)
-                    )
+                    ev = _new_event(asset_id, new, reason, since, float(prob), str(version))
                     _insert(ev, engine)
                     inserted.append(ev)
                     cur.level = new
@@ -313,12 +307,11 @@ def clear_alarm(
     reason: str,
     plant_ts: datetime,
     engine: Engine | None = None,
-    sandbox: bool = False,
 ) -> AlarmEvent | None:
     """Record a `healthy` event for `asset_id` if it is currently alarmed.
 
-    Inputs: asset id, reason ("work_order_completed" | "sandbox_reset"), plant time of the
-    clearing event, the engine, whether the clear is a sandbox event. Output: the event
+    Inputs: asset id, reason ("work_order_completed"), plant time of the clearing event, the
+    engine. Output: the event
     inserted, or None when the motor was already healthy. Resets the trailing runs so the
     next alarm needs fresh sustained evidence.
     """
@@ -330,7 +323,7 @@ def clear_alarm(
             if cur is not None:
                 cur.level = AlarmLevel.healthy
             return None
-        ev = _new_event(asset_id, AlarmLevel.healthy, reason, plant_ts, None, None, sandbox)
+        ev = _new_event(asset_id, AlarmLevel.healthy, reason, plant_ts, None, None)
         _insert(ev, engine)
         cur = _cursors.get(asset_id)
         if cur is not None:
@@ -338,15 +331,6 @@ def clear_alarm(
             cur.runs = _Runs()
     log.info("alarm %s cleared: %s", asset_id, reason)
     return ev
-
-
-def sandbox_raised_assets(engine: Engine | None = None) -> list[str]:
-    """Assets whose CURRENT alarm (warning or critical) was raised by a sandbox prediction."""
-    return sorted(
-        aid
-        for aid, ev in latest_alarms(engine).items()
-        if ev.level != AlarmLevel.healthy and ev.sandbox
-    )
 
 
 # --------------------------------------------------------------------------------------

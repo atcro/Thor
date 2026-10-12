@@ -55,7 +55,7 @@ def state(engine: Engine | None = None) -> ReplayState:
     """The ReplayState the replay container and the topbar read.
 
     Inputs: engine. Output: released iff a production model exists; paused from memory; plant
-    time = newest stored telemetry ts; seeded_until = newest non-sandbox row at start (the
+    time = newest stored telemetry ts; seeded_until = newest row at start (the
     same number while the replay is held).
     """
     engine = engine or db.get_engine()

@@ -47,7 +47,6 @@ export function StatusGlyph({ status, size = 14, lit = false, className = "" }: 
 export function XRayTooltip({ asset }: { asset: TwinAsset }) {
   const g = STATUS_GLYPH[asset.status];
   const p = asset.failure_probability;
-  const sandbox = asset.sandbox || asset.alarm_sandbox;
   return (
     <div className="xray-tip" data-testid={`xray-tip-${asset.asset.asset_id}`}>
       <div className="xray-tip-head">
@@ -57,11 +56,6 @@ export function XRayTooltip({ asset }: { asset: TwinAsset }) {
           {g.word}
           {asset.alarm === "critical" && ` · latched since ${fmtShort(asset.alarm_since)}`}
         </span>
-        {sandbox && (
-          <span className="xray-chip sandbox" title="Sandbox scenario: simulated readings">
-            sandbox scenario
-          </span>
-        )}
       </div>
       <div className="xray-tip-name">{asset.asset.name}</div>
       <dl className="xray-facts">

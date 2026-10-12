@@ -525,8 +525,6 @@ def install_fake_toolbox(
         bundle: EvidenceBundle, run_id: str, text: str, source: str, engine: Any, **kw: Any
     ) -> DecisionContract:
         dc = make_contract(bundle, run_id, text, source)
-        if kw.get("sandbox_scenario"):
-            dc = dc.model_copy(update={"sandbox_scenario": True})
         db.insert_decision_contract(dc, engine=engine)
         calls["contracts"].append(dc.contract_id)
         return dc
