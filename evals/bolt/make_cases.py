@@ -69,12 +69,14 @@ def case(
     asset_id: str | None = None,
     tools_llm: list[str] | None = None,
     must_llm: list[str] | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> dict:
     return {
         "id": cid,
         "tags": tags,
         "prompt": prompt,
         "asset_id": asset_id,
+        "history": history or [],
         "expect": {
             "tools": tools,
             "tools_mode": tools_mode,
@@ -245,6 +247,170 @@ def build() -> list[dict]:
                 ["field_history_stats"],
                 [r"Field-history statistics", r"labor hours: typically", r"median"],
                 must_llm=[r"(labor|labour|hour)", r"(median|typical|quartile|between|range|p50)"],
+            )
+        )
+    # The three hero questions of the finals demo (CLAUDE.md section 15), asked about MTR-042
+    # AFTER "Run analysis" has produced its contract and about MTR-003 WHILE no contract exists
+    # (the runner latches both critical; see HERO_PREDICTIONS). Bolt must say "state", never
+    # "regime", name the contract id when there is one, and point at Asset 360 for the fixes.
+    prob = r"0\.\d{2}"
+    prob_llm = r"(0\.\d{2}|\d{1,2}(\.\d)? ?%)"
+    alarm = r"(critical|alarm)"
+    hero_after = [
+        (
+            "hero-status-0",
+            "What's happening with MTR-042?",
+            None,
+            None,
+            ["get_asset"],
+            [r"^MTR-042", alarm, prob, r"dc_MTR-042", r"latched|stays critical", r"trend"],
+            [r"dc_MTR-042", alarm, prob_llm],
+        ),
+        (
+            "hero-status-1",
+            "what's going on with motor MTR-042",
+            None,
+            None,
+            ["get_asset"],
+            [r"^MTR-042", alarm, prob, r"dc_MTR-042"],
+            [r"dc_MTR-042", alarm, prob_llm],
+        ),
+        (
+            "hero-details-0",
+            "Give me the details.",
+            "MTR-042",
+            None,
+            ["get_asset", "search_field_history"],
+            [
+                r"^MTR-042",
+                alarm,
+                prob,
+                r"dc_MTR-042",
+                r"Top drivers",
+                r"expected cost",
+                r"section",
+                r"(Field history|No field-history)",
+            ],
+            [r"dc_MTR-042", prob_llm, r"section", r"(cost|\$)"],
+        ),
+        (
+            "hero-details-1",
+            "More detail please.",
+            None,
+            [
+                {"role": "user", "content": "What's happening with MTR-042?"},
+                {"role": "assistant", "content": "MTR-042 is critical -- see the contract."},
+            ],
+            ["get_asset", "search_field_history"],
+            [r"^MTR-042", alarm, prob, r"dc_MTR-042", r"Top drivers"],
+            [r"MTR-042", prob_llm],
+        ),
+        (
+            "hero-fixes-0",
+            "What are the possible fixes?",
+            "MTR-042",
+            None,
+            ["get_asset", "search_manuals"],
+            [
+                r"^MTR-042",
+                alarm,
+                prob,
+                r"dc_MTR-042",
+                r"Asset 360",
+                r"recommended",
+                r"run to failure",
+                r"section",
+            ],
+            [r"dc_MTR-042", r"Asset 360", r"(maintain|replace|inspect)"],
+        ),
+        (
+            "hero-fixes-1",
+            "How do I fix it?",
+            "MTR-042",
+            None,
+            ["get_asset", "search_manuals"],
+            [r"^MTR-042", alarm, prob, r"dc_MTR-042", r"Asset 360"],
+            [r"dc_MTR-042", r"Asset 360"],
+        ),
+    ]
+    hero_before = [
+        (
+            "hero-status-2",
+            "What's happening with MTR-003?",
+            None,
+            None,
+            ["get_asset"],
+            [
+                r"^MTR-003",
+                alarm,
+                prob,
+                r"latched|stays critical",
+                r"trend",
+                r"Run analysis in Asset 360",
+            ],
+            [r"MTR-003", alarm, prob_llm, r"Asset 360"],
+        ),
+        (
+            "hero-details-2",
+            "Give me the details.",
+            "MTR-003",
+            None,
+            ["get_asset"],
+            [
+                r"^MTR-003",
+                alarm,
+                prob,
+                r"Last \d predictions",
+                r"Alarm rule",
+                r"Run analysis in Asset 360",
+            ],
+            [r"MTR-003", prob_llm, r"(0\.3|0\.5|three|3 consecutive)"],
+        ),
+        (
+            "hero-fixes-2",
+            "What are the possible fixes?",
+            "MTR-003",
+            None,
+            ["get_asset", "search_manuals"],
+            [
+                r"^MTR-003",
+                alarm,
+                prob,
+                r"Asset 360",
+                r"no Decision Contract",
+                r"(Procedure from the plant manuals|No manual passages)",
+            ],
+            [r"MTR-003", r"Asset 360"],
+        ),
+    ]
+    for cid, p, aid, hist, tools, must, must_llm in hero_after:
+        cases.append(
+            case(
+                cid,
+                ["hero", "after-contract"],
+                p,
+                tools,
+                must,
+                must_not=[r"regime"],
+                asset_id=aid,
+                history=hist,
+                tools_llm=["get_asset"],
+                must_llm=must_llm,
+            )
+        )
+    for cid, p, aid, hist, tools, must, must_llm in hero_before:
+        cases.append(
+            case(
+                cid,
+                ["hero", "before-contract"],
+                p,
+                tools,
+                must,
+                must_not=[r"regime", r"dc_"],
+                asset_id=aid,
+                history=hist,
+                tools_llm=["get_asset"],
+                must_llm=must_llm,
             )
         )
     guard = [

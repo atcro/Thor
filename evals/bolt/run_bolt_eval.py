@@ -36,6 +36,14 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+#: Per-sample predictions seeded oldest first (10-minute steps). Each series crosses 0.3 and
+#: then 0.5 for three consecutive rows, so the alarm latches critical and the trend reads
+#: "rising" (median of the last 3 vs the 3 before, apps/api/routes/twin.py::trend_of).
+HERO_PREDICTIONS: dict[str, tuple[float, ...]] = {
+    "MTR-042": (0.18, 0.22, 0.27, 0.34, 0.41, 0.49, 0.55, 0.60, 0.62),
+    "MTR-003": (0.20, 0.26, 0.33, 0.40, 0.47, 0.52, 0.56, 0.58),
+}
+
 READ_ONLY_TOOLS = {
     "get_fleet",
     "get_asset",
@@ -96,10 +104,23 @@ def seed() -> str:
     dc = DecisionContract.model_validate(example)
     db.insert_decision_contract(dc, engine=engine)
     # Fleet health comes only from approved-model predictions (never simulator ground truth),
-    # so the eval seeds one prediction for the degrading motor as the edge would have.
-    from datetime import UTC, datetime
+    # so the eval seeds the per-sample predictions the edge would have produced: a rising
+    # series for MTR-042 (which has the contract: the demo AFTER "Run analysis") and for
+    # MTR-003 (no contract: the demo WHILE the analysis runs). Both latch critical through the
+    # alarm state machine (3 consecutive >= 0.5), exactly as the fleet and the twin see it.
+    from datetime import UTC, datetime, timedelta
 
-    db.insert_prediction("MTR-042", datetime.now(UTC), "v42", 0.62, source="edge", engine=engine)
+    from apps.api import alarms
+
+    now = datetime.now(UTC)
+    for aid, probs in HERO_PREDICTIONS.items():
+        for i, p in enumerate(probs):
+            ts = now - timedelta(minutes=10 * (len(probs) - 1 - i))
+            db.insert_prediction(aid, ts, "v42", p, source="edge", engine=engine)
+    alarms.reset()
+    events = alarms.update_alarms(engine)
+    latched = sorted({e.asset_id for e in events if e.level == "critical"})
+    assert latched == sorted(HERO_PREDICTIONS), f"alarms did not latch as seeded: {events}"
 
     from agents.reliability import rag
     from apps.api.settings import get_settings
@@ -189,8 +210,17 @@ def main() -> int:
     rows: list[dict[str, Any]] = []
     for c in cases:
         prompt = c["prompt"].replace("{CONTRACT_ID}", contract_id)
+        # Optional prior turns (both roles) so a follow-up like "Give me the details." has to
+        # resolve its asset from the conversation rather than from `asset_id`.
+        history = [
+            CopilotMessage(
+                role=m["role"], content=m["content"].replace("{CONTRACT_ID}", contract_id)
+            )
+            for m in c.get("history") or []
+        ]
         req = CopilotRequest(
-            messages=[CopilotMessage(role="user", content=prompt)], asset_id=c.get("asset_id")
+            messages=[*history, CopilotMessage(role="user", content=prompt)],
+            asset_id=c.get("asset_id"),
         )
         t0 = time.perf_counter()
         attempts = 0
@@ -236,7 +266,10 @@ def main() -> int:
                 "meta": {"source": source, "tools": names, "attempts": attempts},
             }
         )
-        trace: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+        trace: list[dict[str, Any]] = [
+            *({"role": m.role, "content": m.content} for m in history),
+            {"role": "user", "content": prompt},
+        ]
         for tc in calls:
             trace.append(
                 {

@@ -29,9 +29,9 @@ FEATURE_PHRASES: dict[str, str] = {
     "current_mean": "motor current",
     "rpm_mean": "motor speed",
     "load_mean": "motor load",
-    "vib_rms_z": "vibration RMS above regime baseline",
-    "bearing_temp_z": "bearing temperature above regime baseline",
-    "vib_rms_resid": "vibration RMS residual versus regime expectation",
+    "vib_rms_z": "vibration RMS above its state's baseline",
+    "bearing_temp_z": "bearing temperature above its state's baseline",
+    "vib_rms_resid": "vibration RMS residual versus its state's expectation",
 }
 
 _MAX_BACKGROUND_ROWS = 50

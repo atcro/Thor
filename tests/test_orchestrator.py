@@ -548,6 +548,7 @@ def install_fake_toolbox(
             rationale="no champion",
         ),
     )
+
     def fake_request_promotion(comp: ChampionComparison, to_stage: ModelStage, engine: Any):
         calls["request_promotion"].append(comp.challenger.version)
         return PromotionRequest(
@@ -691,7 +692,9 @@ def test_route_ignores_llm_choice_that_skips_validate(
     gs.stage = PipelineStage.validating
     assert orchestrator.route(gs) == orchestrator.END
     assert gs.llm_calls == 1
-    ga = GraphState(run_id="r2a", asset_id="MTR-042", stage=PipelineStage.explaining, mode="analyze")
+    ga = GraphState(
+        run_id="r2a", asset_id="MTR-042", stage=PipelineStage.explaining, mode="analyze"
+    )
     assert orchestrator.route(ga) == "await_approval"  # the LLM's "finalize" is ignored
 
 
@@ -750,7 +753,14 @@ def test_train_run_registers_and_stops(engine: Any, monkeypatch: pytest.MonkeyPa
     assert gs.data_quality and gs.candidates and gs.validation
     assert gs.evidence is None and gs.contract is None and gs.model_ref is None
     tools = [e.tool for e in gs.events]
-    for t in ("make_asset_split", "profile", "train", "validate", "register_model", "request_promotion"):
+    for t in (
+        "make_asset_split",
+        "profile",
+        "train",
+        "validate",
+        "register_model",
+        "request_promotion",
+    ):
         assert t in tools
     assert "explain" not in tools and "await_approval" not in tools
     assert gs.split is not None and "MTR-042" in gs.split.test and "MTR-042" not in gs.split.train
@@ -760,7 +770,9 @@ def test_train_run_registers_and_stops(engine: Any, monkeypatch: pytest.MonkeyPa
     with pytest.raises(ValueError):  # nothing to approve on a train run
         orchestrator.resume(
             gs0.run_id,
-            Approval(approval_id="x", decision="approved", approver="j", decided_at=datetime.now(UTC)),
+            Approval(
+                approval_id="x", decision="approved", approver="j", decided_at=datetime.now(UTC)
+            ),
             engine=engine,
         )
 
@@ -782,7 +794,13 @@ def test_full_run_pauses_at_gate_and_resumes(engine: Any, monkeypatch: pytest.Mo
     assert gs.llm_calls == 0
     assert db.contract_status(gs.contract.contract_id, engine=engine) == "pending"
     tools = [e.tool for e in gs.events]
-    for t in ("load_production_model", "profile_dataset", "explain", "score_asset", "await_approval"):
+    for t in (
+        "load_production_model",
+        "profile_dataset",
+        "explain",
+        "score_asset",
+        "await_approval",
+    ):
         assert t in tools
     for t in ("train_candidates", "validate", "register_model", "request_promotion"):
         assert t not in tools
@@ -887,7 +905,9 @@ def test_node_failure_marks_run_failed(engine: Any, monkeypatch: pytest.MonkeyPa
         lambda df, asset_id, fit_assets=None: make_dq(asset_id, trainable=False),
     )
     gs0 = orchestrator.start_run("MTR-042", engine=engine, mode="train")
-    gs = wait_for_stage(orchestrator, gs0.run_id, {"awaiting_approval", "trained", "failed"}, engine)
+    gs = wait_for_stage(
+        orchestrator, gs0.run_id, {"awaiting_approval", "trained", "failed"}, engine
+    )
     assert gs.stage == PipelineStage.failed
     assert gs.error and "blocks training" in gs.error
     assert gs.candidates is None
@@ -1012,6 +1032,84 @@ def test_copilot_template_chains_evidence_and_precedent(engine: Any) -> None:
         engine=engine,
     )
     assert [c["name"] for c in r.tool_calls] == ["get_contract", "search_field_history"]
+
+
+def test_copilot_template_hero_questions(engine: Any) -> None:
+    """The three finals questions (CLAUDE.md section 15) before and after a Decision Contract:
+    status word from the latched alarm, readings, 'Run analysis' pointer, then the contract id,
+    options and the Asset 360 approval pointer -- and never the word 'regime'."""
+    import json
+
+    from apps.api import alarms, orchestrator
+    from apps.api.schemas import DecisionContract
+
+    def ask(text: str, asset_id: str | None = None, history: list[CopilotMessage] | None = None):
+        msgs = [*(history or []), CopilotMessage(role="user", content=text)]
+        return orchestrator.copilot_reply(CopilotRequest(messages=msgs, asset_id=asset_id), engine)
+
+    # Sustained predictions: warning after three >= 0.3, critical (latched) after three >= 0.5.
+    for i, p in enumerate((0.2, 0.25, 0.34, 0.41, 0.49, 0.55, 0.6, 0.62)):
+        db.insert_prediction(
+            "MTR-042", NOW - timedelta(minutes=10 * (8 - i)), "v42", p, engine=engine
+        )
+    alarms.reset()
+    assert [e.level for e in alarms.update_alarms(engine)] == ["warning", "critical"]
+
+    r = ask("What's happening with MTR-042?")
+    assert [c["name"] for c in r.tool_calls] == ["get_asset"]
+    assert r.reply.startswith("MTR-042 is critical -- the alarm latched at ")
+    assert "stays critical until a work order completes" in r.reply
+    assert "failure probability is 0.60" in r.reply and "trend is rising" in r.reply
+    assert "Run analysis in Asset 360" in r.reply and "dc_" not in r.reply
+    r = ask("Give me the details.", asset_id="MTR-042")
+    assert [c["name"] for c in r.tool_calls] == ["get_asset"]
+    assert "Last 6 predictions:" in r.reply and "Alarm rule:" in r.reply
+    r = ask("What are the possible fixes?", asset_id="MTR-042")
+    assert [c["name"] for c in r.tool_calls] == ["get_asset", "search_manuals"]
+    assert "no Decision Contract" in r.reply and "Asset 360" in r.reply
+
+    example = json.loads(
+        (
+            Path(__file__).resolve().parents[1] / "docs" / "decision-contracts" / "example.json"
+        ).read_text(encoding="utf-8")
+    )
+    example["asset_id"] = "MTR-042"
+    dc = DecisionContract.model_validate(example)
+    db.insert_decision_contract(dc, engine=engine)
+    tool = orchestrator.copilot_get_asset("MTR-042", engine)
+    assert tool["status"] == "critical" and tool["alarm"]["level"] == "critical"
+    assert tool["trend"] == "rising" and len(tool["recent_predictions"]) == 6
+    assert tool["contract"]["contract_id"] == dc.contract_id
+    assert (
+        tool["contract"]["top_features_plain"][0]["driver"]
+        == "vibration RMS above its state's baseline"
+    )
+    assert [o["option"] for o in tool["contract"]["cost_options"]] == [
+        "maintain_now",
+        "maintain_later",
+        "run_to_failure",
+    ]
+    assert tool["contract"]["manual_citations"][0]["section"].startswith("4.2")
+
+    r = ask("What's happening with MTR-042?")
+    assert (
+        f"Decision Contract {dc.contract_id} recommends maintain at the next planned window"
+        in r.reply
+    )
+    assert "expected cost 5,900 under the configured plant-cost assumptions" in r.reply
+    assert "approved or rejected on Asset 360" in r.reply
+    # The follow-up resolves its asset from the conversation, not from an id in the text.
+    history = [CopilotMessage(role="user", content="What's happening with MTR-042?")]
+    r = ask("Give me the details.", history=history)
+    assert [c["name"] for c in r.tool_calls] == ["get_asset", "search_field_history"]
+    assert "Top drivers:" in r.reply and "motor-maintenance.md section 4.2" in r.reply
+    assert "run to failure: expected cost 46,700" in r.reply
+    r = ask("What are the possible fixes?", asset_id="MTR-042")
+    assert [c["name"] for c in r.tool_calls] == ["get_asset", "search_manuals"]
+    assert "-- recommended" in r.reply and "I cannot approve it" in r.reply
+    for text in ("What's happening with MTR-042?", "Give me the details.", "fixes?"):
+        assert "regime" not in ask(text, asset_id="MTR-042").reply
+        assert "!" not in ask(text, asset_id="MTR-042").reply
 
 
 def test_graph_state_helpers() -> None:

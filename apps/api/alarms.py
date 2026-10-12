@@ -83,6 +83,8 @@ class _Cursor:
 
 #: asset_id -> in-memory cursor (rebuilt from the database on first use after a restart).
 _cursors: dict[str, _Cursor] = {}
+#: The database the cursors belong to; a different engine (tests) starts from scratch.
+_cursor_db: str | None = None
 
 
 def reset() -> None:
@@ -260,6 +262,11 @@ def update_alarms(engine: Engine | None = None, asset_ids: list[str] | None = No
     engine = engine or db.get_engine()
     inserted: list[AlarmEvent] = []
     with _LOCK:
+        global _cursor_db
+        key = str(engine.url)
+        if key != _cursor_db:
+            _cursors.clear()
+            _cursor_db = key
         newest_all: dict[str, AlarmEvent] | None = None
         if asset_ids is None:
             with engine.connect() as conn:

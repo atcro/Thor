@@ -136,9 +136,9 @@ def describe_feature(f: ShapFeature) -> str:
     v = f.feature_value
     name = f.feature
     if name == "vib_rms_z":
-        phrase = f"vibration RMS is {abs(v):.1f} standard deviations {_above_below(v)} its regime baseline"
+        phrase = f"vibration RMS is {abs(v):.1f} standard deviations {_above_below(v)} its state baseline"
     elif name == "bearing_temp_z":
-        phrase = f"bearing temperature is {abs(v):.1f} standard deviations {_above_below(v)} its regime baseline"
+        phrase = f"bearing temperature is {abs(v):.1f} standard deviations {_above_below(v)} its state baseline"
     elif name == "vib_rms_mean":
         phrase = f"mean vibration RMS is {v:.2f} mm/s"
     elif name == "vib_rms_slope":
@@ -160,7 +160,7 @@ def describe_feature(f: ShapFeature) -> str:
     elif name == "load_mean":
         phrase = f"motor load is {v:.0f} percent"
     elif name == "vib_rms_resid":
-        phrase = f"vibration RMS is {abs(v):.2f} mm/s {_above_below(v)} the regime-expected value"
+        phrase = f"vibration RMS is {abs(v):.2f} mm/s {_above_below(v)} the state-expected value"
     else:
         phrase = f"{name.replace('_', ' ')} is {v:.3g}"
     tag = "raising risk" if f.direction == "raises_risk" else "lowering risk"

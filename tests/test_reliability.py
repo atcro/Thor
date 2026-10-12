@@ -455,8 +455,8 @@ def test_query_from_explanation_is_deterministic() -> None:
     q1 = rag.query_from_explanation(exp)
     q2 = rag.query_from_explanation(exp)
     assert q1 == q2
-    assert "vibration RMS above regime baseline" in q1
-    assert "bearing temperature above regime baseline" in q1
+    assert "vibration RMS above its state's baseline" in q1
+    assert "bearing temperature above its state's baseline" in q1
     assert "motor load" not in q1
 
 
@@ -654,8 +654,8 @@ def test_template_explanation_cites_only_bundle_numbers(bundle) -> None:
     sentences = [s for s in re.split(r"(?<=[.!?])\s+(?=[A-Z])", text.strip()) if s]
     assert 4 <= len(sentences) <= 6, sentences
     assert "62%" in text
-    assert "vibration RMS is 3.4 standard deviations above its regime baseline" in text
-    assert "bearing temperature is 2.1 standard deviations above its regime baseline" in text
+    assert "vibration RMS is 3.4 standard deviations above its state baseline" in text
+    assert "bearing temperature is 2.1 standard deviations above its state baseline" in text
     assert "Under the configured plant-cost assumptions" in text
     by = {o.option: o for o in bundle.cost.options}
     for o in by.values():

@@ -11,8 +11,9 @@ don't invent new claims.
 - **One-liner:** "An agentic AutoML + MLOps platform that turns raw industrial sensor data into
   a validated, explainable, human-approved predictive-maintenance decision."
 - **Differentiators to lead with** (most teams stop before any of these):
-  1. **Regime-aware fault detection** — clusters operating state (RPM/load/startup) first, so a
-     load change is never mistaken for a failure.
+  1. **State-aware fault detection** — clusters operating state (RPM/load/startup; called
+     regimes in the literature) first, so a load change is never mistaken for a failure. Say
+     "state" everywhere else, never "regime".
   2. **Industrial Model Score** — champion selection weighted by recall, warning lead time,
      calibration, and inference latency, not raw accuracy.
   3. **Decision Contract** — an immutable, evidence-linked audit record for every recommendation
@@ -22,7 +23,7 @@ don't invent new claims.
   5. **Governed agent architecture** — the LLM only plans and explains; every number comes from
      deterministic code; a human approves every action. State this as architecture, not a slogan.
 - **Rubric mapping** (one line each, no invented point totals):
-  - *Innovation:* regime-awareness + prescriptive layer, not another anomaly-threshold demo.
+  - *Innovation:* state-awareness + prescriptive layer, not another anomaly-threshold demo.
   - *Technical excellence:* time/asset-aware validation, calibration, drift detection, MLflow
     registry, edge deployment.
   - *Problem-solution fit:* directly implements every bullet in ABB's Theme 1 feature list.

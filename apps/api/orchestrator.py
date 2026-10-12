@@ -151,7 +151,10 @@ EXPLANATION_SYSTEM_PROMPT = (
     "0.877 is written 87.7%), costs as whole currency amounts with thousands separators, other "
     "values with at most two decimals, and dates as they appear in the JSON. Use the "
     "'plain_language' description of each driver instead of its raw feature name, and never "
-    "echo JSON keys such as feature_value or raises_risk."
+    "echo JSON keys such as feature_value or raises_risk. Call an operating state a 'state' "
+    "(e.g. 'above its state's baseline', 'state heavy load'); never write the word 'regime'. "
+    "Prefix cost figures with 'under the configured plant-cost assumptions'; never present a "
+    "saving as fact."
 )
 
 
@@ -225,6 +228,32 @@ it as the symptom for search_manuals and, if an asset is in context, get_asset.
 - Follow-ups ('and the other one?', 'more detail', 'why?') continue the previous topic; do not \
 restart from get_fleet.
 
+THE THREE SHIFT QUESTIONS (answer these exactly like this; call get_asset first every time)
+1. 'What's happening with MTR-042?' / 'what's going on with' / 'status of': one-sentence \
+conclusion with the status word from get_asset ('MTR-042 is critical -- the alarm latched at \
+<alarm.since> after <alarm.reason>; the calibrated probability is <p> and the trend is \
+<trend>'), then the readings that matter from latest_telemetry (vibration RMS, kurtosis, \
+bearing and motor temperature, current, rpm, load, state). If `contract` is null, close with \
+'Run analysis in Asset 360 to get a Decision Contract'. If it exists, add its id (dc_...), \
+recommendation, probability, expected cost and window.
+2. 'Give me the details.' / 'more detail' (no id: it means the asset in view or the one last \
+discussed): before a contract, the full latest readings, recent_predictions as a short list \
+and the alarm rule in one line (3 consecutive predictions >= 0.3 -> warning; 3 consecutive \
+>= 0.5 -> critical, latched until a work order completes; a warning clears after 6 \
+consecutive < 0.3). After a contract: its top_features_plain (name, direction, value), the \
+three cost_options with expected costs, the single most relevant manual sentence from its \
+manual_citations quoted with '<source> section <section>', then search_field_history with \
+the risk-raising drivers as the symptom and give the medians plus one case.
+3. 'What are the possible fixes?' / 'how do I fix it' / 'what should I do' / 'options': before \
+a contract, search_manuals for the inspection and replacement procedure, quote it with \
+citations, and say that Run analysis in Asset 360 produces the costed recommendation. After \
+a contract: the three cost_options with expected costs, which one is recommended, the window, \
+the procedure passages (the contract's manual_citations, plus search_manuals if needed), and \
+close with: the contract is approved or rejected on Asset 360 -- you never approve.
+Status words: healthy means within the healthy baseline; critical is LATCHED -- say it \
+stays critical until a work order completes, even if the probability has fallen back. A \
+contract or alarm flagged sandbox is a 'sandbox scenario'; say so.
+
 TOOLS
 For failure mechanisms, inspection or maintenance procedures, thresholds, or plant policy, \
 ALWAYS call search_manuals first, never answer from general knowledge, and quote only the \
@@ -255,10 +284,13 @@ VOICE
 A calm senior reliability engineer writing a shift-handover note, not an assistant. Lead with \
 the actionable conclusion, then the evidence, then the precedent. State confidence in the \
 contract's terms ('the contract puts it at 0.50 within 48 h', never 'it will fail'). Use the \
-plant's vocabulary (drive-end bearing, regime, alarm window, lead time), not 'anomaly detected'; \
-name SHAP drivers by their plain names from top_features_plain, not feature codes. No \
-exclamation marks, no apologies, no 'great question', no first-person feelings. Short sentences; \
-numbers on their own line or in a short list when there are more than two.
+plant's vocabulary (drive-end bearing, operating state, alarm window, lead time), not 'anomaly \
+detected'; name SHAP drivers by their plain names from top_features_plain, not feature codes. \
+Say 'state' for an operating state (e.g. 'state heavy load', 'above its state's baseline'); \
+never write the word 'regime' even though the tool field is called regime. Costs are always \
+'under the configured plant-cost assumptions', never a saving stated as fact. No exclamation \
+marks, no apologies, no 'great question', no first-person feelings. Short sentences; numbers \
+on their own line or in a short list when there are more than two.
 
 LENGTH
 A reply is a handover note, not a report: at most about 150 words. One-sentence conclusion, then \
@@ -2423,7 +2455,9 @@ def _result_summary(result: dict[str, Any]) -> str:
         dc = result.get("contract")
         if dc:
             tail += f", contract {dc['contract_id']} {dc['recommendation']} ({dc['status']})"
-        return f"{a['asset_id']} health {a['health_score']}, p_fail {a['failure_probability']}{tail}"
+        return (
+            f"{a['asset_id']} health {a['health_score']}, p_fail {a['failure_probability']}{tail}"
+        )
     if "contracts" in result and "promotions" in result:
         return (
             f"{len(result['contracts'])} contracts, {len(result['promotions'])} promotions pending"
@@ -2548,8 +2582,10 @@ def _status_sentence(res: dict[str, Any]) -> str:
     every value straight from get_asset."""
     a = res["asset"]
     aid = a["asset_id"]
-    status = res.get("status") or a.get("status") or (
-        "no_prediction" if a["health_score"] is None else "healthy"
+    status = (
+        res.get("status")
+        or a.get("status")
+        or ("no_prediction" if a["health_score"] is None else "healthy")
     )
     p = a.get("failure_probability")
     p_bit = f"the calibrated failure probability is {p:.2f}" if p is not None else ""
@@ -2558,16 +2594,17 @@ def _status_sentence(res: dict[str, Any]) -> str:
     alarm = res.get("alarm") or {}
     since = _plant_ts(alarm.get("since"))
     sandbox = " from sandbox readings" if alarm.get("sandbox") else ""
+    reason = str(alarm.get("reason") or "").replace(" (latched)", "")
     if status == "critical":
         head = (
             f"{aid} is critical -- the alarm latched at {since}{sandbox} after "
-            f"{alarm.get('reason') or '3 consecutive predictions >= 0.5'} and stays critical "
-            "until a work order completes"
+            f"{reason or '3 consecutive predictions >= 0.5'} and stays critical until a work "
+            "order completes"
         )
     elif status == "warning":
         head = (
             f"{aid} is in warning -- raised at {since}{sandbox} after "
-            f"{alarm.get('reason') or '3 consecutive predictions >= 0.3'}"
+            f"{reason or '3 consecutive predictions >= 0.3'}"
         )
     elif status == "healthy":
         head = f"{aid} is healthy (within its healthy baseline)"
@@ -2667,8 +2704,8 @@ def _template_precedent_brief(res: dict[str, Any]) -> str:
         bits.append(f"cost {c['total_cost']:,.0f}")
     tail = f" ({', '.join(bits)})" if bits else ""
     return (
-        f"Field history ({res['n_cases']} similar unplanned work orders from {res['source']}; "
-        f"precedent, not from this plant): {', '.join(parts) or 'no cost data'}. "
+        f"Field history: {res['n_cases']} similar unplanned work orders from {res['source']}, "
+        f"precedent, not from this plant -- {', '.join(parts) or 'no cost data'}. "
         f"For example [{c['component']}, {year}] {c['description']}{tail}."
     )
 
@@ -2735,7 +2772,9 @@ def _template_fixes_text(res: dict[str, Any], manuals: dict[str, Any]) -> str:
             lines.append("Options under the configured plant-cost assumptions:")
             for o in options:
                 rec = " -- recommended" if o.get("recommended") else ""
-                lines.append(f"- {_rec_phrase(o['option'])}: expected cost {_money(o['expected_cost'])}{rec}")
+                lines.append(
+                    f"- {_rec_phrase(o['option'])}: expected cost {_money(o['expected_cost'])}{rec}"
+                )
         cites = dc.get("manual_citations") or []
         if cites:
             lines.append("Manual guidance cited in the contract:")
@@ -2756,7 +2795,9 @@ def _template_fixes_text(res: dict[str, Any], manuals: dict[str, Any]) -> str:
             lines.append(f"- [{p['source']} section {p['section']}] {body}")
     else:
         lines.append(f"No manual passages matched '{manuals.get('query', FIX_PROCEDURE_QUERY)}'.")
-    lines.append(APPROVAL_LINE if dc else "Approvals happen on Asset 360; I cannot approve anything.")
+    lines.append(
+        APPROVAL_LINE if dc else "Approvals happen on Asset 360; I cannot approve anything."
+    )
     return "\n".join(lines)
 
 
@@ -2823,18 +2864,43 @@ def _template_history_text(res: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-WHY_WORDS = ("why", "risk", "wrong", "caus", "explain", "happening", "going on", "evidence")
+WHY_WORDS = ("why", "risk", "wrong", "caus", "explain", "evidence")
 ACTION_WORDS = ("pending", "approv", "reject", "promot", "deploy", "waiting", "decision")
+# The hero questions (CLAUDE.md section 15): status, details and fixes for the asset in
+# view. "fleet" in the text keeps "Give me a fleet status" on the fleet path.
+STATUS_WORDS = (
+    "happening",
+    "going on",
+    "status of",
+    "status for",
+    "what's up with",
+    "whats up with",
+    "how is",
+    "how's",
+    "how are",
+)
+DETAIL_WORDS = ("detail", "tell me more", "more info", "elaborate", "break it down")
+FIX_WORDS = (
+    "fix",
+    "what should i do",
+    "what do i do",
+    "what can i do",
+    "options",
+    "next step",
+    "remediat",
+    "repair it",
+    "resolve",
+)
 
 
 def _history_query_for_contract(dc: dict[str, Any]) -> str:
-    """Deterministic symptom query from a contract payload's risk-raising SHAP drivers."""
+    """Deterministic symptom query from a contract payload's risk-raising SHAP drivers
+    (works on get_contract's `top_features` or get_asset's `contract.top_features_plain`)."""
     from agents.reliability import rag
 
-    feats = [
-        f["feature"] for f in dc.get("top_features", []) if f.get("direction") == "raises_risk"
-    ]
-    feats = feats or [f["feature"] for f in dc.get("top_features", [])]
+    feats_all = dc.get("top_features") or dc.get("top_features_plain") or []
+    feats = [f["feature"] for f in feats_all if f.get("direction") == "raises_risk"]
+    feats = feats or [f["feature"] for f in feats_all]
     return rag.history_query_from_features(feats)
 
 
@@ -2946,6 +3012,21 @@ HELP_TEXT = (
 )
 
 
+def _asset_in_context(req: CopilotRequest, last: str) -> str | None:
+    """The asset a follow-up refers to: an id in the message, else the asset in view
+    (`req.asset_id`), else the most recent message of either role that names one."""
+    m = ASSET_ID_RE.search(last)
+    if m:
+        return m.group(0).upper()
+    if req.asset_id:
+        return str(req.asset_id).upper()
+    for msg in reversed(req.messages):
+        m = ASSET_ID_RE.search(msg.content)
+        if m:
+            return m.group(0).upper()
+    return None
+
+
 def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResponse:
     last = next((m.content for m in reversed(req.messages) if m.role == "user"), "")
     text = last.lower()
@@ -2963,6 +3044,17 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
     wants_history = not wants_stats and any(k in text for k in HISTORY_WORDS)
     wants_manual = not (wants_stats or wants_history) and any(k in text for k in MANUAL_WORDS)
     wants_why = any(k in text for k in WHY_WORDS)
+    # Hero questions about the asset in view: fixes > details > status. A "fleet status"
+    # stays a fleet question; "how long does a fix take" stays a stats question.
+    hero = ""
+    if not (wants_stats or wants_history):
+        if any(k in text for k in FIX_WORDS):
+            hero = "fixes"
+        elif any(k in text for k in DETAIL_WORDS):
+            hero = "details"
+        elif "fleet" not in text and any(k in text for k in STATUS_WORDS):
+            hero = "status"
+    context_asset = _asset_in_context(req, last) if hero else None
 
     def precedent_for(dc: dict[str, Any]) -> str:
         query = _history_query_for_contract(dc)
@@ -2973,6 +3065,25 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
         # Checked before the contract-id branch on purpose: "approve dc_..." must be refused,
         # never answered as a lookup. The template can only list what is pending.
         reply = _template_pending_text(call("list_pending_approvals", {}))
+    elif hero and context_asset and not m_contract:
+        # "What's happening with MTR-042?", "Give me the details.", "What are the possible
+        # fixes?" -- get_asset carries the status, alarm, trend, readings and the newest
+        # contract, so the answer is the same shape before and after an analysis.
+        asset_res = call("get_asset", {"asset_id": context_asset})
+        dc = asset_res.get("contract") if "error" not in asset_res else None
+        if hero == "status":
+            reply = _template_status_text(asset_res)
+        elif hero == "details":
+            precedent = None
+            if dc:
+                query = _history_query_for_contract(dc)
+                precedent = call("search_field_history", {"query": query, "k": 3})
+            reply = _template_details_text(asset_res, precedent)
+        else:
+            manuals: dict[str, Any] = {"query": FIX_PROCEDURE_QUERY, "passages": []}
+            if "error" not in asset_res:
+                manuals = call("search_manuals", {"query": FIX_PROCEDURE_QUERY, "k": 3})
+            reply = _template_fixes_text(asset_res, manuals)
     elif m_contract:
         res = call("get_contract", {"contract_id": m_contract.group(0)})
         if "error" in res:

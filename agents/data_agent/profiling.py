@@ -221,7 +221,7 @@ def detect_missingness(df: pd.DataFrame, step_min: int = 10) -> MissingnessRepor
 def _regime_label(rank: int, k: int) -> str:
     if k == 3:
         return REGIME_LABELS_K3[rank]
-    return f"regime-{rank + 1}"
+    return f"state-{rank + 1}"
 
 
 def detect_regime(
@@ -358,9 +358,9 @@ def profile_dataset(
         try:
             regimes = detect_regime(df, fit_assets=fit_assets)
         except (ValueError, TypeError) as exc:
-            logger.warning("regime detection failed: %s", exc)
+            logger.warning("operating-state detection failed: %s", exc)
             regimes = RegimeReport(regimes=[], row_regime=[])
-            notes.append(f"regime detection failed: {exc}")
+            notes.append(f"operating-state detection failed: {exc}")
     else:
         regimes = RegimeReport(regimes=[], row_regime=[])
 
@@ -404,7 +404,7 @@ def profile_dataset(
             f"{r.regime_id} {r.label}: share {r.share:.2f}, rpm {r.rpm_mean:.0f}, load {r.load_mean:.0f}%"
         )
     if regimes.silhouette is not None:
-        notes.append(f"regime silhouette {regimes.silhouette:.2f}")
+        notes.append(f"state silhouette {regimes.silhouette:.2f}")
 
     trainable = (
         score >= MIN_TRAINABLE_SCORE
