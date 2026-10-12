@@ -5,34 +5,31 @@ Monday 5 pm. Read `CLAUDE.md` (§7, §15, §16), `docs/finals/session-notes.md` 
 ## Goal
 
 No person on a plant floor says "regime". Everywhere a person reads or hears Thor, the word
-becomes **"operating state"**, or just **"state"** where space is tight and the meaning is
-obvious. The judges, the team and Bolt should all use the same plain word.
+becomes **"state"**: "State: heavy load", "the motor changed state", "state ring". The judges,
+the team and Bolt should all use the same plain word. Never "regime state" or "operating state".
 
-## Why "operating state" and not bare "state"
+## Keep "state" unambiguous
 
-Thor already uses "state" for other things:
-- the decision state (contract pending, approved, work order);
-- the data state (live, stale, no data);
-- the alarm state from Prompt A.1.
+"State" now means the operating state only. Other visible labels that say "state" today get their
+own words, so a person never sees two different "states":
+- the decision state (contract pending, approved, work order) is labelled **"Decision"**;
+- the data state (live, stale, no data) is labelled **"Data"**;
+- the alarm level (healthy, warning, critical) is labelled **"Status"**.
 
-A bare "state" next to those is ambiguous. So:
-- Use **"operating state"** in sentences, headings, tooltips, HUD module titles, Bolt's answers and
-  docs.
-- Use **"State"** alone only in a compact label where it sits next to its value and can't be
-  confused with the others, for example a HUD row "State: heavy load".
-- Never "regime state".
+This is about visible labels only; internal names like `decision_state` and `data_state` stay
+(see below).
 
 ## What changes (everything a person reads or hears)
 
 - **Web UI:** every visible string in `apps/web/src`. That includes:
   - labels, legends, tooltips and the HUD;
-  - the twin's ring legend ("regime ring" becomes "operating-state ring");
+  - the twin's ring legend ("regime ring" becomes "state ring");
   - the Asset 360 chart;
   - AutoML Studio's data-quality and feature descriptions;
   - the sandbox panel;
   - aria-labels;
   - test assertions that check those strings.
-- **State names.** Show each operating state by a plain name (for example startup, running, heavy
+- **State names.** Show each state by a plain name (for example startup, running, heavy
   load), not a code like R1/R2/R3, wherever the data supports that name.
   - Derive each name deterministically from the state's measured centroid (rpm and load), in one
     place, with a docstring that says how.
@@ -44,17 +41,17 @@ A bare "state" next to those is ambiguous. So:
   - OpenAPI field descriptions.
 - **Bolt:** its system prompt, tool descriptions it reads, template-mode answers, and the eval
   cases in `evals/bolt/` (keep the pass rate).
-- **The LLM explanation prompt** in `apps/api/orchestrator.py`: tell the model to say "operating
-  state". Template text says it too.
+- **The LLM explanation prompt** in `apps/api/orchestrator.py`: tell the model to say "state", never
+  "regime". Template text says it too.
 - **Docs and the demo:**
   - `docs/finals/demo-walkthrough.md` and `DEMO.md`;
   - `docs/finals/model-card.md` and `metrics.md`;
   - `docs/architecture.html`;
   - the `submission-positioning` skill, where it describes the differentiator ("regime-aware"
-    becomes "operating-state-aware");
+    becomes "state-aware");
   - `CLAUDE.md` prose.
-  - Where a doc explains the method, one sentence may say "operating states (clustering on rpm
-    and load; sometimes called regimes in the literature)" so a judge who knows the term isn't
+  - Where a doc explains the method, one sentence may say "states (found by clustering on rpm
+    and load; called operating regimes in the literature)" so a judge who knows the term isn't
     confused. Use that once per doc at most.
 
 ## What does NOT change

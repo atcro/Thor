@@ -159,8 +159,8 @@ simulated readings" banner.
 
 **What it offers:**
 - **Sliders** for rpm and temperature on the selected motor, applied live.
-  - Load and rpm changes should move the regime ring without raising an alarm, unless the model
-    really scores them as risky. That's the regime-awareness point.
+  - Load and rpm changes should move the state ring without raising an alarm, unless the model
+    really scores them as risky. That's the state-awareness point.
 - **"Troubleshoot <motor>":** injects a drive-end bearing fault on the chosen motor, ramping fast
   to full severity.
   - Use the simulator's own fault signature. The model was trained on bearing failures, so that's
@@ -209,7 +209,25 @@ The rewind shows two figures side by side:
 - **3-D Digital Twin** gets its own route, listed directly under Bolt (Copilot) in the side menu.
 - X-Ray keeps working in both views.
 
-### 9. Script and run instructions
+### 9. Say "state", never "regime"
+
+No one on a plant floor says "regime", so everywhere a person reads or hears Thor, the word is
+**"state"**: "State: heavy load", "the motor changed state", "state ring".
+- **From the start:** all text you write or change in this session follows this rule. That
+  includes the sandbox panel, alarm labels, Bolt's answers, tooltips and the walkthrough.
+- **Then the full sweep (priority 5 below):** rename every remaining person-visible "regime",
+  following the rules in `docs/finals/prompt-A2-state-rename.md`. In short:
+  - rename what a person can see or hear (UI text, HUD, Bolt, explanation and contract text,
+    docs, the positioning skill);
+  - leave identifiers, API field names, database columns, feature names and the edge sidecar
+    format alone;
+  - relabel the other visible "states" as "Decision", "Data" and "Status" so "state" is never
+    ambiguous;
+  - show plain state names (startup, running, heavy load) only where the measured centroids
+    support them.
+- If you don't finish the sweep, say so in the final report; the team will send A.2 afterwards.
+
+### 10. Script and run instructions
 
 Rewrite `docs/finals/demo-walkthrough.md` as the click path for the 10 steps above, with:
 - measured timings;
@@ -220,7 +238,7 @@ Rewrite `docs/finals/demo-walkthrough.md` as the click path for the 10 steps abo
   Fleet; if a step stalls, pause or resume the replay.
 
 **Honest talk track for step 2.** The model learns from the fleet's own history: months of healthy
-running per operating regime, plus the motors that failed before. "It learned what normal looks
+running in each state, plus the motors that failed before. "It learned what normal looks
 like and what 'about to fail' looks like." Don't say it was trained only on healthy motors.
 
 Also update wherever this changes the facts:
@@ -262,6 +280,7 @@ Also update wherever this changes the facts:
   2. Bolt's hero answers.
   3. The twin, rewind and nav.
   4. The sandbox.
+  5. The full "state" wording sweep (section 9).
 
   A working hero flow without the sandbox beats both half-done.
 - **Commit** after each working milestone, on `finals` only. Never push, touch `main` or rewrite
