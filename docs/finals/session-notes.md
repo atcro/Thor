@@ -84,6 +84,17 @@ Prompt B (Bolt Designer) build on this. Keep these true.
 - `docs/DEMO.md` shot list was corrected; `docs/BUILD_STATUS.md` still holds prototype numbers
   and is marked superseded in DEMO.md.
 
+## Display rule (added after the rehearsal)
+
+- `FleetAsset.failure_probability` / `health_score` and `/assets/{id}.prediction` are the
+  **median of the last three predictions** (`db.latest_prediction_rows`, `DISPLAY_MEDIAN_ROWS`),
+  stamped with the newest row's `prediction_ts` / `model_version`; `n_rows` says how many rows
+  the median used. The per-sample rows are still in `GET /assets/{id}/predictions`. The twin
+  should colour from the median value, not from the raw series.
+- "Run analysis" explains the median-probability window of the last three, so the contract's
+  probability matches the card. Calibration is Platt (sigmoid) when the calibration motors hold
+  fewer than two failure events (the demo case), isotonic otherwise.
+
 ## Replay behaviour that matters for the twin (added after the rehearsal)
 
 - The simulated CMMS executes an approved work order at the approval (`REPLAY_WORK_ORDER_EXECUTE`

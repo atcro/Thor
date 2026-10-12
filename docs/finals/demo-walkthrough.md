@@ -34,9 +34,12 @@ outage we're trying to make rare."
 
 Screen: Dashboard, then click MTR-042 when its card turns amber, then red.
 
-Measured (900×): green until ~100 s, then red (p 1.0) at ~110 s. The step from green to red
-is abrupt: isotonic calibration fitted on a single failing motor is a near-step curve, so the
-0.3 and 0.5 lines are crossed within a sample or two of each other.
+Measured (900×): green until ~100 s, then red (p 1.0) at ~110 s. The card colour is the
+median of the last three samples (the alarm's own rule), so it does not flicker. The green-to-
+red transition is still quick, under 2.5 plant hours: once the bearing signature appears the
+model's probability rises steeply. The early-warning line is best shown on the Asset 360
+probability chart, where the crossing of 0.3 and then 0.5 is visible, rather than waited for on
+the card.
 
 Say: "MTR-042's drive-end bearing is degrading. The edge container scores every ten-minute
 sample with the production model; this is inference, not training. The dashed lines on the
@@ -47,7 +50,8 @@ time, 0.5 is a predicted failure."
 
 Screen: Asset 360 for MTR-042. Click **Run analysis**.
 
-Measured: 13-17 s to the approval gate. The stepper shows `Load production model → Explaining →
+Measured: 13-17 s to the approval gate. The contract's probability is the card's (the
+analysis explains the median window of the last three), so the two never disagree. The stepper shows `Load production model → Explaining →
 Awaiting approval`; the event log shows `load_production_model`, `explain`,
 `retrieve_manual_context`, `calculate_failure_cost`, `draft_explanation`,
 `create_decision_contract`, and no `train_candidates`.

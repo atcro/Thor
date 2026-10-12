@@ -105,11 +105,18 @@ from the test motors, which is why it is lower than the 0.950 that selected it.
 
 ## 8. Calibration
 
-`agents/validation/checks.py::calibrate_probabilities`: isotonic regression (≥ 200 rows) on the
-six calibration motors, on top of the frozen champion. Brier on those rows 0.00095 → 0.00034.
-scikit-learn fits the calibrator on LightGBM's log-odds; the exported transform records that
-(`"input": "decision_function"`) and the edge recovers the log-odds from the ONNX probability
-before applying the same isotonic thresholds.
+`agents/validation/checks.py::calibrate_probabilities`, on the six calibration motors, on top
+of the frozen champion. Method: isotonic regression when there are ≥ 200 rows **and** at least
+two failing motors among them; otherwise Platt scaling (sigmoid). The demo fleet has one
+failing motor in the calibration group, so the production model is **Platt-calibrated**
+(a two-parameter sigmoid on the champion's log-odds; the fitted a and b travel in the edge
+sidecar). Isotonic on a single failure
+event degenerates into a near-step curve (probability jumps from 0 to 1 within one sample), which
+made the 0.3 early-warning and 0.5 thresholds fire together; that is why the rule exists.
+Brier on the calibration rows 0.00095 → 0.00044 (isotonic would have reached 0.00034 by
+over-fitting that one event). scikit-learn fits the calibrator on LightGBM's log-odds; the
+exported transform records that (`"input": "decision_function"`) and the edge recovers the
+log-odds from the ONNX probability before applying the same sigmoid.
 
 ## 9. Validation gate and final test metrics (6 untouched test motors)
 
@@ -136,9 +143,14 @@ promotion never approves maintenance.
 
 The edge container subscribes to MQTT, keeps a 12-row buffer per motor, computes the 13
 features with numpy, runs ONNX Runtime and applies the sidecar calibration: no Python ML
-stack, no control plane, **no LLM anywhere on the telemetry path**. The control plane's
-"Run analysis" uses the same production artifact and baseline. The LLM is called only to pick
-the next pipeline node and to phrase the explanation of numbers already computed.
+stack, no control plane, **no LLM anywhere on the telemetry path**. Every sample's probability
+is stored. What is *displayed* (fleet, Asset 360, Bolt) is the median of the motor's last
+three predictions, and "Run analysis" explains the window whose probability is the median of
+the last three windows: the same three-sample rule that defines the early-warning alarm, so a
+single noisy sample never drives a colour or a Decision Contract
+(`DISPLAY_MEDIAN_ROWS` in `apps/api/schemas.py`). The control plane's "Run analysis" uses the
+same production artifact and baseline. The LLM is called only to pick the next pipeline node
+and to phrase the explanation of numbers already computed.
 
 ## 12. Limitations
 

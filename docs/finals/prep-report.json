@@ -1,10 +1,10 @@
 {
   "api": "http://api:8000",
   "asset_held_out": "MTR-042",
-  "started_at": "2026-10-12T00:11:46.643156+00:00",
+  "started_at": "2026-10-12T00:23:03.680933+00:00",
   "training": {
-    "run_id": "7a3426d51c264e9f",
-    "version": "v63956",
+    "run_id": "605a6d7b7a314042",
+    "version": "v64634",
     "champion_family": "lightgbm",
     "split": {
       "seed": 0,
@@ -100,7 +100,7 @@
     ],
     "candidates": [
       {
-        "candidate_id": "random_forest-313c7ffb",
+        "candidate_id": "random_forest-e76c4e71",
         "family": "random_forest",
         "validation_metrics": {
           "recall": 0.9688581314878892,
@@ -110,7 +110,7 @@
           "brier": 0.0011855724150436908,
           "lead_time_h": 56.0
         },
-        "validation_ims": 0.926549,
+        "validation_ims": 0.926516,
         "params": {
           "n_estimators": 200,
           "max_depth": 11,
@@ -119,10 +119,10 @@
           "class_weight": "balanced_subsample",
           "random_state": 0
         },
-        "latency_ms": 1.5687785344640082
+        "latency_ms": 1.5852451694391287
       },
       {
-        "candidate_id": "xgboost-2e93cdf8",
+        "candidate_id": "xgboost-d5aed944",
         "family": "xgboost",
         "validation_metrics": {
           "recall": 1.0,
@@ -132,7 +132,7 @@
           "brier": 0.0006678089767041776,
           "lead_time_h": 51.666666666666664
         },
-        "validation_ims": 0.916492,
+        "validation_ims": 0.916574,
         "params": {
           "n_estimators": 200,
           "max_depth": 8,
@@ -143,10 +143,10 @@
           "scale_pos_weight": 64.5433,
           "random_state": 0
         },
-        "latency_ms": 1.8552279590260459
+        "latency_ms": 1.8141200506816213
       },
       {
-        "candidate_id": "lightgbm-0bafdbfb",
+        "candidate_id": "lightgbm-bc2cf743",
         "family": "lightgbm",
         "validation_metrics": {
           "recall": 1.0,
@@ -156,7 +156,7 @@
           "brier": 0.0009461272267152338,
           "lead_time_h": 61.333333333333336
         },
-        "validation_ims": 0.951034,
+        "validation_ims": 0.950942,
         "params": {
           "n_estimators": 50,
           "max_depth": 3,
@@ -168,13 +168,13 @@
           "scale_pos_weight": 64.5433,
           "random_state": 0
         },
-        "latency_ms": 0.6000709006385065
+        "latency_ms": 0.6461945412310561
       }
     ],
     "ranked": [
-      "lightgbm-0bafdbfb",
-      "random_forest-313c7ffb",
-      "xgboost-2e93cdf8"
+      "lightgbm-bc2cf743",
+      "random_forest-e76c4e71",
+      "xgboost-d5aed944"
     ],
     "test_metrics": {
       "recall": 0.8650519031141869,
@@ -194,7 +194,7 @@
       "precision": 1.0,
       "lead_time_score": 0.5763888888888888,
       "calibration_score": 0.9917544060936161,
-      "latency_score": 0.9879985819872299,
+      "latency_score": 0.9870761091753789,
       "weights": {
         "recall": 0.35,
         "lead_time_score": 0.25,
@@ -202,7 +202,7 @@
         "calibration_score": 0.15,
         "latency_score": 0.1
       },
-      "total": 0.844428
+      "total": 0.844336
     },
     "lead_time": {
       "median_h": 41.5,
@@ -275,38 +275,38 @@
     },
     "passed": true,
     "notes": [
-      "champion_artifact=/models/artifacts/7a3426d51c264e9f/lightgbm-0bafdbfb_calibrated.joblib",
+      "champion_artifact=/models/artifacts/605a6d7b7a314042/lightgbm-bc2cf743_calibrated.joblib",
       "calibration (sigmoid) fitted on 18942 rows of ['MTR-008', 'MTR-009', 'MTR-011', 'MTR-014', 'MTR-019', 'MTR-020'] with 1 failing asset(s)",
       "final metrics on test assets ['MTR-001', 'MTR-003', 'MTR-012', 'MTR-018', 'MTR-022', 'MTR-042'] (never used before this step)",
-      "ranking (validation IMS): lightgbm-0bafdbfb=0.951, random_forest-313c7ffb=0.927, xgboost-2e93cdf8=0.916"
+      "ranking (validation IMS): lightgbm-bc2cf743=0.951, random_forest-e76c4e71=0.927, xgboost-d5aed944=0.917"
     ],
-    "seconds": 66.5
+    "seconds": 71.5
   },
   "promotion": {
-    "approval_id": "9f43367bdc7c4dbd9b15977800e90e26",
+    "approval_id": "55a2df2e9e3d406c9796f9520bfec68c",
     "contract_id": null,
-    "promotion_id": "pr_v63956_production_345ecfb0",
+    "promotion_id": "pr_v64634_production_0d6b74e4",
     "decision": "approved",
     "approver": "demo-prep@thor",
     "note": "demo preparation: validated champion promoted before the live demo",
-    "decided_at": "2026-10-12T00:12:37.002139Z",
+    "decided_at": "2026-10-12T00:23:56.142728Z",
     "detail": {
       "promoted": {
         "name": "thor-bearing-classifier",
-        "version": "v63956",
+        "version": "v64634",
         "stage": "production"
       },
       "edge": {
-        "onnx_path": "/models/thor-bearing-classifier_v63956.onnx",
-        "deployed_at": "2026-10-12T00:12:37.022033Z"
+        "onnx_path": "/models/thor-bearing-classifier_v64634.onnx",
+        "deployed_at": "2026-10-12T00:23:56.166256Z"
       }
     }
   },
   "fleet_scoring": {
-    "model_version": "v63956",
+    "model_version": "v64634",
     "n_scored": 24,
     "skipped": {}
   },
-  "finished_at": "2026-10-12T00:12:37.373745+00:00",
-  "seconds_total": 66.9
+  "finished_at": "2026-10-12T00:23:56.645031+00:00",
+  "seconds_total": 72.1
 }
