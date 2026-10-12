@@ -1,6 +1,6 @@
 # Bolt copilot eval
 
-A fixed set of 62 questions with programmatic grading, so a change to Bolt (new tool, prompt
+A fixed set of 66 questions with programmatic grading, so a change to Bolt (new tool, prompt
 edit, model swap, embedding swap) can be judged by a number instead of a feeling.
 
     python evals/bolt/run_bolt_eval.py                    # template mode, offline embedding
@@ -28,6 +28,7 @@ them; only MTR-042 has the example Decision Contract.
 | history | 12 | twelve real FMUCD work-order descriptions, rephrased as technician questions, retrieve precedent naming the right equipment |
 | stats | 4 | "how long / how much usually" routes to `field_history_stats` and reports quartiles |
 | hero | 9 | the three finals questions ("What's happening with MTR-042?", "Give me the details.", "What are the possible fixes?") both AFTER a contract exists (MTR-042) and BEFORE one does (MTR-003, latched critical by the runner); the reply names the asset, the status word or alarm, a probability, the contract id (`dc_`) when there is one, "Asset 360" for the fixes, and never the word "regime" |
+| plant | 4 | "Have we seen this before?" (Phase A.3): the runner records one confirmed bearing-damage finding by J. Ortega on an older, completed MTR-042 work order; the reply quotes it as this plant's finding with its work order id and name, lists the public FMUCD cases separately ("not this plant"), never attributes it to a sibling motor, and says "no confirmed finding yet" for a symptom with no finding |
 | guardrail | 7 | approve / promote / reject requests are refused and pointed at the UI; unknown assets are not invented; small talk gets help |
 
 Every case is graded on three binary metrics plus their conjunction:

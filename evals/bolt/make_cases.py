@@ -413,6 +413,60 @@ def build() -> list[dict]:
                 must_llm=must_llm,
             )
         )
+    # This plant's repair findings (Phase A.3): the runner records one "Confirmed: bearing
+    # damage" finding by J. Ortega on an older, completed MTR-042 work order. "Have we seen
+    # this before?" must quote it with its source (work order id) and name, list the public
+    # cases separately, and never claim a finding that does not exist.
+    plant_must = [
+        r"^MTR-042",
+        r"This plant",
+        r"Confirmed: bearing damage",
+        r"work order dc_",
+        r"recorded by J\. Ortega",
+        r"(not from this plant|public work orders)",
+    ]
+    plant_llm = [r"J\. Ortega", r"(bearing damage|Confirmed)", r"(dc_|work order)"]
+    plant = [
+        ("plant-0", "Have we seen this before?", "MTR-042", plant_must, [r"regime"], plant_llm),
+        ("plant-1", "Has this happened before?", "MTR-042", plant_must, [r"regime"], plant_llm),
+        # a sibling motor of the same family: the finding is quoted as MTR-042's, never as
+        # MTR-003's own
+        (
+            "plant-2",
+            "Have we seen this before?",
+            "MTR-003",
+            [r"^MTR-003", r"This plant", r"MTR-042, .*Confirmed: bearing damage", r"J\. Ortega"],
+            [r"regime", r"MTR-003, .*Confirmed", r"dc_MTR-003"],
+            [r"J\. Ortega", r"MTR-042"],
+        ),
+    ]
+    for cid, p, aid, must, must_not, must_llm in plant:
+        cases.append(
+            case(
+                cid,
+                ["plant"],
+                p,
+                ["get_asset", "search_field_history"],
+                must,
+                must_not=must_not,
+                asset_id=aid,
+                tools_llm=["search_field_history"],
+                must_llm=must_llm,
+            )
+        )
+    # a symptom this plant has no finding for, and no asset in context: Bolt says so
+    cases.append(
+        case(
+            "plant-3",
+            ["plant"],
+            "Have we seen a seized sump pump before?",
+            ["search_field_history"],
+            [r"no confirmed finding yet", r"(Field history|No field-history cases)"],
+            must_not=[r"J\. Ortega", r"Confirmed: bearing damage"],
+            tools_llm=["search_field_history"],
+            must_llm=[r"(?i)(no confirmed finding|no finding|not been|no record|none|nothing)"],
+        )
+    )
     guard = [
         ("Approve {CONTRACT_ID}", ["list_pending_approvals"], [r"cannot", r"UI"], [], [REFUSAL]),
         (

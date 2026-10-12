@@ -78,6 +78,14 @@ def configure(mode: str, embedding: str, workdir: Path) -> None:
 
     get_settings.cache_clear()
     db.get_engine.cache_clear()
+    from apps.api import orchestrator
+
+    # The API Key switch starts Down. Template mode keeps it Down (never bills); LLM mode
+    # flips it Up, which re-reads the key from the env / .env into memory.
+    if mode == "llm":
+        orchestrator.key_up()
+    else:
+        orchestrator.key_down()
     if mode == "llm":
         from apps.api.orchestrator import llm_status
 
@@ -103,6 +111,11 @@ def seed() -> str:
     example["asset_id"] = "MTR-042"
     dc = DecisionContract.model_validate(example)
     db.insert_decision_contract(dc, engine=engine)
+    # Phase A.3: an OLDER MTR-042 contract that was approved, executed by the plant and
+    # closed with a technician's finding, so "Have we seen this before?" has one real plant
+    # finding to quote (recorded by J. Ortega). The example contract above stays the newest
+    # and pending, so every other case sees what it saw before.
+    _seed_completed_repair_with_finding(engine, example)
     # Fleet health comes only from approved-model predictions (never simulator ground truth),
     # so the eval seeds the per-sample predictions the edge would have produced: a rising
     # series for MTR-042 (which has the contract: the demo AFTER "Run analysis") and for
@@ -130,6 +143,60 @@ def seed() -> str:
     n_cases = rag.build_field_history_index(Path(s.field_history_csv), Path(s.chroma_path))
     print(f"seeded fleet + contract {dc.contract_id}; {n_chunks} manual chunks, {n_cases} cases")
     return dc.contract_id
+
+
+def _seed_completed_repair_with_finding(engine: Any, example: dict[str, Any]) -> str:
+    """An approved, completed MTR-042 work order (a week before the example contract) with a
+    confirmed bearing-damage finding; returns its contract id."""
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from apps.api import db, findings
+    from apps.api.schemas import Approval, DecisionContract, RepairFindingRequest, WorkOrderEvent
+
+    created = datetime.fromisoformat(str(example["created_at"]).replace("Z", "+00:00"))
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    older = dict(example)
+    older["contract_id"] = "dc_MTR-042_prior_repair"
+    older["created_at"] = (created - timedelta(days=7)).isoformat()
+    older["run_id"] = "run_prior_repair"
+    old = DecisionContract.model_validate(older)
+    db.insert_decision_contract(old, engine=engine)
+    db.insert_approval(
+        Approval(
+            approval_id=uuid4().hex,
+            contract_id=old.contract_id,
+            decision="approved",
+            approver="engineer@plant",
+            decided_at=created - timedelta(days=7, hours=-1),
+        ),
+        engine=engine,
+    )
+    start = created - timedelta(days=6, hours=20)
+    for status, ts in (("in_progress", start), ("completed", start + timedelta(hours=3))):
+        db.insert_work_order_event(
+            WorkOrderEvent(
+                event_id=uuid4().hex,
+                contract_id=old.contract_id,
+                asset_id="MTR-042",
+                status=status,  # type: ignore[arg-type]
+                plant_ts=ts,
+                recorded_at=datetime.now(UTC),
+                note="simulated CMMS",
+            ),
+            engine=engine,
+        )
+    findings.record_finding(
+        RepairFindingRequest(
+            contract_id=old.contract_id,
+            finding="confirmed_bearing_damage",
+            note="drive-end bearing outer race spalled; bearing replaced",
+            recorded_by="J. Ortega",
+        ),
+        engine=engine,
+    )
+    return old.contract_id
 
 
 def grade(
