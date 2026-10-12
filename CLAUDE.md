@@ -41,7 +41,7 @@ and use its language verbatim whenever drafting submission text; don't invent ne
 | RAG / retrieval | Chroma (embedded) + sentence-transformers | Local embedding model — **no external embedding API**. Index built once at startup from `data/manuals/*.pdf`, persisted to a Docker volume |
 | Agent orchestration | LangGraph | One process, five agent node groups — not five services |
 | API | FastAPI + Pydantic | Single control-plane service |
-| Frontend | React + TypeScript | Five screens (§5) |
+| Frontend | React + TypeScript | Six screens (§5); the 3-D Digital Twin uses three.js via React Three Fiber 8 + drei 9 (React 18 kept), procedural geometry only, no CDN assets |
 | Streaming | Mosquitto (MQTT) + a replay script | Time-accelerated historical replay, not random live data |
 | Storage | PostgreSQL + TimescaleDB extension | Telemetry hypertable, assets, decision contracts, registry metadata |
 | MLOps | MLflow | Experiment tracking + registry, artifacts on a mounted Docker volume — **not MinIO** |
@@ -55,7 +55,7 @@ and use its language verbatim whenever drafting submission text; don't invent ne
 
 ```mermaid
 flowchart TD
-    FE["React Frontend (5 screens)"] -->|REST/WS| CP
+    FE["React Frontend (6 screens)"] -->|REST/WS| CP
     CO["Copilot · Bolt"] -->|tool calls| CP
     CP["FastAPI Control Plane"] -->|invoke graph| ORCH["LangGraph Orchestrator"]
     ORCH --> A04["04 Data Reliability"]
@@ -92,7 +92,12 @@ Full prose + IN/OUT for every function: see `docs/architecture.html`.
 ## 5. Repository layout
 
 Run `ls` for the tree. Non-obvious: `agents/*` are tool modules imported by `apps/api`'s LangGraph
-graph, not services; the five web screens are Fleet, Asset 360, AutoML Studio, ModelOps, Copilot.
+graph, not services; the six web screens are 3-D Digital Twin (`/`, the landing view), Dashboard
+(`/dashboard`, the isometric/pixel fleet view formerly named "Fleet"), Asset 360, AutoML Studio,
+ModelOps, Copilot. The twin's code lives in `apps/web/src/twin/` (palette, X-Ray HUD, rewind,
+`scene/` for three.js) and its API in `apps/api/routes/twin.py` (+ `apps/api/live.py`,
+`apps/api/plant.py`). The plant layout (five packaging lines plus a compressor hall) and the
+measured reasoning behind it live in `data/simulator/layout.py`.
 
 ## 6. Agent build spec (condensed — full detail in the linked artifact)
 
@@ -183,6 +188,7 @@ ruff check .                      # lint
 npm --prefix apps/web run build && npm --prefix apps/web run test  # frontend build + smoke tests
 scripts/demo_reset.sh   # (or .\scripts\demo_reset.ps1) wipe DB/model volumes, reseed 80%, run prep, replay the rest live
 python -m data.benchmark.ai4i_benchmark --n-trials 6 --seed 0   # AI4I credibility benchmark
+python -m data.simulator.layout                                 # print the measured duty table behind the plant layout
 python evals/bolt/run_bolt_eval.py --min-pass 0.95              # Bolt copilot eval (template mode)
 ```
 
@@ -383,3 +389,17 @@ Facts that save exploration. Re-verify anything that looks wrong rather than tru
   | Fleet health | `apps/api/routes/fleet.py` |
   | Approvals | `apps/api/routes/approvals.py` |
   | Replay | `streaming/replay/replay.py` |
+
+- **Where Phase A's code lives (3-D Digital Twin + X-Ray):**
+
+  | Area | Files |
+  | --- | --- |
+  | Plant layout (lines, roles, names, duty reasoning) | `data/simulator/layout.py`, `_RATINGS` in `data/simulator/generate.py` |
+  | Twin contract | `apps/api/schemas.py` (Twin section), `apps/web/src/api/types.ts`, `client.ts` |
+  | Twin routes (`/twin`, `/twin/hud/{id}`, `/twin/rewind`, `/twin/events`, `/ws/twin`) | `apps/api/routes/twin.py` |
+  | Live bus (measured rates, edge inference and path latency, data freshness) | `apps/api/live.py`, hooks in `apps/api/routes/telemetry.py`, `inference_ms` in `edge/main.py` |
+  | Simulated MES feed + PLC tag mapping | `apps/api/plant.py` (imported by the twin route only; `tests/test_twin.py` asserts it feeds no decision) |
+  | Twin screen, live hook, palette (one-line theme switch `TWIN_THEME`) | `apps/web/src/screens/Twin.tsx`, `apps/web/src/twin/{useTwinLive.ts,palette.ts,status.ts,sceneTypes.ts,twin.css}` |
+  | 3-D scene (three.js / R3F) | `apps/web/src/twin/scene/` |
+  | X-Ray HUD, tooltip, toggle, rewind scrubber | `apps/web/src/twin/{XRayHud,XRayTooltip,XRayToggle,RewindBar,TwinThemeRoot}.tsx`, `useXRay.ts`, `xray.css` |
+  | Dashboard (formerly Fleet) | `apps/web/src/screens/Dashboard.tsx` |

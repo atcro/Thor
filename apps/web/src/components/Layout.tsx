@@ -24,7 +24,8 @@ function crumbFor(pathname: string): { section: string; detail?: string } {
 }
 
 export function Layout() {
-  const { pathname } = useLocation();
+  const { pathname, state } = useLocation();
+  const fallbackNote = (state as { twinFallback?: string } | null)?.twinFallback;
   const health = usePolling(getSystemHealth, 5000, "system");
   const apiUp = health.data !== null && !health.error;
   const crumb = crumbFor(pathname);
@@ -87,6 +88,11 @@ export function Layout() {
       </header>
 
       <main className="main">
+        {fallbackNote && pathname.startsWith("/dashboard") && (
+          <div className="pill warn" role="status" style={{ marginBottom: 12 }}>
+            3-D Digital Twin unavailable: {fallbackNote}. Showing the Dashboard instead.
+          </div>
+        )}
         <Outlet />
       </main>
     </div>

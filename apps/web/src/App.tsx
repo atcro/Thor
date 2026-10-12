@@ -4,6 +4,7 @@ import { Layout } from "./components/Layout";
 import { LoadingState } from "./components/ui";
 import { Dashboard } from "./screens/Dashboard";
 import { Twin } from "./screens/Twin";
+import { XRayProvider } from "./twin/useXRay";
 
 // Chart-heavy screens are lazy so recharts is not in the Twin/Dashboard/Copilot critical path.
 const Asset360 = lazy(() => import("./screens/Asset360").then((m) => ({ default: m.Asset360 })));
@@ -14,6 +15,7 @@ const Copilot = lazy(() => import("./screens/Copilot").then((m) => ({ default: m
 export default function App() {
   return (
     <BrowserRouter>
+      <XRayProvider>
       <Suspense fallback={<LoadingState />}>
         <Routes>
           <Route element={<Layout />}>
@@ -27,6 +29,7 @@ export default function App() {
           </Route>
         </Routes>
       </Suspense>
+      </XRayProvider>
     </BrowserRouter>
   );
 }

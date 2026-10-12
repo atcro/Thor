@@ -270,3 +270,20 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
 - **Next:** HUD/X-Ray/rewind sub-agent and 3D scene sub-agent are still running; then wire
   `XRayProvider` in `App.tsx`, run web build + vitest + full pytest, native end-to-end with the
   replay, fps measurement, Docker build, fresh-context audit.
+
+## 2026-10-11 19:00 — X-Ray HUD, tooltip, Dashboard X-Ray, rewind bar, Twin screen
+
+- HUD sub-agent delivered `apps/web/src/twin/{TwinThemeRoot,XRayToggle,XRayTooltip,XRayHud,RewindBar}.tsx`,
+  `useXRay.ts`, `xray.css`, `testFixtures.ts`, `XRayHud.test.tsx`; Dashboard X-Ray integration
+  (hover tooltip with glyph + three facts, click opens the HUD drawer) + one Dashboard test.
+  I wrote `screens/Twin.tsx` (toolbar, site tabs, fly-to buttons, provenance badge, measured
+  counters badge, legend, hover/selection strip, rewind, HUD drawer), `twin/useTwinLive.ts`
+  (WS `/ws/twin` with 500 ms poll fallback, pulse queue), `twin/SiteTabs.tsx`, `twin/twin.css`,
+  `twin/{palette,status,sceneTypes,webgl}.ts`, `screens/Twin.test.tsx` (route smoke test + WebGL
+  fallback), `XRayProvider` in `App.tsx`, WebGL fallback notice in `Layout.tsx`.
+- **Tests run:** `tsc --noEmit` clean; `vitest run` → 4 files, 20 passed (Twin route 2, HUD 2,
+  Dashboard 5, scene layout 11). Web build (sub-agent's run): PlantScene chunk 873 kB (233 kB gzip),
+  lazy-loaded on the twin route only.
+- **Next:** scene sub-agent report → commit `twin/scene/`; native end-to-end (API :8010 + prep +
+  replay + web dev server) to view the twin, measure fps, check pulses/counters/rewind; full
+  pytest; Docker build; fresh-context audit; docs (session-notes, CLAUDE.md §15 status).

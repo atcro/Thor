@@ -1,11 +1,16 @@
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
-import { getFleet, getSystemHealth } from "../api/client";
-import type { FleetAsset } from "../api/types";
+import { getFleet, getSystemHealth, getTwin } from "../api/client";
+import type { FleetAsset, TwinAsset } from "../api/types";
 import { MotorSprite, spriteParams, TIER_WORD, type SpriteStyle } from "../components/MotorSprite";
 import { Dot, HealthPill, Loaded, ModelStageChip, Panel, Pill, RegimeBadge, WorkOrderPill } from "../components/ui";
 import { usePolling } from "../hooks/usePolling";
 import { fmtDateTime, fmtInt, fmtPct, fmtRel, fmtShort, probTone } from "../lib/format";
+import { TwinThemeRoot } from "../twin/TwinThemeRoot";
+import { useXRay } from "../twin/useXRay";
+import { XRayHud } from "../twin/XRayHud";
+import { XRayToggle } from "../twin/XRayToggle";
+import { XRayTooltip } from "../twin/XRayTooltip";
 
 /** Sort by failure risk desc; assets without a prediction ("no prediction yet") come last. */
 function sortByRisk(list: FleetAsset[]): FleetAsset[] {
@@ -59,16 +64,25 @@ function StyleToggle({ value, onChange }: { value: SpriteStyle; onChange: (s: Sp
   );
 }
 
-function AssetCard({ item, style }: { item: FleetAsset; style: SpriteStyle }) {
+/**
+ * X-Ray mode on the Dashboard: the card becomes a hover host (tooltip from GET /twin above it,
+ * keyboard-reachable via focus) and a click opens the HUD drawer instead of navigating.
+ */
+interface XRayCardProps {
+  /** The asset's /twin entry (null while the first /twin poll is in flight). */
+  twin: TwinAsset | null;
+  onOpen: (assetId: string) => void;
+}
+
+function AssetCard({ item, style, xray }: { item: FleetAsset; style: SpriteStyle; xray?: XRayCardProps }) {
   const { asset } = item;
   const p = item.failure_probability;
   const { atRisk, heat, tier } = spriteParams(item);
-  return (
-    <Link
-      to={`/assets/${encodeURIComponent(asset.asset_id)}`}
-      className={`asset-card tier-${tier}${atRisk ? " risk" : ""}`}
-      style={{ "--heat": heat } as CSSProperties}
-    >
+  const [hot, setHot] = useState(false);
+  const className = `asset-card tier-${tier}${atRisk ? " risk" : ""}`;
+  const cardStyle = { "--heat": heat } as CSSProperties;
+  const body = (
+    <>
       <div className="sprite">
         <MotorSprite item={item} style={style} />
         <span className={`tier-tag ${tier}`}>{TIER_WORD[tier]}</span>
@@ -97,7 +111,49 @@ function AssetCard({ item, style }: { item: FleetAsset; style: SpriteStyle }) {
         <span title={fmtDateTime(item.last_ts)}>last sample {fmtShort(item.last_ts)}</span>
         {item.open_contract_id && <span style={{ color: "var(--ember)" }}>contract open</span>}
       </div>
-    </Link>
+    </>
+  );
+  if (!xray) {
+    return (
+      <Link to={`/assets/${encodeURIComponent(asset.asset_id)}`} className={className} style={cardStyle}>
+        {body}
+      </Link>
+    );
+  }
+  const open = () => xray.onOpen(asset.asset_id);
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      open();
+    }
+  };
+  return (
+    <div
+      className="xray-host"
+      onMouseEnter={() => setHot(true)}
+      onMouseLeave={() => setHot(false)}
+      onFocus={() => setHot(true)}
+      onBlur={() => setHot(false)}
+      data-testid={`xray-host-${asset.asset_id}`}
+    >
+      <div
+        role="button"
+        tabIndex={0}
+        className={className}
+        style={cardStyle}
+        onClick={open}
+        onKeyDown={onKey}
+        aria-label={`${asset.asset_id}: open X-Ray HUD`}
+        aria-haspopup="dialog"
+      >
+        {body}
+      </div>
+      {hot && (
+        <TwinThemeRoot className="xray-tip-anchor" role="tooltip">
+          {xray.twin ? <XRayTooltip asset={xray.twin} /> : <div className="xray-tip xray-dim">loading X-Ray…</div>}
+        </TwinThemeRoot>
+      )}
+    </div>
   );
 }
 
@@ -165,6 +221,14 @@ function SystemPanel() {
 /** The Dashboard: the isometric/pixel fleet view (formerly "Fleet"). */
 export function Dashboard() {
   const fleet = usePolling(getFleet, 5000, "fleet");
+  const xray = useXRay();
+  // X-Ray facts come from GET /twin (status, regime, decision state); polled only while X-Ray is on.
+  const twin = usePolling(getTwin, 2000, "twin", xray.enabled);
+  const twinById = useMemo(() => {
+    const m = new Map<string, TwinAsset>();
+    for (const a of twin.data?.assets ?? []) m.set(a.asset.asset_id, a);
+    return m;
+  }, [twin.data]);
   const [style, setStyle] = useState<SpriteStyle>(readStyle);
   const changeStyle = (s: SpriteStyle) => {
     setStyle(s);
@@ -188,6 +252,7 @@ export function Dashboard() {
           </div>
         </div>
         <div className="row" style={{ gap: 12 }}>
+          <XRayToggle />
           <StyleToggle value={style} onChange={changeStyle} />
           <span className="small muted mono">poll 5s{fleet.lastUpdated ? ` · ${fmtRel(new Date(fleet.lastUpdated).toISOString())}` : ""}</span>
         </div>
@@ -204,7 +269,12 @@ export function Dashboard() {
             {() => (
               <div className="fleet-grid">
                 {sorted.map((item) => (
-                  <AssetCard key={item.asset.asset_id} item={item} style={style} />
+                  <AssetCard
+                    key={item.asset.asset_id}
+                    item={item}
+                    style={style}
+                    xray={xray.enabled ? { twin: twinById.get(item.asset.asset_id) ?? null, onOpen: xray.openAsset } : undefined}
+                  />
                 ))}
               </div>
             )}
@@ -212,6 +282,11 @@ export function Dashboard() {
         </div>
         <SystemPanel />
       </div>
+      {xray.enabled && xray.openedAsset && (
+        <TwinThemeRoot className="xray-drawer" data-testid="xray-drawer">
+          <XRayHud assetId={xray.openedAsset} onClose={xray.close} />
+        </TwinThemeRoot>
+      )}
     </div>
   );
 }

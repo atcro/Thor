@@ -25,7 +25,7 @@ about 5 minutes of wall-clock). Timeline from the moment the replay starts:
 
 | t | Screen | What happens | What to say |
 |---|---|---|---|
-| 0:00 | Fleet | 24 motors, all green. MTR-042 turns amber as vibration RMS climbs. The System panel shows db / mqtt / mlflow / edge all up. | "Thor watches the whole fleet. This is replayed historical telemetry over MQTT, not random noise, so the story is reproducible." |
+| 0:00 | Dashboard (formerly Fleet; the 3-D Digital Twin is the landing view) | 24 motors, all green. MTR-042 turns amber as vibration RMS climbs. The System panel shows db / mqtt / mlflow / edge all up. | "Thor watches the whole fleet. This is replayed historical telemetry over MQTT, not random noise, so the story is reproducible." |
 | 0:25 | Asset 360 | Click MTR-042. Live vibration + bearing temperature chart; regime badge shows the current operating state (R1 idle/startup, R2 nominal, R3 high-load; the fleet spends roughly 23 / 47 / 30 % of its time in each). | "Before anything trains, Thor clusters operating state. A load change is never mistaken for a fault." |
 | 0:40 | Asset 360 | Click **Run analysis**. Stepper: load production model → explaining → awaiting approval, in seconds. Nothing is trained on stage: the model was trained, validated and promoted by the demo prep before the demo (see `docs/finals/model-card.md`). | "One LangGraph orchestrator, five deterministic toolboxes. The approved model scores the motor; the LLM only phrases the explanation of numbers Python already produced." |
 | 1:10 | AutoML Studio | Switch tabs while training finishes. Data quality 100/100 (clean synthetic channels; the score drops for missing or flatlined signals), task = classification, 13 regime-normalized features, three candidates (RF / XGBoost / LightGBM) ranked by **Industrial Model Score** — recall, lead time, calibration, latency — not accuracy. | "Validation is asset-level and time-ordered: the champion is scored on machines it has never seen." |
@@ -53,7 +53,7 @@ not single values, unless you are reading them off the screen.
 | warning lead time (held-out failures) | 38 h to 101 h median |
 | calibrated P(failure within 48 h) at the gate | 0.07 early in the window, about 0.5 inside it |
 | time to the approval gate | 82 to 85 s |
-| edge pickup after approval | ~30 s, then predictions flow to the Fleet screen |
+| edge pickup after approval | ~30 s, then predictions flow to the Dashboard and the 3-D Digital Twin |
 | field history behind Bolt | 8,355 real unplanned work orders (FMUCD, CC BY-NC) |
 
 Never say a dollar figure as fact: the plant-cost assumptions are configurable settings.

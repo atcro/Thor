@@ -1,7 +1,9 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FleetAsset, SystemHealth } from "../api/types";
+import type { FleetAsset, SystemHealth, TwinHud, TwinSnapshot } from "../api/types";
+import { hudFixture } from "../twin/testFixtures";
+import { XRayProvider } from "../twin/useXRay";
 import { Dashboard } from "./Dashboard";
 
 const fleet: FleetAsset[] = [
@@ -82,6 +84,45 @@ const health: SystemHealth = {
   last_ingest_ts: "2026-09-13T10:00:00Z",
 };
 
+/** GET /twin as the X-Ray tooltip needs it: status, regime and decision state per asset. */
+const twinSnapshot: TwinSnapshot = {
+  site: "Plant A",
+  sites: [{ name: "Packaging", available: true, note: "" }],
+  plant_time: "2026-09-13T10:00:00Z",
+  thresholds: { classification: 0.5, early_warning: 0.3, sustained_rows: 3 },
+  lines: [{ line: "Line 3", kind: "packaging", index: 3, assets: ["MTR-042"], mes: null }],
+  assets: [
+    {
+      ...hudFixture.asset,
+      asset: fleet[0].asset,
+      failure_probability: 0.62,
+      health_score: 41,
+      regime: "R2",
+      status: "critical",
+      decision_state: "contract_pending",
+    },
+  ],
+  model: hudFixture.model,
+  live: {
+    server_time: "2026-09-13T10:00:00Z",
+    window_s: 10,
+    msgs_per_s: 2,
+    preds_per_s: 2,
+    messages_total: 10,
+    predictions_total: 10,
+    edge_inference_ms_p50: null,
+    edge_inference_ms_p95: null,
+    path_latency_ms_p50: null,
+    path_latency_ms_p95: null,
+    n_latency_samples: 0,
+    stale_after_s: 30,
+    mqtt_connected: true,
+    edge_up: true,
+  },
+};
+
+const hud: TwinHud = { ...hudFixture, asset: twinSnapshot.assets[0] };
+
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -96,18 +137,23 @@ describe("Dashboard screen", () => {
       const url = String(input);
       if (url.includes("/system/health")) return jsonResponse(health);
       if (url.includes("/fleet")) return jsonResponse(fleet);
+      if (url.includes("/twin/hud/MTR-042")) return jsonResponse(hud);
+      if (url.endsWith("/twin")) return jsonResponse(twinSnapshot);
       return new Response("not found", { status: 404 });
     });
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    localStorage.removeItem("thor.xray");
   });
 
   it("renders asset ids from GET /fleet sorted by risk", async () => {
     render(
       <MemoryRouter>
-        <Dashboard />
+        <XRayProvider>
+          <Dashboard />
+        </XRayProvider>
       </MemoryRouter>,
     );
     expect(await screen.findByText("MTR-042")).toBeInTheDocument();
@@ -122,7 +168,9 @@ describe("Dashboard screen", () => {
   it("draws one motor sprite per asset, tiered by failure probability", async () => {
     render(
       <MemoryRouter>
-        <Dashboard />
+        <XRayProvider>
+          <Dashboard />
+        </XRayProvider>
       </MemoryRouter>,
     );
     const hot = await screen.findByRole("img", { name: /^MTR-042: high risk, nominal, p\(fail\) 62.0%, contract open$/ });
@@ -145,7 +193,9 @@ describe("Dashboard screen", () => {
   it("switches every sprite to pixel style from the toggle and remembers it", async () => {
     render(
       <MemoryRouter>
-        <Dashboard />
+        <XRayProvider>
+          <Dashboard />
+        </XRayProvider>
       </MemoryRouter>,
     );
     await screen.findByText("MTR-042");
@@ -164,7 +214,9 @@ describe("Dashboard screen", () => {
   it("shows a motor under an approved work order as offline, not as failing", async () => {
     render(
       <MemoryRouter>
-        <Dashboard />
+        <XRayProvider>
+          <Dashboard />
+        </XRayProvider>
       </MemoryRouter>,
     );
     const offline = await screen.findByRole("img", { name: /^MTR-021: no prediction, offline for maintenance/ });
@@ -172,5 +224,48 @@ describe("Dashboard screen", () => {
     expect(offline).not.toHaveClass("vibrating");
     expect(screen.getByText("offline · in maintenance")).toBeInTheDocument();
     expect(screen.getByText(/1 work order ·/)).toBeInTheDocument();
+  });
+
+  it("X-Ray: toggling on polls GET /twin, hovering a card shows the three facts, clicking opens the HUD drawer", async () => {
+    render(
+      <MemoryRouter>
+        <XRayProvider>
+          <Dashboard />
+        </XRayProvider>
+      </MemoryRouter>,
+    );
+    await screen.findByText("MTR-042");
+    const urls = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(urls().some((u) => u.endsWith("/twin"))).toBe(false);
+
+    const toggle = screen.getByRole("button", { name: "X-Ray" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(localStorage.getItem("thor.xray")).toBe("1");
+
+    // the card is now a button (no navigation) and the tooltip appears on hover
+    const card = await screen.findByRole("button", { name: "MTR-042: open X-Ray HUD" });
+    const host = screen.getByTestId("xray-host-MTR-042");
+    fireEvent.mouseEnter(host);
+    const tip = await screen.findByTestId("xray-tip-MTR-042");
+    expect(urls().some((u) => u.endsWith("/twin"))).toBe(true);
+    expect(tip).toHaveTextContent("critical");
+    expect(tip).toHaveTextContent("62.0%");
+    expect(tip).toHaveTextContent("run");
+    expect(tip).toHaveTextContent("contract pending");
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+
+    // click opens the HUD drawer, fed by GET /twin/hud/MTR-042
+    fireEvent.click(card);
+    const drawer = await screen.findByTestId("xray-drawer");
+    expect(within(drawer).getByRole("dialog", { name: "X-Ray HUD MTR-042" })).toBeInTheDocument();
+    expect(await within(drawer).findByTestId("hud-pfail")).toHaveTextContent("62.0%");
+    expect(within(drawer).getByRole("link", { name: "Open in Asset 360" })).toHaveAttribute("href", "/assets/MTR-042");
+
+    // close returns to the cards; the X-Ray setting stays on
+    fireEvent.click(within(drawer).getByRole("button", { name: "Close HUD" }));
+    expect(screen.queryByTestId("xray-drawer")).toBeNull();
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
   });
 });
