@@ -506,3 +506,20 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
   old 0.865 / 41.5 h / 0.844 appear only as the "previous run" column.
 - **Next:** two more 4-trial train runs to confirm the gate passes repeatedly; `docker compose
   build` (api + `--profile prep`); Docker rehearsal; judge audit; final report.
+
+## 2026-10-12 05:35 — Docker rehearsal with the Phase A.1 images (LLM mode)
+
+- `docker compose build` + `--profile prep build prep` ok; `.\scripts\demo_reset.ps1` → seeded
+  82,944 rows, 0 models, `released=False`, LLM mode (openai gpt-5 from `.env`). Fleet screenshot:
+  24 grey "no prediction yet", "State: unknown", top bar "held: no production model yet".
+- `hero_measure.py` against :8000 (`hero_timeline_docker.json`): **train 71.5 s** (4 trials, RF
+  v82626, recall 0.919, precision 0.962, lead 53.1 h, IMS 0.892, parity 1.6e-6) → promotion 2.7 s →
+  released + 24 green at 2.8 s → MTR-042 critical at 64 s after the sign-off (no amber; p steps
+  2.8e-4 → 0.81) → red held 60 s → Run analysis 30.2 s (LLM drafts the paragraph; 4–5 s in
+  template) → Bolt (LLM) 15 / 21 / 29 s with good answers (status + latch + readings + contract;
+  drivers, costs, citations, precedent; options + window + procedure + Asset 360) → approval →
+  offline 1 s → healthy + work order completed 12.8 s; rewind this run 38.5 h vs validated 53.1 h.
+  Twin screenshot: 60 fps, 36 msgs/s, path p50 495 ms, MTR-042 red octagon with CONTRACT PENDING.
+- Fixed the asset id wrapping beside the "latched since" pill (`380fe8d`); reset script counts the
+  fleet correctly (`b96c039`).
+- **Next:** fresh-context judge audit on the running stack; fix flags; final report.

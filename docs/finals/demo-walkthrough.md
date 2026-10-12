@@ -45,12 +45,12 @@ Thor says so: grey, 'no prediction yet'. Nothing is scored by a rule of thumb."
 Screen: **AutoML Studio** → **Train new model** (asset held out `MTR-042`, trials per family as
 set in the form; the default is the measured one below).
 
-Measured: `Train new model` → `Registered` in **2.5–3 minutes** natively with 4 trials per
-family on a laptop that was also running the Docker stack (2 trials ≈ 90 s but a weaker model;
-validation + parity alone take ~35 s; the Docker rehearsal number is in the status log). The run
-page updates every 3 s: the asset split appears within 2 s, the operating states within 9 s,
-the three candidates at the end of the search, then the gate checklist and parity. Talk through
-it; it is the one slow beat of the demo.
+Measured on the Docker stack (the demo configuration, replay held, nothing else running):
+`Train new model` → `Registered` in **72 s** with 4 trials per family (random forest champion,
+gate and parity passed). Natively, with the Docker stack also running, the same run took
+2.5–3 minutes, so do not train with anything else open. The run page updates every 3 s: the
+asset split appears within 2 s, the operating states within 9 s, the three candidates at the end
+of the search, then the gate checklist and parity. Talk through it; it is the slow beat.
 
 Talk track (honest): "The model learns from the fleet's own history: months of healthy running
 in each operating state — startup, running, heavy load — plus the six motors that failed before.
@@ -64,9 +64,9 @@ lead time, edge parity), the final metrics from six untouched test motors.
 
 Screen: **ModelOps** → the pending promotion request → type your name → **Approve promotion**.
 
-Measured: the request returns in **5–11 s** (promotion, ONNX export, edge reload, fleet scored);
-the top bar flips to `streaming` and Fleet turns green **within 6–12 s of the click** (24 green,
-0 without a prediction). The replay starts by itself: `GET /replay` says `released` the moment
+Measured: the request returns in **3 s** on Docker (5–11 s natively: promotion, ONNX export, edge
+reload, fleet scored); the top bar flips to `streaming` and Fleet turns green **within 3–12 s of
+the click** (24 green, 0 without a prediction). The replay starts by itself: `GET /replay` says `released` the moment
 a production model exists.
 
 Say: "A named person signs the model off. That signature is what releases the plant history:
@@ -77,7 +77,8 @@ a calibrated probability below the early-warning threshold."
 
 Screen: **Fleet**. Watch MTR-042 (Line 3 filler).
 
-Measured (three runs): green for **35–72 s** after the sign-off, then **red (critical, latched)**.
+Measured (four runs, Docker: 64 s): green for **35–72 s** after the sign-off, then **red
+(critical, latched)**.
 The calibrated probability steps from below 0.01 to 0.81 within three samples, so the amber
 phase between the warning and the critical alarm lasts a few seconds at most and is sometimes
 skipped (both alarms fire on the same sample). The card then reads `critical · latched since
@@ -90,8 +91,9 @@ until the plant acts — a motor does not talk its way out of an alarm."
 
 Screen: click the MTR-042 card → **Asset 360** → **Run analysis**.
 
-Measured: **4–5 s** to `Awaiting approval` (model loaded, SHAP drivers, manual passages, cost
-comparison, Decision Contract). The stepper shows `Load production model → Explaining →
+Measured: **4–5 s** to `Awaiting approval` in template mode, **30 s** in LLM mode (the provider
+drafts the explanation paragraph; everything else is the same deterministic code). Model loaded,
+SHAP drivers, manual passages, cost comparison, Decision Contract. The stepper shows `Load production model → Explaining →
 Awaiting approval`; the probability on the contract is the card's.
 
 Say: "This uses the model you just signed off — no retraining. SHAP names the drivers, the
@@ -105,7 +107,8 @@ Screen: **Copilot · Bolt**, asset context `MTR-042`. Ask, in this order:
 - "Give me the details."
 - "What are the possible fixes?"
 
-Measured: template mode answers in **< 1 s** each; in LLM mode a few seconds. Before the contract
+Measured: template mode answers in **< 1 s** each; LLM mode (gpt-5 on the venue Wi-Fi) **15–30 s**
+each, so ask the first one as soon as the analysis starts. Before the contract
 exists the answers draw on the live readings, the latched status and the trend; after it, on the
 contract's drivers, costs, manual passages and field-history precedent. The last answer points to
 the approval on Asset 360; Bolt never approves.
@@ -125,8 +128,8 @@ Thor stops here; it cannot schedule, dispatch or promote a model from this scree
 
 Screen: **Fleet**.
 
-Measured: `offline · in maintenance` **within 2–3 s** of the approval; back **green with the work
-order completed 13–16 s** after the approval. The latched alarm clears on the completion event;
+Measured: `offline · in maintenance` **within 1–3 s** of the approval; back **green with the work
+order completed 13–16 s** after the approval (Docker: 12.8 s). The latched alarm clears on the completion event;
 the rewind records the lead time of this run.
 
 Say: "The plant took it offline for the planned three hours and brought it back on its healthy
@@ -140,7 +143,8 @@ hover MTR-042 (glyph + three facts), click it (HUD: status line, raw probability
 live sensors, drivers from the contract, decision and work order, provenance, PLC tags, the
 simulated MES feed). Press **Rewind** → **Load stored predictions** → **early warning** /
 **critical alarm** / **work order**: the bar shows **this run: first sustained warning → motor
-taken offline** (24 h in the rehearsal) next to **validated on held-out motors** (53 h).
+taken offline** (24–39 h in the rehearsals; it depends on how long the motor sat red) next to
+**validated on held-out motors** (53 h).
 
 Say: "More than a 3-D fleet: each line in physical space, the live data path with measured
 rates, and a rewind over stored predictions that makes the lead time visible — this run's next
