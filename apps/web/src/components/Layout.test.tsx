@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReplayState, SystemHealth } from "../api/types";
@@ -27,13 +27,29 @@ function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
 }
 
+let keyState: { key: "up" | "down"; provider: "anthropic" | "openai" | "none" } = { key: "down", provider: "none" };
+const posts: string[] = [];
+
 describe("Layout", () => {
   beforeEach(() => {
+    keyState = { key: "down", provider: "none" };
+    posts.length = 0;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (globalThis as any).fetch = vi.fn(async (input: RequestInfo | URL) => {
+    (globalThis as any).fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/system/health")) return jsonResponse(health);
       if (url.endsWith("/replay")) return jsonResponse(replay);
+      if (url.endsWith("/llm/key/up") && init?.method === "POST") {
+        posts.push("up");
+        keyState = { key: "up", provider: "openai" };
+        return jsonResponse(keyState);
+      }
+      if (url.endsWith("/llm/key/down") && init?.method === "POST") {
+        posts.push("down");
+        keyState = { key: "down", provider: "none" };
+        return jsonResponse(keyState);
+      }
+      if (url.endsWith("/llm/key")) return jsonResponse(keyState);
       return new Response("not found", { status: 404 });
     });
   });
@@ -71,5 +87,29 @@ describe("Layout", () => {
     expect(replayEl).toHaveTextContent("Replay (recorded plant history) · plant time 08-27 02:00 · streaming");
     expect(within(replayEl).getByRole("button", { name: "Pause" })).toBeEnabled();
     expect(within(replayEl).getByRole("button", { name: "Resume" })).toBeDisabled();
+  });
+
+  it("shows the API Key switch from GET /llm/key and flips it with POST /llm/key/up|down, never showing a key", async () => {
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route path="/" element={<div>fleet</div>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+    const sw = await screen.findByTestId("key-switch");
+    const button = within(sw).getByRole("button");
+    expect(button).toHaveTextContent("API Key Down");
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(button);
+    await waitFor(() => expect(within(sw).getByRole("button")).toHaveTextContent("API Key Up"));
+    expect(posts).toEqual(["up"]);
+    expect(sw).toHaveTextContent("openai");
+    expect(sw.textContent).not.toMatch(/sk-/);
+    fireEvent.click(within(sw).getByRole("button"));
+    await waitFor(() => expect(within(sw).getByRole("button")).toHaveTextContent("API Key Down"));
+    expect(posts).toEqual(["up", "down"]);
   });
 });

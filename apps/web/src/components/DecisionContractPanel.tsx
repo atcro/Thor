@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Bar, BarChart, Cell, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { Approval, Decision, DecisionContract, MaintenanceOption } from "../api/types";
+import type { AlarmEvent, Approval, Decision, DecisionContract, MaintenanceOption } from "../api/types";
 import { fmtDateTime, fmtHours, fmtMoney, fmtNum, fmtPct, humanise, OPTION_LABEL, shortHash } from "../lib/format";
+import { alarmToDecisionMs, fmtMinSec } from "../lib/timer";
 import { AXIS_TICK, CHART, ChartTip } from "./charts";
 import { Kv, Mono, Pill, SourceChip, Stat } from "./ui";
 
@@ -124,17 +125,21 @@ export function DecisionContractPanel({
   onDecide,
   busy,
   error,
+  alarms = [],
 }: {
   contract: DecisionContract;
   approval: Approval | null;
   onDecide: (decision: Decision, approver: string, note: string) => Promise<void>;
   busy: boolean;
   error: string | null;
+  /** The asset's alarm transitions (GET /alarms), for the "Alarm → signed decision" timer. */
+  alarms?: AlarmEvent[];
 }) {
   const [approver, setApprover] = useState("engineer@plant");
   const [note, setNote] = useState("");
   const locked = approval !== null;
   const p = contract.failure_probability;
+  const alarmToDecision = alarmToDecisionMs(alarms, contract, approval);
 
   return (
     <section className={`panel contract${locked ? " locked" : ""}`}>
@@ -165,6 +170,20 @@ export function DecisionContractPanel({
               ["validated lead time (held-out motors)", `${fmtNum(contract.lead_time_h, 1)} h`],
               ["calibration brier", fmtNum(contract.calibration_brier, 3)],
               ["data quality", fmtNum(contract.data_quality_score, 0)],
+              ...(alarmToDecision !== null
+                ? ([
+                    [
+                      "Alarm → signed decision",
+                      <span
+                        key="timer"
+                        data-testid="alarm-to-decision"
+                        title="Wall clock: from the recorded_at of the critical alarm event that preceded this contract to the approval's decided_at. Not plant time."
+                      >
+                        {fmtMinSec(alarmToDecision)}
+                      </span>,
+                    ],
+                  ] as [string, React.ReactNode][])
+                : []),
             ]}
           />
         </div>

@@ -5,6 +5,7 @@
  */
 import type {
   AlarmEvent,
+  AlarmTrust,
   Approval,
   AssetDetail,
   ContractEvidence,
@@ -15,12 +16,16 @@ import type {
   DriftReport,
   FleetAsset,
   GraphState,
+  LabelLedger,
+  LlmKeyState,
   PendingApprovals,
   PipelineRunRequest,
   PipelineRunResponse,
   PredictionRow,
   PromotionRequest,
   RegisteredModel,
+  RepairFinding,
+  RepairFindingRequest,
   ReplayState,
   RunSummary,
   SystemHealth,
@@ -139,6 +144,21 @@ export const listPromotions = () => apiFetch<PromotionRequest[]>("/models/promot
 export const listDrift = (assetId?: string) =>
   apiFetch<DriftReport[]>(`/models/drift${qs({ asset_id: assetId })}`);
 export const checkDrift = (req: DriftCheckRequest) => post<DriftReport>("/models/drift/check", req);
+
+// --- routes/llm.py (API Key Up / Down) ----------------------------------------
+
+/** The switch state only: {key: "up" | "down", provider}. The key itself never leaves the API. */
+export const getKeyState = () => apiFetch<LlmKeyState>("/llm/key");
+export const keyUp = () => post<LlmKeyState>("/llm/key/up", {});
+export const keyDown = () => post<LlmKeyState>("/llm/key/down", {});
+
+// --- routes/findings.py ("What did the technician find?") ----------------------
+
+export const listFindings = (assetId?: string, contractId?: string) =>
+  apiFetch<RepairFinding[]>(`/findings${qs({ asset_id: assetId, contract_id: contractId })}`);
+export const postFinding = (req: RepairFindingRequest) => post<RepairFinding>("/findings", req);
+export const getAlarmTrust = () => apiFetch<AlarmTrust>("/findings/trust");
+export const getLabelLedger = () => apiFetch<LabelLedger>("/findings/ledger");
 
 // --- routes/copilot.py ------------------------------------------------------
 

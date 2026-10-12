@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { decideContract, getAsset, getPredictions, getRun, getTelemetry, runPipeline, runWhatIf, runWsUrl } from "../api/client";
+import { decideContract, getAlarms, getAsset, getPredictions, getRun, getTelemetry, runPipeline, runWhatIf, runWsUrl } from "../api/client";
 import type { Approval, Decision, GraphState, PipelineStage, RunSummary, WhatIfResult } from "../api/types";
 import { TERMINAL_STAGES } from "../api/types";
 import { CHART, TimeSeriesChart, type TimePoint } from "../components/charts";
 import { DecisionContractPanel } from "../components/DecisionContractPanel";
+import { RepairFindingPanel } from "../components/RepairFindingPanel";
 import { AlarmPills, EmptyState, ErrorState, HealthPill, Loaded, LoadingState, Panel, Pill, StageChip, Stat, StateBadge, STATUS_WORD, WorkOrderPill } from "../components/ui";
 import { usePolling } from "../hooks/usePolling";
 import { STAGE_LABEL, fmtNum, fmtPct, fmtRel, fmtShort, fmtTime, probTone } from "../lib/format";
@@ -257,6 +258,8 @@ export function Asset360() {
   const detail = usePolling(() => getAsset(assetId), 5000, assetId, assetId !== "");
   const telemetry = usePolling(() => getTelemetry(assetId, 24), 3000, assetId, assetId !== "");
   const predictions = usePolling(() => getPredictions(assetId, 500), 10000, assetId, assetId !== "");
+  // Insert-only alarm transitions, for the "Alarm → signed decision" timer on the contract.
+  const alarms = usePolling(() => getAlarms(assetId), 10000, `alarms-${assetId}`, assetId !== "");
 
   const [runId, setRunId] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
@@ -455,7 +458,11 @@ export function Asset360() {
       </div>
 
       {showContract && contract && (
-        <DecisionContractPanel contract={contract} approval={approval ?? null} onDecide={decide} busy={deciding} error={decideErr} />
+        <DecisionContractPanel contract={contract} approval={approval ?? null} onDecide={decide} busy={deciding} error={decideErr} alarms={alarms.data ?? []} />
+      )}
+
+      {detail.data && detail.data.work_orders.some((w) => w.status === "completed") && (
+        <RepairFindingPanel workOrders={detail.data.work_orders} onRecorded={() => void detail.refresh()} />
       )}
 
       {run.state?.validation && runId && (

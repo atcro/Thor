@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { checkDrift, decidePromotion, getFleet, listDrift, listModels, listPromotions } from "../api/client";
 import type { Decision, DriftReport, PromotionRequest } from "../api/types";
+import { AlarmTrustLine } from "../components/AlarmTrustLine";
 import { Loaded, ModelStageChip, Panel, Pill } from "../components/ui";
 import { usePolling } from "../hooks/usePolling";
 import { fmtDateTime, fmtNum, fmtRel } from "../lib/format";
@@ -292,6 +293,7 @@ export function ModelOps() {
         <div>
           <h1>ModelOps</h1>
           <div className="sub">Registry lifecycle candidate → validated → shadow → production. Promotions execute only after a recorded approval; drift re-triggers training.</div>
+          <AlarmTrustLine />
         </div>
       </div>
       <RegistryPanel />

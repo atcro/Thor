@@ -5,6 +5,7 @@ import { getRun, listRuns, runPipeline } from "../api/client";
 import type { AssetSplit, CandidateModel, GateCheck, GraphState, IndustrialModelScore, ParityReport, RunSummary } from "../api/types";
 import { TERMINAL_STAGES } from "../api/types";
 import { AXIS_TICK, CHART, ChartTip } from "../components/charts";
+import { LabelLedgerPanel } from "../components/LabelLedgerPanel";
 import { BarH, EmptyState, ErrorState, Kv, LoadingState, ModelStageChip, Panel, Pill, StageChip } from "../components/ui";
 import { usePolling } from "../hooks/usePolling";
 import { fmtDateTime, fmtHours, fmtInt, fmtNum, fmtPct, fmtRel, STAGE_LABEL, stateName } from "../lib/format";
@@ -315,6 +316,7 @@ export function Studio() {
                   )}
                 </div>
                 {state.split && <SplitTable split={state.split} />}
+                {(state.mode ?? "train") === "train" && <LabelLedgerPanel sources={state.label_sources} split={state.split} runId={state.run_id} />}
                 <div>
                   <h3 style={{ marginBottom: 4 }}>Schema issues</h3>
                   {dq.schema_issues.length === 0 ? (

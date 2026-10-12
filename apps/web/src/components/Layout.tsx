@@ -4,6 +4,7 @@ import { API_BASE_URL, getReplay, getSystemHealth, pauseReplay, resumeReplay } f
 import type { ReplayState } from "../api/types";
 import { usePolling } from "../hooks/usePolling";
 import { fmtDateTime, fmtShort } from "../lib/format";
+import { KeySwitch } from "./KeySwitch";
 import { Dot } from "./ui";
 
 /** Side menu, in order. The 3-D Digital Twin sits directly under Bolt. */
@@ -123,6 +124,7 @@ export function Layout() {
           )}
         </div>
         <div className="conn">
+          <KeySwitch />
           <ReplayIndicator />
           {health.data && (
             <span title="Telemetry rows in the control-plane store">

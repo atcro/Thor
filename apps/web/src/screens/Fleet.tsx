@@ -2,6 +2,8 @@ import { useMemo, useState, type CSSProperties, type KeyboardEvent } from "react
 import { Link } from "react-router-dom";
 import { getFleet, getSystemHealth, getTwin } from "../api/client";
 import type { FleetAsset, TwinAsset } from "../api/types";
+import { FINDING_LABEL } from "../api/types";
+import { AlarmTrustLine } from "../components/AlarmTrustLine";
 import { MotorSprite, spriteParams, TIER_WORD, type SpriteStyle } from "../components/MotorSprite";
 import { AlarmPills, Dot, HealthPill, Loaded, ModelStageChip, Panel, Pill, StateBadge, WorkOrderPill } from "../components/ui";
 import { usePolling } from "../hooks/usePolling";
@@ -110,6 +112,20 @@ function AssetCard({ item, style, xray }: { item: FleetAsset; style: SpriteStyle
         {item.stage && <ModelStageChip stage={item.stage} />}
         {item.work_order && <WorkOrderPill wo={item.work_order} />}
       </div>
+      {item.work_order?.status === "completed" && (
+        <div className="small" data-testid={`finding-line-${asset.asset_id}`}>
+          {item.work_order.finding ? (
+            <span title={`Recorded by ${item.work_order.finding.recorded_by}${item.work_order.finding.note ? `: ${item.work_order.finding.note}` : ""}`}>
+              <span className="muted">technician: </span>
+              {FINDING_LABEL[item.work_order.finding.finding]} <span className="dim mono">· {item.work_order.finding.recorded_by}</span>
+            </span>
+          ) : (
+            <span style={{ color: "var(--steel)" }} title="The repair is complete and no finding is recorded yet. Open Asset 360 to record what the technician found.">
+              What did the technician find? →
+            </span>
+          )}
+        </div>
+      )}
       <div className="foot">
         <span title={fmtDateTime(item.last_ts)}>last sample {fmtShort(item.last_ts)}</span>
         {item.open_contract_id && <span style={{ color: "var(--ember)" }}>contract open</span>}
@@ -256,6 +272,7 @@ export function Fleet() {
               ? `${sorted.length} assets · ${nCritical} critical · ${nWarning} warning · ${nUnscored} without a prediction yet · ${nOpen} open contract${nOpen === 1 ? "" : "s"} · ${nWork} work order${nWork === 1 ? "" : "s"} · sorted by failure risk`
               : "Loading fleet…"}
           </div>
+          <AlarmTrustLine compact />
         </div>
         <div className="row" style={{ gap: 12 }}>
           <XRayToggle />

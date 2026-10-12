@@ -475,6 +475,8 @@ export interface GraphState {
   /** analyze runs: the production model that was reused. */
   model_ref?: ModelRef | null;
   split?: AssetSplit | null;
+  /** Train runs: every completed failure this run learns from and its label source. */
+  label_sources?: LabelSource[];
   events: StageEvent[];
   data_quality?: DataQualityContract | null;
   candidates?: CandidateSet | null;
@@ -509,6 +511,90 @@ export interface WorkOrder {
   status: WorkOrderStatus;
   started_ts: ISODate | null;
   completed_ts: ISODate | null;
+  /** The effective (non-superseded) repair finding, once a person has recorded one. */
+  finding?: RepairFinding | null;
+}
+
+// ---------------------------------------------------------------------------
+// Repair findings: "What did the technician find?" (routes/findings.py). Insert-only; a
+// correction is a new row whose `supersedes` names the one it replaces.
+// ---------------------------------------------------------------------------
+
+export type FindingKind = "confirmed_bearing_damage" | "no_fault_found" | "other";
+
+export const FINDING_LABEL: Record<FindingKind, string> = {
+  confirmed_bearing_damage: "Confirmed: bearing damage",
+  no_fault_found: "No fault found",
+  other: "Other",
+};
+
+export interface RepairFinding {
+  finding_id: string;
+  contract_id: string;
+  asset_id: string;
+  finding: FindingKind;
+  note: string;
+  recorded_by: string;
+  recorded_at: ISODate;
+  /** Plant time the work order completed. */
+  plant_ts: ISODate;
+  sandbox: boolean;
+  supersedes: string | null;
+}
+
+export interface RepairFindingRequest {
+  contract_id: string;
+  finding: FindingKind;
+  note?: string;
+  recorded_by: string;
+  supersedes?: string | null;
+  sandbox?: boolean;
+}
+
+/** Deterministic counts over approved maintenance contracts and their findings. */
+export interface AlarmTrust {
+  acted_on: number;
+  confirmed: number;
+  no_fault_found: number;
+  other: number;
+  awaiting_finding: number;
+  completed_without_finding: number;
+  /** Below this many acted-on alarms the UI shows counts only, never a percentage. */
+  min_for_rate: number;
+}
+
+/** Where one completed failure a training run learns from comes from. */
+export interface LabelSource {
+  asset_id: string;
+  source: "simulator_history" | "work_order_finding";
+  group: string;
+  contract_id?: string | null;
+  finding_id?: string | null;
+  recorded_by?: string | null;
+  event_ts?: ISODate | null;
+  labelled_from?: ISODate | null;
+  n_rows?: number | null;
+}
+
+export interface LabelLedgerEntry {
+  finding_id: string;
+  asset_id: string;
+  contract_id: string;
+  recorded_by: string;
+  recorded_at: ISODate;
+  event_ts: ISODate | null;
+  note: string;
+}
+
+export interface LabelLedger {
+  queued: LabelLedgerEntry[];
+  rule: string;
+}
+
+/** GET /llm/key: whether the provider key is held in memory. Never carries the key. */
+export interface LlmKeyState {
+  key: "up" | "down";
+  provider: "anthropic" | "openai" | "none";
 }
 
 /**
@@ -615,6 +701,8 @@ export interface SystemHealth {
     mode: "llm" | "template";
     provider?: "anthropic" | "openai" | "none";
     model: string;
+    /** The API Key switch (GET /llm/key). */
+    key?: "up" | "down";
     warning?: string | null;
   };
   n_telemetry_rows: number;
