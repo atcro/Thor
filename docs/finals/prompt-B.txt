@@ -1,69 +1,122 @@
 We're a top-4 finalist in the ABB hackathon, presenting Thor in person on Tuesday: about 4 minutes
 of slides and 6 minutes of live demo, then judge Q&A. Code freeze is **today at 5 pm**. After that,
-the team only rehearses. Read `CLAUDE.md` (especially §7 and §15) and `docs/finals/session-notes.md`
-from yesterday's sessions first. They are binding.
+the team only rehearses. First read:
+
+- `CLAUDE.md`, especially §7 and §15;
+- `docs/finals/session-notes.md`, the Phase 0, Phase A and A.1 sections;
+- the last entries of `docs/finals/status.md`;
+- `docs/finals/demo-walkthrough.md`, the manual hero click path from Prompt A.1.
+
+They are binding.
+
+The manual hero story is already solid (Prompt A.1). What A.1 established:
+- nothing trains, promotes, scores or analyses on startup;
+- the presenter trains in AutoML Studio and signs the model off in ModelOps, and the replay then
+  starts by itself;
+- only MTR-042 degrades live; the other failures were re-timed into the training history;
+- the presenter runs the analysis on MTR-042, asks Bolt about it, and approves the contract;
+- a critical alarm stays latched until a work order completes;
+- a sandbox in the twin can fault any motor;
+- Fleet is the landing view, and the 3-D Digital Twin sits under Bolt in the side menu.
+
+Your job is to add Bolt Designer to that story **without making it less reliable**. If anything
+you build makes the hero flow flaky, cut it. A reliable smaller demo beats an impressive flaky one.
+
+## Bolt Designer
 
 **Why this feature exists.** After an earlier round, a judge asked: "If this can monitor a motor,
 could it be used to create a motor?" A second recurring question is whether Thor's AI ever makes
 decisions. **Bolt Designer** answers both, without breaking our governance model:
 
-- Deterministic code finds the signal in fleet spec and performance data and proposes an improved
-  spec.
+- Deterministic code finds the signal in fleet spec, failure history and measured duty, and
+  proposes an improved spec.
 - Bolt explains the case in conversation.
 - The engineer approves a Design Change Request.
 
-The name is deliberate: Bolt is our copilot (a lightning bolt), and a bolt is also a part you design.
+The name is deliberate: Bolt is our copilot (a lightning bolt), and a bolt is also a part you
+design.
 
 The line we want to be able to say on stage: *"Bolt explains your fleet. Bolt Designer shows you
 how to build a better motor. You sign."*
 
-**Your goal: Phase B from §15**, then make the whole demo rehearsal-ready by 5 pm.
+### The evidence has to survive a skeptical judge
 
-## What "done" looks like
+`data/simulator/layout.py` places motors on lines by a stated duty rule (`baseline_duty_index`,
+`derive_groups`). Lines 3–4 hold the fault-history motors by construction, and load and starts are
+flat across lines by design. The measured line gap is modest (bearing temperature mean 53.4 °C vs
+50.8 °C, vibration 2.66 vs 2.07 mm/s), and most of it comes from the failing motors themselves.
+
+So "Lines 3–4 run worse" on its own is circular: we put the failures there. A judge will say so.
+Build the case on evidence that stands up without the layout:
+
+1. **Failure history by role and failure mode.** Count completed failures per role, with time
+   between failures, from recorded failures only. The drive-end bearing pattern comes from here.
+2. **The fault hypothesis** for the analysed motor (below), pointing at the bearing and thermal
+   specs.
+3. **Bearing rated life (L10) under measured duty.**
+   - Use each role's measured load and speed, the current bearing designation and the proposed
+     one.
+   - Use typical published catalogue load ratings, stated as such in code.
+   - This is textbook bearing engineering, and it doesn't depend on which line a motor sits on.
+4. **The line comparison, last, and only if it survives.** Compute it with the degradation and
+   failure windows excluded.
+   - If a gap remains, show it.
+   - If it disappears, say so in the workbench and in Bolt's answer. "The lines differ mainly in
+     failure history, not in baseline duty" is a credible engineering answer, not a failure.
+
+When the evidence says the cause is operational rather than the spec, the toolbox says so.
+
+### What "done" looks like
 
 - **Nameplate specs.** Each motor carries a realistic nameplate record: rated kW, frame,
   poles/speed, insulation class, service factor, efficiency class, enclosure, and drive-end and
-  non-drive-end bearing designations. Same-role motors across Lines 1–5 share identical nameplates,
-  so the paperwork is the same while measured performance differs. That's the point of the story.
+  non-drive-end bearing designations.
+  - Same-role motors across Lines 1–5 share identical nameplates, so the paperwork is the same
+    while history and duty differ.
+  - Keep `rated_kw` consistent with `generate.py::_RATINGS`.
 - **A deterministic design toolbox,** a new `agents/` module with docstrings stating inputs and
   outputs, per §11:
   - fetch specs on file;
-  - compare lines and roles on measured operating stress and outcomes (load, starts, temperature
-    rise, vibration, failures, time between failures). Use observable telemetry and recorded
+  - compute the evidence above (failure history, hypothesis link, L10 under measured duty, and
+    the line comparison with failure windows excluded). Use observable telemetry and recorded
     failures only, never simulator ground-truth fields;
-  - derive a recommended spec envelope from the best performers and the stresses the weak lines
-    actually see.
-  - Each recommendation is tied to explicit engineering rules and thresholds kept in code. For
-    example, a thermal margin argues for insulation class or service factor; starts and vibration
-    argue for bearing selection; a load profile argues for the kW rating.
-  - When the evidence says the cause is operational rather than the spec, it says so honestly.
-    That's a credible answer, not a failure.
-  - Support the packaging-line motors and the compressor-hall drive motors.
+  - derive a recommended spec envelope. Each change is tied to an explicit engineering rule and
+    threshold kept in code as a named constant. For example:
+    - drive-end bearing failures and a short L10 under measured duty argue for bearing
+      selection;
+    - thermal margin argues for insulation class or service factor;
+    - the load profile argues for the kW rating.
+  - **Scope order:** MTR-042's role first (Packaging Line 3 filler). Other packaging roles and the
+    compressor-hall drives come only after the hero loop is solid.
 - **Design Change Request.**
   - It's created by the deterministic toolbox when the engineer clicks **Draft Design Change
     Request**, and stored insert-only.
   - It moves to approved only through `record_decision()` with a named approver. That decision is
     separate from maintenance approvals and model promotions.
   - Show it with the same evidence-linked rigor as a Decision Contract.
-- **Bolt Designer screen,** its own item in the left navigation, with Bolt's look (same chat panel
-  and persona; icon mixing a lightning bolt and a hex bolt) and the app's existing color scheme.
-  - **Left: the Bolt chat,** guiding an engineering investigation. It must support, in template
-    mode and with an LLM:
+- **Bolt Designer screen,** its own item in the left navigation, next to Bolt and the 3-D Digital
+  Twin (keep Fleet first), with Bolt's look (same chat panel
+  and persona; icon mixing a lightning bolt and a hex bolt) and the app's existing color scheme,
+  not the twin's neon scheme.
+  - **Left: the Bolt chat,** guiding an engineering investigation. It must support these questions,
+    in template mode and with an LLM:
     1. "Pull up the specs for the motors on the pack lines."
-    2. "Lines 3 and 4 keep having motor trouble while 1 and 2 run fine. Why?"
+    2. "Lines 3 and 4 keep having motor trouble while 1 and 2 run fine. Why?" The answer leads
+       with failure history and the bearing evidence, and states honestly what the line gap does
+       and doesn't show.
     3. "Propose a spec for the next motor purchase."
-    4. "Draft the change request."
-    - For step 4, Bolt points the engineer to the Draft button. It never creates the request
-      itself.
+    4. "Draft the change request." Bolt points the engineer to the Draft button. It never creates
+       the request itself.
   - **Right: a spec workbench** showing current vs recommended specs, each change with its
-    evidence, and a chart of the line-to-line performance gap.
+    evidence, and the L10 comparison. Add the line chart only if the gap survives.
   - **Bolt stays strictly read-only:**
     - it reaches data only through read-only tools and quotes only numbers the tools returned;
     - it may suggest a draft, but drafting is the engineer's click and approval is the engineer's
       decision;
-    - it asks a clarifying question when it would help, the way a senior reliability engineer would.
-- **Fault hypothesis.** A small deterministic, rule-based layer answers "what's probably wrong?" for
-  an analysed motor.
+    - it asks a clarifying question when it would help, the way a senior reliability engineer
+      would.
+- **Fault hypothesis.** A small deterministic, rule-based layer answers "what's probably wrong?"
+  for an analysed motor.
   - It produces one hypothesis: possible bearing degradation, possible thermal overload,
     vibration anomaly (unclassified), or insufficient evidence.
   - Each comes with a confidence level, supporting evidence, counter-evidence and limitations.
@@ -71,16 +124,24 @@ how to build a better motor. You sign."*
     unit tests.
   - Call it a hypothesis, never a confirmed root cause. Don't invent frequency-domain analysis:
     we have 10-minute aggregates, not waveforms.
-  - Show it in the Decision Contract view and the HUD. It feeds Bolt Designer, so a bearing
-    hypothesis points the redesign at the bearing and thermal specs.
-- **Repair outcome.** When the simulated work order completes, record an insert-only outcome linked
-  to the contract: action taken, parts replaced, the spec installed, and the confirmed failure mode
-  the plant reports. Show it next to the original hypothesis ("predicted: possible bearing
-  degradation, found: drive-end bearing damage"). This is how Thor would measure whether its calls
-  were right. Don't add automatic retraining from outcomes.
+  - Show it in the Decision Contract view and as a module in the existing X-Ray HUD. Add a
+    `data-testid` module next to `hud-drivers`, not a new panel.
+- **Repair outcome.** When the simulated work order completes, record an insert-only outcome
+  linked to the contract: action taken, parts replaced, the spec installed, and the failure mode
+  the plant reports.
+  - The replay's simulated CMMS plays the plant here. Its report must be labelled "reported by
+    the simulated CMMS".
+  - The outcome is written through the work-order API. The model, scoring, the hypothesis and
+    Bolt Designer's recommendation never read it as an input. Add a test asserting that, like the
+    MES-feed test in `tests/test_twin.py`.
+  - Show it next to the original hypothesis ("predicted: possible bearing degradation, found:
+    drive-end bearing damage"). This is how Thor would measure whether its calls were right.
+  - Don't add automatic retraining from outcomes.
 - **A closed-loop hero story: detect → diagnose → redesign → install → plan.** This is the
   centerpiece of the demo:
-  1. MTR-042 degrades live, and Run analysis drafts a Decision Contract recommending replacement.
+  1. MTR-042 degrades live and latches critical, as built in A.1. The engineer clicks Run
+     analysis, which drafts a Decision Contract recommending replacement, with the fault
+     hypothesis.
   2. From that contract, **"Design the replacement in Bolt Designer"** opens Bolt Designer focused
      on MTR-042's role. The engineer approves a Design Change Request for an upgraded spec.
   3. Back on the contract, the engineer **approves maintenance with the approved upgraded spec as
@@ -88,53 +149,77 @@ how to build a better motor. You sign."*
      - The maintenance approval record references the Design Change Request.
      - The Decision Contract itself stays immutable.
      - Like-for-like replacement remains the default when no Design Change Request is attached.
-     - Design before approval, because at replay speed 1800 the work order can execute within
-       seconds of approval.
-  4. The simulated CMMS executes the work order. Its events record which spec was installed, and
-     afterwards MTR-042's nameplate (in the API, the HUD and the 3-D Digital Twin) shows the
-     upgraded spec, with an "Upgraded spec installed" marker.
-  5. The HUD shows a **next planned inspection date** for the new motor (in plant time).
-     - It comes from a deterministic bearing rated-life (L10) calculation under MTR-042's
-       measured load and speed, comparing old and new bearing specs.
-     - Use typical published catalog load ratings, stated as such in code.
-     - Label it "rated-life estimate under measured duty". It is never a model prediction, because
-       the model has no data on the new spec.
+     - Design before approval: with `REPLAY_WORK_ORDER_EXECUTE=approval` (the compose default) the
+       work order executes within seconds of the maintenance approval.
+  4. The simulated CMMS executes the work order. Its events record which spec was installed.
+     Afterwards, MTR-042's nameplate in the API, the HUD and the 3-D Digital Twin shows the
+     upgraded spec.
+     - Add `DecisionState` values (`design_change_pending`, `upgraded_spec_installed`) in
+       `schemas.py`, `types.ts`, `DECISION_WORD` and the scene's badge styles, as
+       `session-notes.md` describes.
+  5. The HUD shows a **next planned inspection date** for the new motor, in plant time.
+     - It comes from the deterministic L10 calculation under MTR-042's measured load and speed,
+       comparing old and new bearing specs.
+     - Label it "rated-life estimate under measured duty". It is never a model prediction,
+       because the model has no data on the new spec.
      - Live monitoring continues on the new motor as normal.
 - **Don't fake the payoff.** After the repair, the replay streams the motor's normal healthy
   baseline exactly as before. Don't alter telemetry to show the upgraded motor outperforming. The
   claim is a longer rated life plus continued monitoring, and that's true.
-- **Other entry points.** Bolt Designer is also reachable from a line's HUD in the 3-D Digital Twin
-  and from its nav item.
-- **Demo hardening.**
-  - Write `docs/finals/demo-script.md`: the 6-minute click path with timings, what to say at each
-    beat, a pre-demo checklist (prep and reset commands, browser zoom, performance mode,
-    template-mode fallback if Wi-Fi drops), and recovery moves if a step stalls.
-  - Write `docs/finals/judge-qa.md`: crisp answers to the likely questions:
-    - AI decisions and governance;
-    - the leakage we found and fixed, using `docs/finals/metrics.md`;
-    - training-serving parity;
-    - real data and integration with an MES/CMMS (never call Thor an MES);
-    - scalability from asset to site to enterprise;
-    - the AI4I benchmark;
-    - cost assumptions (never claim savings as fact).
-  - Run the full hero flow end to end yourself after a demo prep and reset, through the API, and fix
-    anything that stalls or looks wrong.
+- **Entry points:** the nav item and the Decision Contract button. Skip the 3-D line-HUD entry
+  point unless everything else is done.
+- **Close one governance gap left by Phase 0.** A registry row with no parity record
+  (`parity_passed: None`) is currently promotable (`agents/mlops/lifecycle.py`,
+  `_assert_promotable`). Treat a missing parity record as a refusal, and add a test. A judge can
+  ask "could a model that skipped the edge check go live?", and the answer must be no.
+- **Demo script.** Extend A.1's `docs/finals/demo-walkthrough.md`; don't rewrite it.
+  - Insert the redesign beat between Run analysis and the maintenance approval, with measured
+    timings and what to say.
+  - Re-measure the whole 6-minute flow. If the redesign beat pushes it over time, say what to
+    shorten.
+
+  The judge Q&A document and the slides are written in a separate session; don't spend time on
+  them.
 
 ## Constraints
 
 - **§7 holds absolutely:** no LLM-computed numbers, keys read only in `apps/api/orchestrator.py`,
   insert-only records, approval only via `record_decision()`.
-- **Keep Prompt 0's fixes:** ground-truth isolation, separate approvals, the validation gate,
-  parity and analysis reuse. Don't regress them.
-- **Data:** don't alter telemetry signals, `FAULTY_ASSETS` timing, or MTR-042's story.
+- **Keep Prompt 0's fixes:**
+  - ground-truth isolation;
+  - separate approvals;
+  - the validation gate and parity;
+  - analysis reuse.
+
+  **Keep Prompt A's guarantees:**
+  - every twin and HUD value traces to an API field;
+  - motion comes only from data;
+  - the MES feed feeds no decision;
+  - ≥45 fps on Iris Xe.
+
+  **Keep Prompt A.1's guarantees:**
+  - nothing automatic on startup;
+  - every hero step is a presenter's click (the replay starts only after the model sign-off);
+  - the latched alarm rule;
+  - sandbox data tagged and kept out of training;
+  - Fleet first in the nav.
+
+  Don't regress any of them.
+- **Data:** don't alter telemetry signals, A.1's re-timed `FAULTY_ASSETS`, MTR-042's story, or the
+  plant layout rule.
 - **Must keep passing:** `pytest`, `ruff check .`, the web build and tests, and
-  `docker compose build`. Add tests for the toolbox rules, for the Design Change Request being
-  insert-only and approval-gated, and for Bolt having no write path.
-- **Time-box:** priority order is (1) the closed loop for MTR-042 with the fault hypothesis,
-  (2) the repair outcome, (3) the general fleet-wide workbench. If Bolt Designer isn't solid by 2 pm, cut scope (fewer spec attributes, packaging motors
-  only, MTR-042's role only) rather than ship something flaky. A working smaller feature beats a broken
-  bigger one on stage. Stop building at 4:30 pm and use the rest for verification and the demo
-  docs.
+  `docker compose build`. Add tests only for:
+  - the toolbox rules and the L10 calculation;
+  - the Design Change Request being insert-only and approval-gated;
+  - Bolt having no write path;
+  - the repair outcome feeding no decision;
+  - missing parity refusing promotion.
+- **Time-box:**
+  - Bolt Designer priority order: (1) the closed loop for MTR-042 with the fault hypothesis and
+    L10, (2) the repair outcome, (3) other roles and the fleet-wide workbench.
+  - If Bolt Designer isn't solid by 2 pm, cut scope (fewer spec attributes, MTR-042's role only)
+    rather than ship something flaky.
+  - Stop building at 4:30 pm and use the rest for verification and the demo script.
 - **Scope:** stay within the task. No unrelated refactors, and nothing from §15's cut list.
 
 ## How to work
@@ -153,11 +238,14 @@ how to build a better motor. You sign."*
   - audit the "done" list against the code and the actual test output, flagging anything claimed
     but not shown;
   - play a skeptical ABB judge walking through the demo script, flagging any on-screen claim the
-    data can't back.
+    data can't back, especially the Lines 3–4 argument, and anything that now happens without
+    a presenter's click.
+
   Fix what it flags before the final report.
 - **Delegate independent work** to sub-agents and keep working while they run.
-- **Keep the notes current.** Update `CLAUDE.md` (§5 screens, §6 agent table with the new toolbox,
-  §15) and `docs/finals/session-notes.md` as facts change.
+- **Keep the notes current.** As facts change, update:
+  - `CLAUDE.md`: §5 screens, §6 agent table with the new toolbox, §15, and §16 file map;
+  - `docs/finals/session-notes.md`.
 - **Progress log.** Keep `docs/finals/status.md` current; the team watches it to track progress
   against their usage limits. After every milestone, append an entry with the time, the phase and
   milestone, the files changed, the tests run with their actual results, and what's next. If
@@ -165,11 +253,12 @@ how to build a better motor. You sign."*
   from that file alone, so keep the "next" line specific.
 - **Work autonomously.** The team is not watching in real time. For reversible actions within this
   brief, proceed without asking.
-- **Docker:** you may run `docker compose build`. Leave starting, stopping and resetting the stack to
-  the team: give them the commands.
-- **End-to-end checks:** when you need a running system, run it natively from the repo's `.venv`
-  (`uvicorn apps.api.main:app` on SQLite, plus the replay with `python -m streaming.replay.replay`)
-  rather than starting the Docker stack. Stop those processes when you're done.
-- **Final report.** Audit every claim against a tool result from this session. Lead with whether
-  the hero flow works end to end, then what was cut and why, then the exact commands to prepare,
-  reset and rehearse.
+- **Docker:** you may run `docker compose build`, and `.\scripts\demo_reset.ps1` for rehearsals,
+  as Phase A did. Otherwise leave the team's stack alone and give them the commands.
+- **End-to-end checks:** follow the native recipe in `session-notes.md`, or rehearse on the reset
+  Docker stack. Stop any native processes when you're done.
+- **Final report.** Audit every claim against a tool result from this session. In this order:
+  1. whether the manual hero flow, now with the redesign beat, works end to end without coaxing,
+     with the measured timings;
+  2. what was cut and why;
+  3. the exact commands to prepare, reset and rehearse.

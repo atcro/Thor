@@ -1,0 +1,94 @@
+We're a top-4 finalist in the ABB hackathon, presenting Thor in person on Tuesday. Code freeze is
+Monday 5 pm. Read `CLAUDE.md` (§7, §15, §16), `docs/finals/session-notes.md` and the last entries of
+`docs/finals/status.md` first.
+
+## Goal
+
+No person on a plant floor says "regime". Everywhere a person reads or hears Thor, the word
+becomes **"operating state"**, or just **"state"** where space is tight and the meaning is
+obvious. The judges, the team and Bolt should all use the same plain word.
+
+## Why "operating state" and not bare "state"
+
+Thor already uses "state" for other things:
+- the decision state (contract pending, approved, work order);
+- the data state (live, stale, no data);
+- the alarm state from Prompt A.1.
+
+A bare "state" next to those is ambiguous. So:
+- Use **"operating state"** in sentences, headings, tooltips, HUD module titles, Bolt's answers and
+  docs.
+- Use **"State"** alone only in a compact label where it sits next to its value and can't be
+  confused with the others, for example a HUD row "State: heavy load".
+- Never "regime state".
+
+## What changes (everything a person reads or hears)
+
+- **Web UI:** every visible string in `apps/web/src`. That includes:
+  - labels, legends, tooltips and the HUD;
+  - the twin's ring legend ("regime ring" becomes "operating-state ring");
+  - the Asset 360 chart;
+  - AutoML Studio's data-quality and feature descriptions;
+  - the sandbox panel;
+  - aria-labels;
+  - test assertions that check those strings.
+- **State names.** Show each operating state by a plain name (for example startup, running, heavy
+  load), not a code like R1/R2/R3, wherever the data supports that name.
+  - Derive each name deterministically from the state's measured centroid (rpm and load), in one
+    place, with a docstring that says how.
+  - If a centroid doesn't clearly match a plain name, show a neutral name ("state 2") rather than
+    an invented one.
+- **API text that reaches people:**
+  - human-readable strings in responses (notes, descriptions, explanation templates, Decision
+    Contract text, gate checklist labels, data-quality messages);
+  - OpenAPI field descriptions.
+- **Bolt:** its system prompt, tool descriptions it reads, template-mode answers, and the eval
+  cases in `evals/bolt/` (keep the pass rate).
+- **The LLM explanation prompt** in `apps/api/orchestrator.py`: tell the model to say "operating
+  state". Template text says it too.
+- **Docs and the demo:**
+  - `docs/finals/demo-walkthrough.md` and `DEMO.md`;
+  - `docs/finals/model-card.md` and `metrics.md`;
+  - `docs/architecture.html`;
+  - the `submission-positioning` skill, where it describes the differentiator ("regime-aware"
+    becomes "operating-state-aware");
+  - `CLAUDE.md` prose.
+  - Where a doc explains the method, one sentence may say "operating states (clustering on rpm
+    and load; sometimes called regimes in the literature)" so a judge who knows the term isn't
+    confused. Use that once per doc at most.
+
+## What does NOT change
+
+Leave internal names alone: Python and TypeScript identifiers, module and function names
+(`detect_regime()`, `profiling.py`), JSON field names in the API contract, database columns,
+feature names (for example `regime_id`), the ONNX sidecar format, MLflow artifacts, and log keys.
+
+Renaming those touches the training pipeline, the edge parity format and every stored model the
+day before the demo, for no visible gain. The rule: **if a person can see it or hear it, rename
+it; if only code reads it, leave it.**
+
+Where an internal name shows up on screen by accident (a raw field name used as a label), fix the
+label, not the field.
+
+## Constraints
+
+- **§7 holds:** no LLM-computed numbers, LLM keys only in `apps/api/orchestrator.py`, and template
+  mode works.
+- **Don't change behaviour:** this pass changes words only. The same data, models, alarms and
+  numbers.
+- **Must keep passing:** `pytest`, `ruff check .`, the web build and tests, the Bolt eval, and
+  `docker compose build`.
+- **No new tests** beyond updating string assertions, plus one check that fails if the visible
+  word "regime" appears in the web UI text (outside identifiers), so it can't creep back.
+
+## How to work
+
+- **Find every occurrence.** `grep -rni regime` across `apps/web/src`, `apps/api`, `agents`,
+  `edge`, `streaming`, `evals`, `docs`, `scripts`, `data` and `CLAUDE.md` (about 800 matches today,
+  most of them internal identifiers). Decide each one with the rule above.
+- **Report what you left.** List the remaining "regime" matches by category (identifier, field
+  name, feature name, the one allowed doc sentence) in the final report.
+- **Commit** on `finals` only, in one or two commits. Never push, touch `main` or rewrite history.
+- **Log it.** Append an entry to `docs/finals/status.md`: the time, the files changed, the tests
+  run with their real results, and "next".
+- **Final report:** what was renamed, what was deliberately left and why, and the test results.

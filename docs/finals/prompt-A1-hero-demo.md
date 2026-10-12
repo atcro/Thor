@@ -1,0 +1,281 @@
+# Prompt A.1 — the manual hero demo + sandbox (send before Prompt B, Claude Fable 5.1, effort xhigh)
+
+Send this after Prompt A is committed (last Phase A entry in `docs/finals/status.md`:
+2026-10-12 02:30). Prompt B (Bolt Designer) is on hold until this hero story rehearses cleanly.
+The demo flow below is the team's own, agreed on 2026-10-12. Paste everything below the line into
+a fresh Claude Code session started in `C:\Thor-main`. `prompt-A1.txt` is the same text without
+this header.
+
+---
+
+We're a top-4 finalist in the ABB hackathon (Theme 1). On Tuesday we present Thor in person:
+about 4 minutes of slides, 6 minutes of live demo, then judge Q&A. Code freeze is Monday 5 pm.
+
+Read these first:
+- `CLAUDE.md`, especially §7, §9, §15 and §16;
+- `docs/finals/session-notes.md`, the Phase 0 and Phase A sections;
+- the last entries of `docs/finals/status.md`;
+- `docs/finals/demo-walkthrough.md`.
+
+They are binding unless this brief changes them. Where it does, update them.
+
+## Goal
+
+The demo below must work every single time, shown by hand, click by click, with no coaxing.
+- Only the plant data is simulated.
+- Everything the judges see really runs: training, sign-off, scoring, analysis, Bolt's answers,
+  approval and repair.
+
+## The demo (the team's flow; build to this)
+
+1. **Open on Fleet.** Every motor is grey: "no prediction yet". No model exists.
+2. **Train.** The presenter opens AutoML Studio and clicks "Train new model", then talks over the
+   progress. Talk track: we use the fleet's own production history to set a baseline, for when
+   (not if) something goes wrong on the pack floor.
+3. **Sign off.** The presenter goes to ModelOps and approves the promotion. Fleet turns green:
+   "green means within its healthy baseline".
+4. **Something goes wrong.** About 20–30 s after sign-off, MTR-042 visibly goes green → amber →
+   red, and stays red. No click is needed.
+5. "There's a production issue, let's get on it." The presenter clicks **Run analysis** on
+   MTR-042. It uses the model just trained.
+6. **Bolt.** While the analysis runs, the presenter jumps to Bolt and asks about MTR-042: what's
+   happening, the details, and possible fixes.
+7. **Approve.** Back on Fleet, the presenter clicks MTR-042, scrolls down and approves the
+   Decision Contract as a plant engineer. Talk track: in a real emergency the motor comes out
+   within a few clicks; often you have to pivot. The contract lays out the solution after the
+   engineer has asked Bolt and read the evidence.
+8. **Back to green.** On approval, MTR-042 goes offline for the work order and comes back green.
+9. **3-D Digital Twin.** It's more than a 3D Fleet: the X-Ray HUD, each line laid out in physical
+   space, and rewind showing the lead time.
+10. **Sandbox.** In the twin, a sandbox toggle with:
+    - sliders for rpm and temperature;
+    - a "Troubleshoot <motor>" fault that kills any chosen motor fast;
+    - a "Random fault" button;
+    - a "Shake up operations" button.
+
+    Any motor that goes red can be analysed and approved, and then comes back green, the same as
+    MTR-042.
+
+## What "done" looks like
+
+### 1. Fault timing: only MTR-042 goes wrong live
+
+This deliberately relaxes the §15 rule "never change `FAULTY_ASSETS` timing". The team approved
+it on 2026-10-12. Update §9 and §15 to say so.
+
+- **Re-time `FAULTY_ASSETS` in `data/simulator/generate.py`:**
+  - every failure other than MTR-042's (including MTR-021 and MTR-017) completes inside the seeded
+    history, so they become past failures the model learns from;
+  - MTR-042 is fully healthy in the seeded history. Its degradation starts in the replayed part.
+- **Pick MTR-042's onset and failure point by measuring, not guessing.** At the compose replay
+  speed, after the replay starts:
+  - green for about 20–30 s;
+  - a clearly visible amber phase;
+  - then sustained red well before its failure point.
+  - If that needs a different replay speed, change the compose default and say why.
+- Keep the fault signature itself (shape, amplitudes, `FAULT_AMPLITUDE`) and every other signal
+  unchanged.
+- Leave the plant layout as is: Lines 3–4 already hold the fault-history motors, and MTR-042 stays
+  the Line 3 filler.
+- **The asset split changes.** There are now more completed failures, so `make_asset_split` may
+  form four separate groups.
+  - Re-run training and record the new honest metrics.
+  - Replace the numbers in `docs/finals/metrics.md`, `model-card.md` and `prep-report.json`, and
+    anywhere else that quotes them (`grep` for 0.865, 41.5 and 0.844).
+  - The slides will use whatever the new numbers are. Never tune for nicer ones.
+
+### 2. Startup does nothing, then the presenter drives it
+
+- **Clean start.** `docker compose up` and `scripts/demo_reset.(ps1|sh)` bring up:
+  - the seeded history;
+  - no production model;
+  - no predictions (Fleet grey, "no prediction yet");
+  - the replay held.
+- **No automatic training or promotion.** The `prep` service no longer runs by default; use a
+  compose profile. Keep `python -m scripts.demo_prep` as a manual fallback command and document
+  it.
+- **Training on stage.**
+  - Pick the trial count so it finishes in about 60 s or less on this laptop, while still passing
+    the validation gate and parity. Measure it.
+  - AutoML Studio shows progress worth talking over: the split, the trials, the champion score,
+    the gate checklist and parity.
+- **Sign-off.** It stays in ModelOps through `record_decision()` with a named approver.
+  - The edge loads the new model, and the fleet is scored, so it turns green right after sign-off.
+  - Green means a calibrated probability below the early-warning threshold. Label it "within
+    healthy baseline" wherever a legend or tooltip explains green.
+- **The replay starts by itself once a production model exists.** That's a consequence of the
+  human sign-off, not a timer at startup.
+  - Show plant time and a small "Replay (recorded plant history)" indicator.
+  - Add pause and resume only, as a recovery tool.
+
+### 3. Once red, it stays red
+
+- **Raising the alarm.** A motor enters warning, then critical, only after the sustained rule
+  validation uses for lead time (`EARLY_WARNING_SUSTAINED_ROWS` consecutive rows over the
+  threshold).
+- **Holding it.** Once critical, it stays critical (latched) until a completed work order clears
+  it. A warning can escalate, but it can't drop back to healthy without sustained evidence; choose
+  that rule, make it one named constant, and justify it.
+- **One rule everywhere.** Implement it once, in the API, and use it for:
+  - Fleet cards and sprites (their 0.15/0.4 tiers must follow the API thresholds);
+  - the twin;
+  - the HUD;
+  - rewind markers;
+  - the probability Run analysis acts on.
+- **Don't hide the data.** Keep the raw per-sample probabilities visible on the Asset 360 chart and
+  the HUD trend.
+- **False latches.** Over one full replay pass with no sandbox use, report how many motors that
+  never failed got latched (it should be 0).
+- **Tests:** the on-delay, the latch, and clearing on work-order completion.
+
+### 4. Bolt answers the hero questions
+
+Bolt answers these well, in template mode and with an LLM, while the analysis is still running
+and after it finishes:
+- "What's happening with MTR-042?"
+- "Give me the details."
+- "What are the possible fixes?"
+
+What its answers draw on:
+- **Before a contract exists:** live readings, the latched status and its trend.
+- **After a contract exists:** the contract's drivers, cost comparison, manual passages and
+  field-history precedents.
+
+Rules:
+- Bolt stays read-only and quotes only numbers its tools returned.
+- It points the engineer to the approval on Asset 360. It never approves anything itself.
+- Add these questions to the Bolt eval in `evals/bolt/` and keep its pass rate.
+
+### 5. Every approved motor comes back green
+
+For any motor, not just MTR-042: approving its Decision Contract makes the simulated CMMS take it
+offline for the planned downtime and bring it back on its healthy baseline. Green again, with
+`work_order_completed`. Sandbox faults included (see 6).
+
+### 6. Sandbox (in the 3-D Digital Twin)
+
+**The toggle.** A Sandbox toggle opens a panel. While it's on, the twin shows a clear "SANDBOX —
+simulated readings" banner.
+
+**What it offers:**
+- **Sliders** for rpm and temperature on the selected motor, applied live.
+  - Load and rpm changes should move the regime ring without raising an alarm, unless the model
+    really scores them as risky. That's the regime-awareness point.
+- **"Troubleshoot <motor>":** injects a drive-end bearing fault on the chosen motor, ramping fast
+  to full severity.
+  - Use the simulator's own fault signature. The model was trained on bearing failures, so that's
+    the fault it can honestly catch.
+  - It should go red within about 15 s.
+- **"Random fault":** the same, on a randomly chosen motor that isn't offline.
+- **"Shake up operations":** randomises rpm, load and temperature across motors within normal
+  operating ranges. Nothing should break.
+- **"Reset sandbox":** removes every override. Motors return to their recorded stream.
+
+**One data path.** Sandbox readings go through the real path: replay → MQTT → edge → control
+plane. One way to do it: the replay already polls the API for work orders, so it can poll for
+sandbox overrides the same way and apply them to its stream. The edge and control plane then score
+them exactly like plant data.
+
+**Tagging and isolation:**
+- Every sandbox reading is tagged as sandbox. Tagged rows are excluded from training, validation
+  metrics, drift and the rewind's lead-time figure.
+- Predictions, contracts and work orders that come from sandbox readings are marked "sandbox
+  scenario" in the API and the UI.
+- They're still real insert-only records, decided through `record_decision()`.
+- No simulator ground-truth field enters the sandbox path.
+
+**Reset vs repair:**
+- Approving a sandbox motor's contract ends its sandbox fault, and it comes back green through the
+  work order (see 5).
+- "Reset sandbox" also clears any alarm that sandbox readings alone raised, recorded as a sandbox
+  event. That way the presenter is never stuck with a red motor.
+
+**Tests:**
+- sandbox rows are excluded from training;
+- sandbox contracts are labelled;
+- reset clears sandbox-only alarms.
+
+### 7. One lead-time story
+
+The rewind shows two figures side by side:
+- this run's lead time from the sustained rule, labelled "this run: first sustained warning →
+  motor taken offline";
+- the validated figure from the registry, labelled "validated on held-out motors".
+
+### 8. Navigation
+
+- The landing view (`/`) is **Fleet**, the isometric/pixel view. Rename "Dashboard" back to "Fleet"
+  in nav, routes, labels and tests.
+- **3-D Digital Twin** gets its own route, listed directly under Bolt (Copilot) in the side menu.
+- X-Ray keeps working in both views.
+
+### 9. Script and run instructions
+
+Rewrite `docs/finals/demo-walkthrough.md` as the click path for the 10 steps above, with:
+- measured timings;
+- what to say at each beat;
+- a pre-demo checklist: reset, health check, browser zoom, performance mode, and template mode if
+  Wi-Fi drops;
+- recovery moves: if training fails, run the fallback prep command; if WebGL fails, stay on
+  Fleet; if a step stalls, pause or resume the replay.
+
+**Honest talk track for step 2.** The model learns from the fleet's own history: months of healthy
+running per operating regime, plus the motors that failed before. "It learned what normal looks
+like and what 'about to fail' looks like." Don't say it was trained only on healthy motors.
+
+Also update wherever this changes the facts:
+- `DEMO.md`;
+- the reset scripts' printed instructions;
+- `CLAUDE.md` §9, §10, §15 and §16;
+- `session-notes.md`.
+
+## Constraints
+
+- **§7 holds absolutely:**
+  - approvals only via `record_decision()`;
+  - no LLM-computed numbers;
+  - LLM keys read only in `apps/api/orchestrator.py`;
+  - insert-only records;
+  - the demo runs fully in LLM template mode.
+- **Don't regress Phase 0:**
+  - ground-truth isolation;
+  - separate maintenance and promotion approvals;
+  - the validation and parity gates;
+  - analyze reusing the production model.
+- **Don't regress Phase A:**
+  - every twin and HUD value traces to an API field;
+  - motion comes only from data (sandbox readings count as data, labelled as such);
+  - the MES feed feeds no decision;
+  - ≥45 fps on Iris Xe.
+- **Must keep passing:** `pytest`, `ruff check .`, the web build and tests, and
+  `docker compose build`.
+- **Tests:** only for the invariants named above, plus:
+  - startup produces no model and no predictions;
+  - the replay starts only once a production model exists;
+  - the nav order and labels.
+- **Scope:** don't build Bolt Designer or anything from Prompt B.
+
+## How to work
+
+- **Priority order** if time runs short:
+  1. Steps 1–8 of the demo, with re-timed faults and the latch.
+  2. Bolt's hero answers.
+  3. The twin, rewind and nav.
+  4. The sandbox.
+
+  A working hero flow without the sandbox beats both half-done.
+- **Commit** after each working milestone, on `finals` only. Never push, touch `main` or rewrite
+  history.
+- **Progress log.** Keep `docs/finals/status.md` current after every milestone: the time, the
+  milestone, the files changed, the tests run with their real results, and a specific "next". A
+  new session must be able to resume from it alone.
+- **Rehearse.** At the end, run all 10 steps yourself on a reset stack. You may run
+  `.\scripts\demo_reset.ps1` and `docker compose build`. Record the measured timings in the
+  walkthrough.
+- **Independent check.** At the end, one fresh-context sub-agent plays a skeptical ABB judge
+  following the walkthrough. It flags anything that happens without a reason on screen,
+  flickers, mixes sandbox and plant data, or can't be traced to data. Fix what it flags.
+- **Final report, in this order:**
+  1. whether all 10 steps work end to end every time, with timings and the new metrics;
+  2. what was cut;
+  3. the exact commands to reset and rehearse.
