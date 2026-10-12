@@ -239,3 +239,27 @@ Prompt B (Bolt Designer) build on this. Keep these true.
   `REPLAY_SPEED=900`, `CONTROL_PLANE_URL=http://127.0.0.1:8010` (held by the gate).
 - Driver script: scratchpad `hero_measure.py` (train → sign-off → watch MTR-042 → analysis → Bolt
   → approve → green; writes a JSON timeline). Timings are in `docs/finals/demo-walkthrough.md`.
+
+## What the rehearsals taught (2026-10-12, keep in mind for the slides and Q&A)
+
+- **Training on stage takes about 72 s on the Docker stack** with 4 trials per family (replay held,
+  nothing else running); the same run took 2.5-3 min natively while the Docker stack was also
+  streaming. Validation + parity are ~35 s of it. Do not open anything heavy during step 2.
+- **The champion varies run to run** (Optuna): random forest in every Docker/native run on the
+  re-timed data (recall 0.92-0.93, precision 0.90-0.96, lead time 53-59 h, IMS 0.88-0.91). One
+  native run produced a LightGBM whose raw scores reached -1.7e6 on pure leaves; Platt scaling on
+  that input was a flat line (test recall 0.33) and the edge parity gate blocked it — the gate
+  did its job, and the fix (calibrate every family on `predict_proba`, `_ProbabilityOnly` in
+  `agents/validation/checks.py`, unwrapped by `lifecycle._unwrap_estimator`) removed the failure
+  mode. If a train run ever fails the gate on stage: train again (it is a different Optuna
+  search) or run the fallback (`.\scripts\demo_reset.ps1 -Prep`).
+- **There is no amber phase to promise.** The calibrated probability steps from < 0.001 to 0.81
+  within one 10-minute sample, so the warning and the critical alarm fire on the same sample.
+  Say "amber then red" only if you see it; the alarm log (`GET /alarms`, the HUD status line) is
+  the honest record.
+- **LLM mode costs time:** Run analysis 30 s (the provider drafts the paragraph) vs 4-5 s in
+  template mode; Bolt 15-30 s per answer vs < 1 s. Ask Bolt the first question as soon as the
+  analysis starts. Template mode is the fallback and the demo is identical otherwise.
+- **This run's lead time** on the rewind depends on how long the motor sat red before the
+  approval (24-39 h in the rehearsals); the validated figure (53.1 h) is the registry's.
+- **False latches:** none over a full replay pass without the sandbox (only MTR-042 alarmed).
