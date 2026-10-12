@@ -209,3 +209,16 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
   (p 0.64) at 74 s; Run analysis to the gate in 17 s with no training step; after approval
   "in maintenance" within 10 s and green with the work order completed by 30 s; registry
   unchanged. Steps and lines: `docs/finals/demo-walkthrough.md`.
+
+## 2026-10-11 17:40 — calibration and display rule, final rehearsal
+
+- Platt (sigmoid) calibration when the calibration motors hold < 2 failure events (`f3ef9ca`);
+  metrics unchanged (recall 0.865, precision 1.0, lead time 41.5 h, IMS 0.844, parity 3e-5),
+  Brier after 0.00044. Displayed / analysed probability = median of the last three predictions
+  (`0c7ae68`): the first sigmoid rehearsal had the per-sample probability flapping (0.68, 0.0,
+  0.81) and an analysis fired on a 0.0 sample drafted a run-to-failure contract. Full suite 217
+  passed, pushed.
+- Final rehearsal at REPLAY_SPEED=900 on the reset stack (model v64634): red at 111 s with no
+  flicker, analysis 15 s with the same probability as the card (maintain_now), approval →
+  in maintenance → green with the work order completed in 14 s, registry untouched.
+  `docs/finals/prep-report.json` is the v64634 record.
