@@ -30,6 +30,14 @@ don't invent new claims.
   - *Scalability:* asset → site → enterprise story via the Decision Contract as an MES/CMMS
     integration point (say this explicitly — it's a real scalability argument, not filler).
   - *UX / Presentation:* one motor, one emerging fault, one decision — no feature-tour demo.
+- **Finals headline (spoken, 2026-10-12; the formal one-liner above stays unchanged):**
+  "Thor catches it. Bolt explains it. You sign it. And every repair makes it smarter."
+  And the bridge from last round: "Last round, Thor stopped at the decision. Now it finds out
+  what the technician found, and learns from it." Say what it means literally: a technician's
+  finding on a completed work order is a person's statement, stored insert-only; a confirmed
+  bearing damage labels that motor's pre-repair history for the next training run; the gate, not
+  the finding, decides whether the retrained model is better. Never claim a finding improves the
+  model.
 - **Tech stack to name-drop:** Python, FastAPI, MLflow, LangGraph, Docker, SHAP, LightGBM/XGBoost,
   PostgreSQL — these are ABB's own suggested Theme 1 technologies, so use them by name.
 - **Never:** claim a specific dollar savings as fact (say "under these configurable plant-cost

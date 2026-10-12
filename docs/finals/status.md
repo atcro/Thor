@@ -557,6 +557,86 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
   still shown in the HUD with their contract id.
 - **Next:** vitest + build, full pytest, rebuild images, final reset for the team, final report.
 
+## 2026-10-12 — Phase A.3: Thor learns from every repair + API Key Up / Down
+
+Brief: `docs/finals/prompt-A3.txt` (Bolt Designer and the sandbox cut by the team). Built natively
+on branch `finals`; the team rebuilds Docker.
+
+- **Built.** (1) Global **API Key Up / Down** in the header of every screen: `orchestrator.key_up /
+  key_down / key_state` (the only module that holds a key), `GET /llm/key`, `POST /llm/key/up|down`,
+  `llm.key` in `/system/health`, `KeySwitch.tsx`; starts Down (`LLM_KEY_ON_START`). Down blanks the
+  key fields on the cached Settings (no client is ever cached); Up rebuilds Settings from the
+  process environment / `.env`. Bolt replies and contracts keep their `llm` / `template` chip.
+  (2) **"What did the technician find?"**: insert-only `repair_findings` (`finding_id, contract_id,
+  asset_id, finding, note, recorded_by, recorded_at, plant_ts, sandbox, supersedes`),
+  `POST/GET /findings` (409 unless the work order is completed; a correction supersedes, both rows
+  stay), `WorkOrder.finding`, the Asset 360 panel, the Fleet card line, **alarm trust** on Fleet and
+  ModelOps (`GET /findings/trust`, counts only below five acted-on alarms). (3) **Bolt remembers**:
+  `search_field_history` gains `this_plant` (deterministic failure-mode / asset-family match,
+  `apps/api/findings.plant_precedent`) next to the public `cases` ("public work orders, not this
+  plant"); template mode answers "Have we seen this before?" / "Has this happened before?" plant
+  findings first, "no confirmed finding yet" when none; eval category `plant` (4 cases, 66 total).
+  (4) **Training learns from confirmed findings**: `agents/ml_architect/labels.py`; `_telemetry`
+  = recorded history + the confirmed motor's rows up to the intervention (`failure_within_h` =
+  hours until it; the live replayed rows included; the simulator's values for that motor
+  discarded); the split is computed on the history alone and the motor is then moved into
+  train with a note; `GraphState.label_sources` → the **label ledger** in AutoML Studio with the
+  findings queued for the next run (`GET /findings/ledger`). NFF / Other / sandbox change nothing.
+  (5) **Alarm → signed decision** timer on an approved contract (`lib/timer.ts`, wall clock,
+  tooltip). (6) Docs: CLAUDE.md §3/§6/§7/§9/§15/§16, model card (label sources, intervention-time
+  limit), walkthrough (steps 11–15, "Phase A.3 beats", Scenario 2), positioning skill (spoken
+  headline), session notes (what Down means, design notes), INTERFACES.md.
+- **Cut / shaped.** The Fleet card shows the finding line (or "What did the technician find? →",
+  the card already links to Asset 360) rather than a second copy of the form inside a link. Bolt
+  Designer stays on hold (CLAUDE.md §15). Nothing in `apps/api/alarms.py` or the replay changed.
+- **Verified (tests).** `tests/test_key_switch.py` (Down: no client, `_llm_enabled` False on every
+  path, Settings fields blank, env untouched; Up → Down → Up; `LLM_KEY_ON_START`; the routes and
+  `/system/health` never carry the key; only `orchestrator.py` touches the switch);
+  `tests/test_findings.py` (insert-only over HTTP, supersede, 409s, sandbox excluded from trust;
+  **zero findings → the training frame is the same object as the history and the split is
+  identical**; one confirmed finding → MTR-042's 60 pre-repair rows labelled to the event, none
+  after it, the simulator's values gone, the other motors byte-identical, MTR-042 moved from test
+  to train with the note, test group otherwise unchanged; NFF / Other / sandbox → no training
+  change; label window stops at the previous repair; a > 1 h gap before the outage is skipped;
+  Bolt cites the finding with source and name, never a superseded, sandbox or non-existent one;
+  Bolt refuses to act even when nothing is pending). Web: `lib/timer.test.ts`,
+  `DecisionContractPanel.test.tsx` (the timer row), `Layout.test.tsx` (the switch flips through
+  `POST /llm/key/up|down`, never shows a key). Bolt eval template mode **66/66** (plant 4/4).
+- **Verified (rehearsal, native second stack on 8010/8011/1884 at 900×, Docker stack also
+  running, key Down from start):** train 127.6 s (RF v5797, gate passed, test recall 0.919 /
+  precision 0.962 / lead 53.1 h / IMS 0.888 — the prep report's numbers) → sign-off 5.3 s → 24
+  green 0.3 s later → **MTR-042 critical 58.7 s after the sign-off** (no other motor alarmed) →
+  Run analysis 4.1 s, contract `explanation_source=template`, 0 LLM calls → Bolt's three answers
+  0.3 / 1.3 / 0.7 s (template) → approval → offline 1.6 s → healthy with the work order completed
+  14.1 s; alarm → signed decision 52.3 s (held red 30 s on purpose) → finding `201` (trust 1 acted
+  on / 1 confirmed; the Fleet card carries it) → "Have we seen this before?" cites `MTR-042,
+  2025-08-26 04:20: Confirmed: bearing damage (work order dc_…, recorded by J. Ortega)` before the
+  public cases → ledger queued MTR-042 → **retrain with the finding: 171 s, RF v6099, gate
+  PASSED** (test recall 0.915, precision 0.980, F1 0.946, lead time 49.5 h over the five remaining
+  test motors, IMS 0.878, parity 4.7e-6; split notes: "MTR-042 … moved from test to train";
+  label ledger: MTR-042 confirmed by work order, 3626 rows labelled); its promotion rejected so
+  production stayed v5797. Scenario 2: Up (`provider openai`) → "What's happening with MTR-042?"
+  9.4 s LLM → Down → 0.2 s template: **same probability (0.000 / 0.00 and the contract's 0.78),
+  same status word**; the same check while red: 0.812 / 0.81, 0.78, critical in both. Refusal:
+  "Nothing is waiting for approval right now. I cannot approve…" (fixed during the rehearsal: the
+  template only listed pending items when nothing was pending). No `sk-` in any response.
+  Screenshots (headless Chrome, Vite on 5175 → 8010): header `API Key Down` on every screen,
+  Fleet `Alarm trust` line and `technician: Confirmed: bearing damage · J. Ortega` on the card,
+  the Asset 360 panel with the stored row, the Studio label ledger with `in this run` after the
+  retrain, ModelOps trust line, Copilot header.
+- **Final verification (native, 2026-10-12):** `ruff check .` clean; `pytest` **263 passed** (100 s;
+  252 before A.3); vitest **8 files / 28 tests** (6 / 24 before); `npm run build` ok; Bolt eval
+  template mode **66/66**. New files normalised to LF.
+- **Honest limits (for Q&A).** The intervention time is not a failure time (model card §12); the
+  retrained model passing the gate is one run, not evidence that findings improve the model; the
+  plant has one failure mode so far, so "same failure mode" matching is bearing vocabulary plus
+  the contract's drivers; right after the repair the displayed probability stays at the last
+  median (0.81) for a few seconds until three post-outage predictions exist (status is already
+  healthy); the LLM and template readings can differ by one 10-minute sample between two questions.
+- **Not done.** Docker images not rebuilt here (the team does); LLM mode of the full Bolt eval not
+  re-run (template 66/66; the LLM path was exercised live in the rehearsal with gpt-5); the
+  Docker rehearsal of the A.3 beats is for the team's reset.
+
 ## 2026-10-12 07:00 — final verification on the final images; Phase A.1 closed
 
 - After the audit fixes: `pytest` 252 passed (97 s), `ruff` clean, vitest 6 files / 24 tests, web

@@ -1,4 +1,9 @@
-# Live demo walkthrough (6 minutes, shown by hand)
+# Live demo walkthrough (finals: two scenarios, shown by hand)
+
+Phase A.3 (2026-10-12) adds the beats after step 8 (the finding, Bolt's recall, the label
+ledger) and Scenario 2 (API Key Up / Down). The header of every screen shows the switch; it
+starts **API Key Down** and stays Down for the whole of Scenario 1. See "Phase A.3 beats" below
+for the click path and the measured timings.
 
 Rehearsed on 2026-10-12 on the re-timed data (native stack at 900×, then the Docker stack after
 `.\scripts\demo_reset.ps1`). Every timing below is measured, not estimated; the ones that depend
@@ -32,9 +37,15 @@ prediction yet`. Open http://localhost:5173 (Chrome). Then, in this order:
 | 8 | **Fleet** | `offline · in maintenance` within 3 s, green with the work order completed within ~15 s | "The plant took it offline and brought it back on its healthy baseline. The registry did not change." |
 | 9 | **3-D Digital Twin** (last menu item) → **Overview** → **X-Ray** → **Line 3** → click MTR-042's label → **Open in Asset 360** or close | Lines in physical space, live counters bottom-left, model provenance top-right; the HUD with probability and status line, state and sensors, top drivers, decision (PLC tags and MES feed folded under **Plant integration**) | "Point at any pixel and we can trace it to its source." |
 | 10 | (optional, the team may drop it) **Rewind** → **Load stored predictions** → **critical alarm** / **work order** | Two figures side by side: this run's lead time and the validated 53.1 h | |
-| 11 | Done. To run it again: `.\scripts\demo_reset.ps1` | | |
+| 11 | **Asset 360** (MTR-042) → **What did the technician find?** → *Confirmed: bearing damage*, a note, the technician's name → **Record finding** | The row appears at once; Fleet's summary line reads `Alarm trust · Alarms acted on: 1 · confirmed: 1 · …`; the MTR-042 card reads `technician: Confirmed: bearing damage · <name>` | "The plant tells Thor what it found. A person signs it; it is stored insert-only." |
+| 12 | **Copilot · Bolt**, asset `MTR-042`: "Have we seen this before?" | < 1 s (template): *This plant* first — the finding, its work order id and the name — then the public cases labelled "not from this plant" | "Bolt remembers this plant's repairs and keeps them apart from public precedent." |
+| 13 | **AutoML Studio** → the run → **Label ledger** (under the split) | Six simulator-history failures and `MTR-042 · queued` for the next training run | "The next training run learns from it. We do not retrain on stage." |
+| 14 | Scenario 2: header **API Key Down** → click → **API Key Up**; Bolt: "What's happening with MTR-042?"; click → **API Key Down**; the same question; then "Approve the repair on MTR-042." | LLM reply in 9–15 s marked *drafted by LLM*; template reply < 1 s marked *template*, the same probability and status; the last one is refused | "Same numbers, different prose. Everything you saw before this ran without a language model. And Bolt still cannot approve." |
+| 15 | Done. To run it again: `.\scripts\demo_reset.ps1` | | |
 
-Recovery: training fails or stalls → `.\scripts\demo_reset.ps1 -Prep` (trains and promotes as
+Recovery (A.3): **API Key Up** shows `no key at source` → the `.env` next to the compose file
+has no key; stay Down, the demo is identical. A finding returns 409 → the work order is not
+`completed` yet (wait for the green card). Recovery: training fails or stalls → `.\scripts\demo_reset.ps1 -Prep` (trains and promotes as
 `demo-prep@thor`, then continue at step 4); a step stalls → **Pause** / **Resume** in the top
 bar; WebGL fails → stay on Fleet (X-Ray works there too); Wi-Fi drops → everything runs in
 template mode, say so. Do not press **Train new model** a second time after the sign-off.
@@ -72,6 +83,9 @@ promotion is approved, and the `edge` and `replay` no longer wait for `prep`. Ev
    back to the deterministic template for the explanation and for Bolt (the chip says
    "template"). To force it on purpose, start the stack with the key blank in `.env`.
 5. Do **not** train before the judges arrive: the model and the sign-off are the story.
+6. **API Key Down** in the header (it starts Down; `GET /llm/key` → `{"key":"down"}`). Leave it
+   Down until Scenario 2. For Scenario 2 the repo-root `.env` must hold a working key; check
+   once with a click (Up shows the provider, Down again) before the judges arrive.
 
 ## The 9 steps (click path, what to say, measured timings)
 
@@ -204,6 +218,75 @@ to the validated figure."
 passes until the work order), so the approval can wait as long as the Q&A needs. The one clock
 that matters is the six-minute slot: in LLM mode the analysis plus three Bolt answers take about
 1.5 minutes.
+
+## Phase A.3 beats (after step 8; measured natively on 2026-10-12 at 900×, Docker stack also running)
+
+Scenario 1 runs with the key **Down** throughout: train, sign off, MTR-042 red, Run analysis
+(the contract chip says *template*), Bolt, approve, offline, back green. Say: "everything you
+have just seen ran without a language model." Then:
+
+### 9a. What did the technician find? (second presenter, as the technician)
+
+Screen: **Asset 360** (MTR-042), the panel **What did the technician find?** appears once the
+work order is `completed` (it is not shown before). Choose **Confirmed: bearing damage**, type a
+note ("drive-end bearing outer race spalled; bearing replaced") and the technician's name,
+**Record finding**.
+
+Measured: the row is stored and listed within the same second (`POST /findings` → 201); the
+Fleet summary line reads `Alarm trust · Alarms acted on: 1 · confirmed: 1 · no fault found: 0 ·
+awaiting finding: 0` and the MTR-042 card reads `technician: Confirmed: bearing damage · <name>`
+within one poll (2 s). ModelOps shows the same line. A wrong entry is corrected with **Correct
+this finding**: a new row supersedes the old one, both stay listed.
+
+Say: "Thor used to stop at the repair. Now the plant tells it what was found, a named person
+signs it, and it is stored like a contract: insert-only."
+
+### 9b. Bolt remembers (key still Down)
+
+Screen: **Copilot · Bolt**, asset context `MTR-042`: "Have we seen this before?" (also "Has
+this happened before?").
+
+Measured: < 1 s. The reply quotes **This plant** first — `MTR-042, <plant date>: Confirmed:
+bearing damage (work order dc_…, recorded by <name>); note: "…"; the contract's drivers were
+…` — then the public FMUCD cases under "public work orders, not this plant". Before any
+finding exists the same question answers "This plant: no confirmed finding yet".
+
+Say: "Bolt quotes the finding with its source and the name. It never invents one."
+
+### 9c. The label ledger (AutoML Studio)
+
+Screen: **AutoML Studio**, the train run, **Label ledger** under the asset split: the six
+simulator-history failures ("stands in for imported CMMS records") and, under *Queued for the
+next training run*, `MTR-042 · confirmed by work order dc_…, recorded by <name>` with the
+labelling rule.
+
+Say: "The next training run labels MTR-042's pre-repair history from the intervention time and
+keeps it in the train group only. We do not retrain on stage; the gate decides whether the
+retrained model is better." If a judge asks: **Train new model** does it (measured natively:
+171 s, random forest v6099, gate **passed**, test recall 0.915, precision 0.980, lead time
+49.5 h on the five remaining test motors, parity 4.7e-6; MTR-042 listed as `confirmed by work
+order … 3626 rows labelled`). Reject the resulting promotion in ModelOps unless you mean to
+replace the production model.
+
+### Scenario 2 — trust (API Key Up / Down)
+
+1. Header → **API Key Down** → click → **API Key Up** (`provider openai` next to it). Bolt,
+   asset `MTR-042`: "What's happening with MTR-042?". Measured: 9.4 s (gpt-5, venue Wi-Fi
+   dependent; 14.2 s while the motor was red), chip *drafted by LLM*.
+2. Click → **API Key Down**. The exact same question. Measured: 0.2 s, chip *template*.
+   **Verified: both answers carry the same numbers** — after the repair: probability 0.000 /
+   0.00, status healthy, the contract's 0.78 and 13,500; while red (checked too): 0.812 / 0.81,
+   status critical, the contract's 0.78. The readings line can differ by one 10-minute sample
+   because the plant keeps moving between the two questions; say so if asked. "What's
+   happening" lists no drivers in either mode; "Give me the details." does (template) and is
+   the question to use if a judge wants the drivers compared.
+3. "Approve the repair on MTR-042." → refused in either mode: "Nothing is waiting for approval
+   right now. I cannot approve, reject, promote, schedule or train anything -- decisions are
+   recorded in the Thor UI."
+
+What Down means, precisely (say this, not more): the API drops the key from memory and every
+path falls back to templates; the `.env` file and the container's environment are untouched;
+Up re-reads the key from there. `GET /llm/key` never carries the key.
 
 ## Recovery moves
 

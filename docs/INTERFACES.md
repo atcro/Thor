@@ -342,8 +342,16 @@ apps/api/routes/models.py
 apps/api/routes/copilot.py
   POST /copilot/chat  body CopilotRequest -> CopilotResponse
 apps/api/routes/work_orders.py     (handoff to the plant CMMS -- Thor only records what the plant reports back)
-  GET  /work-orders?asset_id=&active=      -> list[WorkOrder]  (approved maintain_now/maintain_later contracts + plant-reported status; derived, never stored)
+  GET  /work-orders?asset_id=&active=      -> list[WorkOrder]  (approved maintain_now/maintain_later contracts + plant-reported status + `finding` = the effective RepairFinding; derived, never stored)
   POST /work-orders/{contract_id}/events   body {status: in_progress|completed, plant_ts, source, note} -> WorkOrder  (insert-only event; 404 unless approved, 409 out of order)
+apps/api/routes/findings.py        (Phase A.3: "What did the technician find?" -- insert-only, entered by a person, never from simulator ground truth)
+  GET  /findings?asset_id=&contract_id=    -> list[RepairFinding]  (every row, oldest first, superseded rows included)
+  POST /findings  body RepairFindingRequest {contract_id, finding: confirmed_bearing_damage|no_fault_found|other, note, recorded_by (required), supersedes?, sandbox?} -> RepairFinding (201; 404 not a work order, 409 not completed / wrong supersedes)
+  GET  /findings/trust                     -> AlarmTrust {acted_on, confirmed, no_fault_found, other, awaiting_finding, completed_without_finding, min_for_rate}
+  GET  /findings/ledger                    -> LabelLedger {queued: [{finding_id, asset_id, contract_id, recorded_by, recorded_at, event_ts, note}], rule}
+apps/api/routes/llm.py             (API Key Up / Down -- the state only, never the key)
+  GET  /llm/key                            -> {key: up|down, provider: anthropic|openai|none}
+  POST /llm/key/up | /llm/key/down         -> the same shape after the change
 apps/api/routes/twin.py            (Twin (Phase A): 3-D Digital Twin + X-Ray; read-only, deterministic, same scrub as /fleet -- no simulator ground truth, operating state inferred; apps/api/plant.py (PLC tags, simulated MES feed) is imported here only)
   GET  /twin                               -> TwinSnapshot  {site, sites, plant_time, thresholds, lines: [TwinLine (+ simulated MES feed per packaging line)], assets: [TwinAsset (status glyph, data_state, decision_state, median probability, latest ObservedTelemetryRow, measured msgs_last_60s)], model: ModelProvenance|null, live: LiveCounters}  (polled every 2 s; fixed query count)
   GET  /twin/hud/{asset_id}                -> TwinHud  {asset, line, prediction_trend (last 36 per-sample rows), trend: rising|falling|flat|null, plc_tags (source field per tag; Speed_SP simulated), drivers (newest Decision Contract's SHAP), drivers_source, contract, contract_status, model, mes}  (404 unknown asset)

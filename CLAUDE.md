@@ -34,7 +34,7 @@ and use its language verbatim whenever drafting submission text; don't invent ne
 
 | Area | Choice | Note |
 |---|---|---|
-| LLM | OpenAI (chat completions, function calling) or Anthropic Claude (Messages API, tool use) — selected by `LLM_PROVIDER` / whichever key is set | Read **only** in `apps/api/orchestrator.py` — two calls per run: route, then draft the explanation; plus the Bolt tool loop |
+| LLM | OpenAI (chat completions, function calling) or Anthropic Claude (Messages API, tool use) — selected by `LLM_PROVIDER` / whichever key is set | Read **only** in `apps/api/orchestrator.py` — two calls per run: route, then draft the explanation; plus the Bolt tool loop. One global **API Key Up / Down** switch (`key_up()` / `key_down()`, header of every screen) governs every path; Thor starts Down |
 | ML | scikit-learn, XGBoost, LightGBM | No CNN/autoencoder — dropped by design, not by omission |
 | AutoML search | Optuna | Tree models only |
 | Explainability | SHAP | Feeds `explain()` in the Reliability Agent |
@@ -112,6 +112,7 @@ never "regime"; identifiers, API fields, DB columns and feature names keep `regi
 | 07 | Reliability | `explain()`, `retrieve_manual_context()`, `calculate_failure_cost()`, `find_maintenance_window()`, `run_whatif()`, `create_decision_contract()` | Decision Contract + recommendation → 09 |
 | 08 | MLOps | `check_edge_parity()` (ONNX + sidecar vs calibrated centre on held-out vectors; failing parity blocks promotion), `register_model()`, `compare_champion()`, `promote()` (refuses failed validation or parity), `detect_drift()`, `deploy_edge()` (tree → ONNX, calibration + baseline → sidecar) | Promotion request → 09; on drift, re-triggers 05 |
 | 09 | Human Approval Gate | `present_evidence()`, `record_decision()` | Two separate decisions, never substitutable: a **maintenance** approval (contract) → logged Decision Contract handed to the plant as a work order, nothing else; a **promotion** approval (ModelOps, `decide_promotion_db()`) → `promote()` + edge deploy. A failed validation gets no promotion request and `promote()` refuses it |
+| — | Repair findings (Phase A.3, `apps/api/findings.py`) | `record_finding()`, `alarm_trust()`, `field_failure_events()`, `plant_precedent()`; labels in `agents/ml_architect/labels.py` (`apply_field_labels()`, `adopt_into_train()`) | "What did the technician find?" on a completed work order, insert-only `repair_findings` → alarm trust (Fleet, ModelOps); Bolt's `search_field_history.this_plant`; a **Confirmed: bearing damage** labels that motor's pre-repair rows for the NEXT `mode=train` run (train group only). NFF / Other change nothing in training |
 
 `promote()` models the lifecycle (`candidate → validated → shadow → production`) as a **database
 enum**, not live traffic-splitting — there is no real production traffic to shadow-test against
@@ -120,7 +121,8 @@ in a demo. Don't build real shadow/canary infrastructure.
 The orchestrator itself (`apps/api/orchestrator.py`) is the only *agent* in the AI sense — the
 five groups above are deterministic toolboxes it calls. Its own surface is small: `route()`
 picks the next tool from `GraphState`, `await_approval()` pauses the graph at the Human
-Approval Gate node, `resume()` continues once a decision is recorded.
+Approval Gate node, `resume()` continues once a decision is recorded, and `key_up()` /
+`key_down()` / `key_state()` are the API Key switch (`GET /llm/key`, `POST /llm/key/up|down`).
 
 ## 7. Non-negotiable rules
 
@@ -134,10 +136,17 @@ Approval Gate node, `resume()` continues once a decision is recorded.
   deterministic Python already produced — it does not produce them itself.
 - **NEVER** read `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` outside `apps/api/orchestrator.py`. One file calls the LLM;
   every other module is deterministic local compute. This is what makes the governance claim
-  checkable rather than rhetorical.
+  checkable rather than rhetorical. The global **API Key Up / Down** switch lives there too:
+  Down drops the key from memory (blank fields on the cached `Settings`, no cached client) and
+  every path falls back to templates; Up re-reads it from its source (process environment /
+  `.env`, never modified). Thor starts Down (`LLM_KEY_ON_START=down|up`). The key never reaches
+  the browser, a log line or an error message; `GET /llm/key` returns `{key, provider}` only.
 - **NEVER** let the LLM invent a manual citation. `retrieve_manual_context()` returns retrieved
   passages with their source and section; the explanation may only quote what it returned.
-- **ALWAYS** log Decision Contracts as immutable rows (insert-only; no in-place edits).
+- **ALWAYS** log Decision Contracts as immutable rows (insert-only; no in-place edits). The same
+  rule covers approvals, work-order events and **repair findings** ("What did the technician
+  find?"): a finding is entered by a named person on a completed work order, never derived from
+  simulator ground truth, and a correction is a new row that supersedes the old one (both stay).
 - **ALWAYS** default new agents/services to the `docker-compose.yml` — if it doesn't start with
   `docker compose up`, it isn't done.
 
@@ -170,7 +179,14 @@ a full Playwright e2e suite.
    approval is always visible, and the seeded historical failures never come back "live" (rows
    with an existing `(asset_id, ts)` are ignored on insert).
    Only *completed* failures produce training labels — an in-progress degradation is treated as
-   unknown future, never as a known outcome. **Status is one rule in the API**
+   unknown future, never as a known outcome. **Findings feed labels (Phase A.3, 2026-10-12):** a
+   technician's **Confirmed: bearing damage** on a completed work order turns that motor's rows
+   from its previous completed repair (or the start of history) up to the moment it went offline
+   into a labelled failure (`failure_within_h` = hours until that intervention; the live replayed
+   rows included) for the NEXT `mode=train` run; the split is computed exactly as before and the
+   motor is then moved into TRAIN with a note. The event time is the intervention, not a failure,
+   so the label is conservative; the gate, not the finding, decides whether the retrained model is
+   better. With zero findings training is byte-for-byte what it was (tested). **Status is one rule in the API**
    (`apps/api/alarms.py`): three consecutive predictions ≥ 0.3 raise a warning, three ≥ 0.5
    raise a critical that stays latched until a completed work order clears it, a warning clears
    after six consecutive predictions below 0.3. Fleet, twin, HUD, rewind markers and Bolt all read
@@ -307,7 +323,27 @@ Competing teams also build with Claude, so polish and a coherent story beat feat
   8. the motor goes offline and comes back green; 9. the 3-D Digital Twin (HUD, physical layout,
   rewind with "this run" vs "validated" lead time side by side). Click
   path, measured timings and recovery moves: `docs/finals/demo-walkthrough.md`.
-- **Phase B — Bolt Designer.** This is Bolt's design mode, with its own nav item, Bolt's chat on
+- **Phase A.3 — Thor learns from every repair + API Key Up / Down** (`docs/finals/prompt-A3.txt`,
+  built 2026-10-12). Spoken headline: "Thor catches it. Bolt explains it. You sign it. And every
+  repair makes it smarter." One new capability plus a switch that proves the governance claim live:
+  1. **API Key Up / API Key Down** in the header of every screen (`KeySwitch.tsx`, `routes/llm.py`,
+     `orchestrator.key_up/key_down`). Starts Down. Every reply and contract carries its
+     `llm` / `template` label.
+  2. **"What did the technician find?"** on a completed work order (Asset 360 form, Fleet card
+     line): Confirmed: bearing damage / No fault found / Other, a note and a required name;
+     insert-only `repair_findings`, corrections supersede. **Alarm trust** counts on Fleet and
+     ModelOps (counts only below five acted-on alarms).
+  3. **Bolt remembers this plant's repairs:** `search_field_history` returns `this_plant`
+     (findings joined with their contract, matched by failure mode and asset family) separately
+     from the public FMUCD cases; template mode answers "Have we seen this before?" from it and
+     says "no confirmed finding yet" when there is none (eval category `plant`).
+  4. **Training learns from confirmed findings** (§9): the label ledger in AutoML Studio shows
+     each completed failure's source and the findings queued for the next run.
+  5. **Alarm → signed decision** timer on an approved contract (wall clock, `lib/timer.ts`).
+  Demo beats and timings: `docs/finals/demo-walkthrough.md` (Scenario 1 runs with the key Down;
+  Scenario 2 flips it Up then Down on the same question). Verification: `docs/finals/status.md`.
+- **Phase B — Bolt Designer** (on hold: cut from the finals on 2026-10-12, roadmap material for the
+  slides). This is Bolt's design mode, with its own nav item, Bolt's chat on
   the left and a spec workbench on the right. It answers a judge's question ("could it be used to
   create a motor?").
   - Deterministic code compares fleet spec and measured performance and proposes a spec envelope.
@@ -460,3 +496,15 @@ Facts that save exploration. Re-verify anything that looks wrong rather than tru
   | Replay indicator, Fleet rename, nav, state wording | `apps/web/src/components/Layout.tsx`, `apps/web/src/screens/Fleet.tsx` |
   | Compose profile `prep`, reset scripts | `infra/docker-compose.yml`, `scripts/demo_reset.ps1`, `scripts/demo_reset.sh` |
   | Tests | `tests/test_alarms.py`, `tests/test_twin.py`, `tests/test_simulator.py` |
+
+- **Where Phase A.3's code lives (learning from repairs, API Key switch):**
+
+  | Area | Files |
+  | --- | --- |
+  | API Key Up / Down (the only module that holds a key) | `apps/api/orchestrator.py` (`key_up`, `key_down`, `key_state`, `_key_is_up`), `apps/api/routes/llm.py`, `llm.key` in `/system/health` |
+  | Header switch, reply labels | `apps/web/src/components/KeySwitch.tsx`, `Layout.tsx`, `SourceChip` in `ui.tsx` |
+  | Findings (insert-only), alarm trust, training events, Bolt's plant precedent | `apps/api/findings.py`, `apps/api/routes/findings.py`, `repair_findings` + `effective_findings()` in `apps/api/db.py`, schemas `RepairFinding*`, `AlarmTrust`, `FieldFailureEvent`, `LabelSource`, `LabelLedger` |
+  | Labels from findings, train-only adoption, label ledger | `agents/ml_architect/labels.py`; `_telemetry` / `_profile` and `tool_field_failure_events` / `tool_apply_field_labels` / `tool_adopt_into_train` in `apps/api/orchestrator.py`; `GraphState.label_sources` |
+  | Bolt: `search_field_history.this_plant`, template "Have we seen this before?" | `copilot_search_field_history`, `_template_history_text`, `_template_plant_findings` in `apps/api/orchestrator.py`; eval category `plant` in `evals/bolt/make_cases.py`, seed in `run_bolt_eval.py` |
+  | UI: finding form, trust line, label ledger, timer | `apps/web/src/components/{RepairFindingPanel,AlarmTrustLine,LabelLedgerPanel}.tsx`, `lib/timer.ts`, `DecisionContractPanel.tsx`, screens `Asset360`, `Fleet`, `ModelOps`, `Studio` |
+  | Tests | `tests/test_key_switch.py`, `tests/test_findings.py`, `apps/web/src/lib/timer.test.ts`, `Layout.test.tsx` |

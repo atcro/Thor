@@ -266,6 +266,54 @@ Prompt B (Bolt Designer) build on this. Keep these true.
   approval (24-39 h in the rehearsals); the validated figure (53.1 h) is the registry's.
 - **False latches:** none over a full replay pass without the sandbox (only MTR-042 alarmed).
 
+## Phase A.3 (2026-10-12): what "API Key Down" means, exactly
+
+- **Where the key comes from.** Natively, pydantic-settings reads `ANTHROPIC_API_KEY` /
+  `OPENAI_API_KEY` from the process environment first and the repo-root `.env` second. In Docker
+  the `api` service gets `.env` through `env_file`, so inside the container the key is a process
+  environment variable (`.env` itself is not in the image, `.dockerignore`). `get_settings()` is
+  an `lru_cache`d `Settings` object: the one in-memory copy of the key.
+- **Down** (`orchestrator.key_down()`, `POST /llm/key/down`): sets the switch to Down and blanks
+  `anthropic_api_key` / `openai_api_key` on that cached `Settings` object. No client is cached
+  anywhere (clients are built per call and discarded), so nothing in Thor's runtime objects holds
+  the key. Every path checks the switch first: `_provider()` is `none`, `_api_key()` /
+  `_openai_key()` are blank, `_llm_enabled()` is False, `_llm_client()` / `_openai_client()`
+  raise, `llm_status()` says template, and Bolt, `draft_explanation` and the routing call use the
+  templates. **What Down does not do:** it does not modify or delete `.env`, and it does not
+  remove the variable from the process environment (natively or in the container) -- that is
+  the source Up re-reads from, and no code path reads it except `key_up()` (CLAUDE.md §7,
+  `tests/test_key_switch.py::test_only_orchestrator_touches_the_switch_state`). Say on stage:
+  "the API drops the key from memory; nothing in Thor holds it until a person turns it back on",
+  not "the key is gone from the machine".
+- **Up** (`key_up()`, `POST /llm/key/up`): clears the settings cache and rebuilds `Settings` from
+  the same source, then sets the switch Up. With no key at the source it reports
+  `provider: none` and stays in template mode. Startup state is Down unless `LLM_KEY_ON_START=up`.
+- **Never exposed:** `GET /llm/key` and `/system/health` carry `{key: up|down, provider}` only;
+  the tests assert the fake key is absent from every response and from `llm_status()`.
+- The §16 trick of setting the keys to a space is no longer needed for a native check: the switch
+  starts Down. Leave the real keys in `.env` reachable when a rehearsal needs Up.
+
+## Phase A.3 (2026-10-12): findings, labels, Bolt's memory -- design notes
+
+- `repair_findings` is insert-only like contracts and approvals; the effective finding of a
+  contract is its newest non-sandbox row (every later row supersedes the earlier ones; both stay
+  listed, the UI greys the superseded one). `POST /findings` fills `supersedes` with the current
+  finding when the client omits it and refuses any other value (409).
+- `WorkOrder.finding` (derived view) carries the effective finding, so the Fleet card, Asset 360
+  and Bolt's `get_asset` see it without a second query.
+- Training: `_telemetry` builds the training frame as the recorded history + the labelled rows
+  of every confirmed finding (`tool_apply_field_labels`); the split is computed on the history
+  alone (`h.cache["df_history"]`) and `tool_adopt_into_train` moves the confirmed motor into
+  train. A finding whose last reading sits more than `COMPLETED_FAILURE_MAX_H` (1 h) before the
+  outage cannot stand in for a completed failure and is skipped with a warning (the demo's
+  simulated CMMS takes the motor offline at the next replayed row, so the gap is one step).
+- Bolt: `search_field_history` returns `this_plant` (deterministic keyword / asset-family match,
+  `apps/api/findings.plant_precedent`) next to the public `cases`; the template puts the plant
+  findings first and says "no confirmed finding yet" when there are none. In LLM mode the tool
+  description tells the model to quote a finding with its source and name and never invent one;
+  `asset_id` is an optional tool argument so the plant findings are matched to the asset in
+  context.
+
 ## After the judge audit (2026-10-12, late)
 
 - `streaming/replay/work_orders.py::UnrepairedFault`: in replay passes after the first, a motor

@@ -25,6 +25,19 @@ window must end before P exceeds it).
   motors qualify at 80 % on the re-timed schedule (2026-10-12): MTR-003, MTR-009, MTR-013,
   MTR-017, MTR-021, MTR-023. MTR-042 is healthy for the whole seeded history (its degradation
   starts in the replay) and is forced into the test group: no label, never a positive.
+- **Label sources (Phase A.3, 2026-10-12).** Each completed failure a training run learns from
+  is listed in AutoML Studio's label ledger with its source: *simulator history* (the six
+  motors above; it stands in for imported CMMS records, which a real plant would hold instead
+  of a `failure_within_h` column) or *confirmed by work order*: a technician's **Confirmed:
+  bearing damage** on a completed work order (`repair_findings`, insert-only, entered by a
+  named person). Such a finding labels that motor's rows from its previous completed repair
+  (or the start of its history) up to the moment it went offline for the repair with
+  `failure_within_h = hours until that intervention`; the live replayed rows are included and
+  the simulator's values for that motor are discarded. The split is computed exactly as before
+  and the motor is then moved into the **train** group only (noted in `AssetSplit.notes`), so
+  the test motors behind the metrics above stay the same otherwise. *No fault found* and
+  *Other* change nothing in training. With zero findings the run is identical to the one
+  documented here (`tests/test_findings.py`).
 - **Right-censoring:** the last 48 h of any motor with no failure ahead has an unknown label and
   is excluded from training and evaluation (6,912 of 82,680 feature rows). It is still scored.
 - Simulator ground truth (`health`, `failure_within_h`) is used only here, for labels and
@@ -160,6 +173,11 @@ and to phrase the explanation of numbers already computed.
 - 10-minute aggregates only: no waveform or frequency-domain analysis, so bearing fault
   frequencies are not available; the model sees trends, not spectra.
 - Thresholds (0.5, 0.3) and the plant-cost assumptions are configuration, not plant data.
+- **Intervention-time labels are conservative.** A repaired motor never actually failed: the
+  event time behind a work-order finding is when the plant took it offline, so the label may
+  sit earlier than a true failure would have and the model learns "about to be pulled", not
+  "about to fail". The validation gate, not the finding, decides whether a retrained model is
+  better; a finding is never claimed to improve the model.
 
 ## 13. AI4I 2020 benchmark (real public data)
 

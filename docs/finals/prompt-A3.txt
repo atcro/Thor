@@ -1,0 +1,174 @@
+We're a top-4 finalist in the ABB hackathon (Theme 1). Tuesday we present Thor in person for
+45–60 minutes: about 35 minutes of story and two live scenarios, then judge Q&A. The judges
+are ABB engineers, several of whom read our prototype code.
+
+Read these first; they're binding unless this brief changes them (where it does, update them):
+- `CLAUDE.md`, especially §7, §9, §15 and §16;
+- the last entries of `docs/finals/status.md` and `docs/finals/session-notes.md`;
+- `docs/finals/demo-walkthrough.md`, `docs/finals/model-card.md`.
+
+## Why this exists
+
+Last round the judges said the prototype "looked so ready", that "there isn't much meat in
+Bolt", and asked "it can analyse a motor; can it build one?". Our finals answer to "what's
+next" is ONE new capability, plus a switch that proves our governance claim live:
+
+> **Thor catches it. Bolt explains it. You sign it. And every repair makes it smarter.**
+
+Today Thor stops at the repair: the work order completes and Thor never learns whether its alarm
+was right. Its training labels come only from the simulator's ground truth
+(`failure_within_h`, see `agents/ml_architect/features.py:375` and `_telemetry()` in
+`apps/api/orchestrator.py:1118`). A real plant has no such column; its labels live in work
+orders. This brief closes that loop.
+
+## Hard rules for this brief
+
+- **The hero demo must not change** while no finding has been recorded. With zero findings,
+  training must produce exactly the same split, labels and champion as today (prove it with a
+  test). Nothing here touches `apps/api/alarms.py` thresholds or the replay.
+- **A finding is entered by a person, never derived from simulator ground truth.** `health` and
+  `failure_within_h` must not be read anywhere in this feature except the existing seeded-history
+  label path.
+- **Insert-only**, like contracts, approvals and work-order events. No edits, no deletes. A
+  correction is a new row that supersedes the old one; both stay visible.
+- **The LLM computes nothing.** Counts, labels and matches are deterministic Python. Bolt only
+  phrases what its tools return.
+- **Keys:** only `apps/api/orchestrator.py` may read, hold or drop a provider key (CLAUDE.md §7).
+- The demo must run end to end with the key Down (template mode).
+- Ruff clean, full pytest green, web build and tests green. Native checks only (CLAUDE.md §16);
+  the team rebuilds Docker themselves.
+- Commit on `finals` in small imperative commits. Never push.
+
+## Build, in priority order (cut from the bottom if time runs short)
+
+### 1. API Key Up / API Key Down (global)
+
+One switch for the whole of Thor, shown in the header on every screen (`Layout.tsx`), labelled
+**"API Key Up"** / **"API Key Down"**.
+- **Up:** `orchestrator.py` reads the provider key from its source (the process environment /
+  `.env`, the same source `Settings` uses today) into memory. Every LLM path turns on: Bolt's
+  tool loop, the contract explanation (`draft_explanation`) and the one routing call.
+- **Down:** `orchestrator.py` drops the key and any cached client from memory, and blanks the
+  key fields on the cached `get_settings()` object, so nothing in Thor's runtime holds the key.
+  Every path falls back to templates. `.env` on disk is NEVER modified or deleted.
+- **First verify how the API container receives the key** (`infra/docker-compose.yml`:
+  `env_file` / `environment`) and make sure Up can recover it after Down, both natively and in
+  Docker. If the key lives in the process environment, Down leaves the environment alone.
+  Document precisely what "Down" means in `docs/finals/session-notes.md`, so we never overclaim
+  on stage.
+- The key is never returned to the browser, never logged, never in an error message. The status
+  endpoint reports only `{"key": "up" | "down", "provider": ...}`.
+- **Startup state: Down**, configurable with `LLM_KEY_ON_START=down|up` (default `down`). A
+  person turns the AI on.
+- Bolt replies and the Decision Contract already record whether text came from the LLM or a
+  template. Make that label visible in the Copilot screen next to each reply.
+- Tests: while Down, no LLM client can be built and `_llm_enabled()` is False on every path;
+  Up → Down → Up restores it; the status endpoint never contains the key.
+
+### 2. "What did the technician find?" + alarm trust
+
+When a work order is `completed`, Asset 360 (and the Fleet card's work-order line) shows a
+**"What did the technician find?"** form:
+- **Confirmed: bearing damage**, **No fault found**, or **Other (describe)**;
+- a free-text note, plus a required name;
+- one finding per completed work order; a later correction is a new row marked as superseding it.
+
+Store it in a new insert-only `repair_findings` table (`finding_id, contract_id, asset_id,
+finding, note, recorded_by, recorded_at, plant_ts, sandbox`) with `POST/GET /findings`, Pydantic
+schemas in `apps/api/schemas.py`, and docstrings on every function.
+
+**Alarm trust**, a deterministic count over findings, is shown on Fleet (small, near the fleet
+summary) and on ModelOps: "Alarms acted on: N · confirmed: M · no fault found: K · awaiting
+finding: P". "Acted on" means an approved maintenance contract. Sandbox-tagged rows are
+excluded. Never show a percentage when N < 5; show the counts.
+
+### 3. Bolt remembers this plant's repairs
+
+Extend Bolt's existing `search_field_history` tool (`apps/api/orchestrator.py:2348`, retrieval
+in `agents/reliability/rag.py`). Do not add a new tool. Its result gains a separate
+`this_plant` list: findings from `repair_findings` joined with their contract (asset, date,
+finding, note, recorded_by, the contract's top drivers and recommendation). Matching is
+deterministic (same failure mode / same asset family), not an embedding. Public FMUCD cases stay
+a separate list, labelled "public work orders, not this plant".
+- Update the tool description so the LLM knows the two sources.
+- Template mode must answer **"Have we seen this before?"** (and close phrasings) from the same
+  tool: plant findings first, then public cases, each clearly sourced.
+- Bolt may quote a finding; it may never invent one, and it says "no confirmed finding yet" when
+  there is none.
+- Add a case to `evals/bolt/` that checks the plant finding is cited with its source and name,
+  and that Bolt never claims a finding that doesn't exist.
+
+### 4. Training learns from confirmed findings
+
+A **Confirmed: bearing damage** finding turns that motor's pre-repair history into a labelled
+failure for the NEXT training run (`mode=train`). Analyze runs are unchanged.
+- **Event time = when the motor went offline for the repair** (the work order's `in_progress` /
+  start `plant_ts`). Rows from the motor's previous completed repair (or the start of history) up
+  to that time get `failure_within_h = hours until the event`. Rows after it aren't labelled by
+  this finding. Sandbox rows are always excluded.
+- This includes the motor's live, unlabelled rows that `_telemetry()` filters out today. Bring
+  in only the rows this rule labels.
+- **No fault found** adds no positive label and changes nothing in training; it only counts in
+  alarm trust. **Other** changes nothing in training.
+- **Field-confirmed motors join TRAIN only.** Compute the split exactly as today (same seed,
+  same simulator-history positives). Then, if a field-confirmed motor landed in validation,
+  calibration or test, move it to train and add an `AssetSplit.notes` line saying so. The test
+  motors behind the validated metrics otherwise stay the same.
+- AutoML Studio shows a small **label ledger**: each completed failure the run trains on, with
+  its source: "simulator history (stands in for imported CMMS records)" or "confirmed by work
+  order WO-…, recorded by <name>". Before a run, it also shows findings "queued for the next
+  training run".
+- Honest limit for the model card: a repaired motor never actually failed, so the event time is
+  the intervention time. That's conservative, and the label may sit earlier than a true failure
+  would have. The gate, not this feature, decides whether a retrained model is better. Never
+  claim a finding improves the model.
+- Tests: zero findings → identical split/labels/champion as before; one confirmed finding → that
+  motor is a train positive with labels ending at the event time, test unchanged except the noted
+  move; NFF/Other → no training change; sandbox findings are ignored.
+
+### 5. "Alarm → signed decision" timer
+
+On an approved Decision Contract (`DecisionContractPanel.tsx`), show "Alarm → signed decision:
+Xm Ys": from the `recorded_at` of the asset's critical `alarm_events` row that preceded the
+contract, to the approval's `decided_at`. Both are wall clock; say so in a tooltip. Show nothing
+if there was no alarm. Make it a pure function with a test.
+
+### 6. Docs (same PR, CLAUDE.md §12)
+
+- `CLAUDE.md`: §6/§7 (the key switch and insert-only findings), §9 (findings feed labels), §15
+  (Phase A.3), §16 (file map).
+- `docs/finals/model-card.md`: label sources and the intervention-time limit.
+- `docs/finals/demo-walkthrough.md`: the new beats below, timed.
+- `.claude/skills/submission-positioning/SKILL.md`: add the spoken headline and the line "Last
+  round, Thor stopped at the decision. Now it finds out what the technician found, and learns
+  from it." Keep the formal one-liner unchanged.
+- `docs/finals/status.md`: a Phase A.3 entry with what was verified and how.
+
+## The demo beats this must support
+
+Scenario 1 (the key stays Down until Bolt): the existing hero loop runs with the key Down —
+train, sign off, MTR-042 red, Run analysis (the contract says "template"): "everything you've
+just seen ran without a language model". Then, after MTR-042 is approved, offline and back green:
+1. A second presenter, as the technician, records "Confirmed: bearing damage" with a note and
+   their name. Alarm trust shows 1 acted on, 1 confirmed.
+2. In Bolt: "Have we seen this before?" → today's MTR-042 finding (this plant) plus public cases.
+3. AutoML Studio: the label ledger shows MTR-042 queued for the next training run. We do NOT
+   retrain on stage, but it must work if a judge asks.
+
+Scenario 2 (trust):
+1. Flip **API Key Up**. Ask Bolt "What's happening with MTR-042?": fluent wording.
+2. Flip **API Key Down**. Ask the exact same question: plainer wording, the SAME numbers
+   (probability, status, top drivers), reply marked "template". Check during your rehearsal that
+   both answers carry the same numbers for this question; if they don't, say so in the report and
+   propose a question where they do.
+3. Ask Bolt to approve the repair. It refuses (existing eval).
+
+## Done means
+
+- Every item above works natively on a fresh reset, with the key Up and with the key Down.
+- One full rehearsal run by you (CLAUDE.md §16 native recipe): train → sign off → MTR-042 red →
+  analyse → Bolt → approve → back green → finding → Bolt recalls it → ledger shows it → retrain
+  once with the finding and record in `status.md` whether the gate passes (either outcome is
+  fine; report it honestly).
+- A short report: what was built, what was cut and why, test counts, and anything a judge could
+  poke a hole in.
