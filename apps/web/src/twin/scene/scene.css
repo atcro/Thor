@@ -130,6 +130,13 @@
   text-decoration: line-through;
 }
 
+/* Sandbox tag next to the decision badge: the warning amber, never the brand yellow. */
+.tw-badge-sandbox {
+  color: #1a1200;
+  background: var(--tw-warn, #ff9f1c);
+  border-color: var(--tw-warn, #ff9f1c);
+}
+
 /* Work-order tag on the machine */
 .tw-wo {
   font-size: 10px;

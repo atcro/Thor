@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import type { ExplanationSource, ModelStage, PipelineStage, WorkOrder, WorkOrderStatus } from "../api/types";
-import { fmtDateTime, fmtNum, healthTone, STAGE_LABEL, stageTone, type Tone } from "../lib/format";
+import type { AlarmLevel, ExplanationSource, ModelStage, PipelineStage, TwinStatus, WorkOrder, WorkOrderStatus } from "../api/types";
+import { fmtDateTime, fmtNum, fmtShort, healthTone, STAGE_LABEL, stageTone, stateName, type Tone } from "../lib/format";
 
 // ---------------------------------------------------------------------------
 // Panel
@@ -54,24 +54,76 @@ export function HealthPill({ score }: { score: number | null | undefined }) {
     );
   }
   return (
-    <Pill tone={tone} title="Health score (0-100) = 100 × (1 − calibrated failure probability)">
+    <Pill
+      tone={tone}
+      title="Health = 100 × (1 − calibrated failure probability); green = within healthy baseline (below the early-warning threshold)"
+    >
       <span className="dot" style={{ background: "currentColor", width: 6, height: 6 }} />
       {fmtNum(score, 0)}
     </Pill>
   );
 }
 
-const REGIME_LABEL: Record<string, string> = {
-  R1: "R1 idle/startup",
-  R2: "R2 nominal",
-  R3: "R3 high-load",
+/** Operating state the API inferred from rpm / load (API field: `regime`), as a plain name. */
+export function StateBadge({ regime }: { regime: string | null | undefined }) {
+  const title = "Operating state inferred from rpm and load (called an operating regime in the literature)";
+  if (!regime) {
+    return (
+      <Pill tone="neutral" title={title}>
+        State: unknown
+      </Pill>
+    );
+  }
+  return (
+    <Pill tone="info" title={title}>
+      State: {stateName(regime)}
+    </Pill>
+  );
+}
+
+/** The API's status word for the Fleet card and Asset 360 (green = within healthy baseline). */
+export const STATUS_WORD: Record<TwinStatus, string> = {
+  healthy: "within healthy baseline",
+  warning: "warning",
+  critical: "critical",
+  no_prediction: "no prediction",
+  offline: "offline · work order",
+  no_data: "no data",
 };
 
-export function RegimeBadge({ regime }: { regime: string | null | undefined }) {
-  if (!regime) return <Pill tone="neutral">regime —</Pill>;
+/**
+ * Alarm facts next to a HealthPill: "latched since <plant time>" while the alarm is critical
+ * (critical stays until a completed work order clears it) and "sandbox scenario" when the
+ * displayed prediction came from sandbox readings. Both are API fields; nothing is derived.
+ */
+export function AlarmPills({
+  alarm,
+  alarmSince,
+  alarmReason,
+  sandbox,
+}: {
+  alarm: AlarmLevel | null | undefined;
+  alarmSince: string | null | undefined;
+  alarmReason: string | null | undefined;
+  sandbox: boolean | undefined;
+}) {
   return (
-    <Pill tone="info" title="Operating regime (clustered on rpm/load)">
-      {REGIME_LABEL[regime] ?? regime}
+    <>
+      {alarm === "critical" && (
+        <Pill tone="bad" title={alarmReason ?? "critical alarm latched until a completed work order clears it"}>
+          latched since {fmtShort(alarmSince)}
+        </Pill>
+      )}
+      {sandbox && <SandboxPill />}
+    </>
+  );
+}
+
+/** Marks a value that came from sandbox (simulated) readings. */
+export function SandboxPill({ title = "Sandbox scenario: produced from simulated sandbox readings, not the recorded plant history" }: { title?: string }) {
+  return (
+    <Pill tone="warn" title={title}>
+      sandbox scenario
     </Pill>
   );
 }
@@ -246,12 +298,13 @@ export const WORK_ORDER_WORD: Record<WorkOrderStatus, string> = {
 /** Plant-reported status of the work order behind an approved contract. Thor only displays it. */
 export function WorkOrderPill({ wo }: { wo: WorkOrder }) {
   const tone: Tone = wo.status === "completed" ? "good" : wo.status === "in_progress" ? "warn" : "info";
-  const title =
+  const base =
     wo.status === "scheduled"
       ? `Approved by ${wo.approver}. Plant window ${fmtDateTime(wo.window_start)} → ${fmtDateTime(wo.window_end)} (plant time). Executed by the plant CMMS, not by Thor.`
       : wo.status === "in_progress"
         ? `Taken offline by plant maintenance at ${fmtDateTime(wo.started_ts)} (plant time); ${wo.planned_downtime_h} h planned downtime.`
         : `Returned to service by plant maintenance at ${fmtDateTime(wo.completed_ts)} (plant time).`;
+  const title = wo.sandbox_scenario ? `${base} Sandbox scenario: the contract was raised on simulated sandbox readings.` : base;
   return (
     <Pill tone={tone} title={title}>
       {WORK_ORDER_WORD[wo.status]}

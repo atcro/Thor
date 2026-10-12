@@ -39,7 +39,7 @@ export interface TwinPalette {
   /** Pulse colours by event kind. */
   pulseIngest: string;
   pulsePrediction: string;
-  /** Regime ring colours: R1 idle/startup, R2 nominal, R3 high load, unknown. */
+  /** State ring colours (operating state, API field `regime`): R1 startup/idle, R2 running, R3 heavy load, unknown. */
   regime: { R1: string; R2: string; R3: string; unknown: string };
   /** Glow intensity 0..1 (the "restrained" part). */
   glow: number;
@@ -93,7 +93,7 @@ export function twinPalette(theme: TwinTheme = TWIN_THEME): TwinPalette {
 }
 
 /**
- * Status colours (shared by the scene glyphs, the HUD and the Dashboard X-Ray). Keyed by the
+ * Status colours (shared by the scene glyphs, the HUD and the Fleet X-Ray). Keyed by the
  * API's TwinStatus. Deliberately outside the theme: they mean the same thing everywhere.
  */
 export const STATUS_COLOR = {

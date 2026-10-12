@@ -2,11 +2,11 @@ import { lazy, Suspense } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { LoadingState } from "./components/ui";
-import { Dashboard } from "./screens/Dashboard";
+import { Fleet } from "./screens/Fleet";
 import { Twin } from "./screens/Twin";
 import { XRayProvider } from "./twin/useXRay";
 
-// Chart-heavy screens are lazy so recharts is not in the Twin/Dashboard/Copilot critical path.
+// Chart-heavy screens are lazy so recharts is not in the Fleet/Twin/Copilot critical path.
 const Asset360 = lazy(() => import("./screens/Asset360").then((m) => ({ default: m.Asset360 })));
 const Studio = lazy(() => import("./screens/Studio").then((m) => ({ default: m.Studio })));
 const ModelOps = lazy(() => import("./screens/ModelOps").then((m) => ({ default: m.ModelOps })));
@@ -19,8 +19,8 @@ export default function App() {
       <Suspense fallback={<LoadingState />}>
         <Routes>
           <Route element={<Layout />}>
-            <Route path="/" element={<Twin />} />
-            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/" element={<Fleet />} />
+            <Route path="/twin" element={<Twin />} />
             <Route path="/assets/:id" element={<Asset360 />} />
             <Route path="/studio" element={<Studio />} />
             <Route path="/modelops" element={<ModelOps />} />

@@ -1,4 +1,4 @@
-/** Test fixture: a full GET /twin/hud/MTR-042 payload (shared by the HUD and Dashboard tests). */
+/** Test fixture: a full GET /twin/hud/MTR-042 payload (shared by the HUD and Fleet tests). */
 import type { TwinHud } from "../api/types";
 
 export const hudFixture: TwinHud = {
@@ -39,13 +39,19 @@ export const hudFixture: TwinHud = {
     msgs_last_60s: 15,
     open_contract_id: "dc_MTR-042_20250827020000",
     work_order: null,
+    alarm: "critical",
+    alarm_since: "2025-08-27T00:00:00Z",
+    alarm_reason: "sustained p >= 0.5 over 3 rows",
+    alarm_sandbox: false,
+    sandbox: false,
+    sandbox_override: null,
   },
   line: { line: "Packaging Line 3", kind: "packaging", index: 3, assets: ["MTR-041", "MTR-042", "MTR-043", "MTR-044"], mes: null },
   thresholds: { classification: 0.5, early_warning: 0.3, sustained_rows: 3 },
   prediction_trend: [
-    { ts: "2025-08-26T22:00:00Z", failure_probability: 0.21, model_version: "v64634", source: "edge" },
-    { ts: "2025-08-27T00:00:00Z", failure_probability: 0.42, model_version: "v64634", source: "edge" },
-    { ts: "2025-08-27T02:00:00Z", failure_probability: 0.64, model_version: "v64634", source: "edge" },
+    { ts: "2025-08-26T22:00:00Z", failure_probability: 0.21, model_version: "v64634", source: "edge", sandbox: false },
+    { ts: "2025-08-27T00:00:00Z", failure_probability: 0.42, model_version: "v64634", source: "edge", sandbox: false },
+    { ts: "2025-08-27T02:00:00Z", failure_probability: 0.64, model_version: "v64634", source: "edge", sandbox: false },
   ],
   trend: "rising",
   plc_tags: [

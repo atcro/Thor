@@ -5,7 +5,8 @@
  *   machine + fan motion  <- asset.latest.rpm   (0 when offline / data_state != live / rewind)
  *   glow, halo, glyph     <- asset.status        (rewind: rewind.statuses[asset_id])
  *   status word + p       <- STATUS_GLYPH.word, asset.failure_probability (rewind.probabilities)
- *   regime ring           <- asset.regime
+ *   state ring            <- asset.regime (operating state)
+ *   SANDBOX tag           <- asset.sandbox || asset.sandbox_override
  *   decision badge        <- asset.decision_state (DECISION_WORD)
  *   work-order tag        <- asset.work_order.status
  *   pulses                <- props.pulseQueue (ingest / prediction events from the API)
@@ -123,6 +124,14 @@ function AssetGroup(props: AssetGroupProps) {
           className={`tw-badge tw-badge-${decision}`}
         >
           {DECISION_WORD[decision]}
+        </SceneLabel>
+      )}
+      {props.showBadge && (twin.sandbox || twin.sandbox_override !== null) && (
+        <SceneLabel
+          position={[placement.machine[0], h + (decision !== "none" ? 1.55 : 0.9), placement.machine[2]]}
+          className="tw-badge tw-badge-sandbox"
+        >
+          sandbox
         </SceneLabel>
       )}
       {props.showBadge && wo?.status === "in_progress" && (

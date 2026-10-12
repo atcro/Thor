@@ -1,7 +1,7 @@
 /**
  * Live data for the 3-D Digital Twin.
  *
- *  - `snapshot`: GET /twin polled every 2 s (status, regime, sensors, decisions, provenance).
+ *  - `snapshot`: GET /twin polled every 2 s (status, operating state, sensors, decisions, provenance).
  *  - `live`: the control plane's measured counters (message rate, prediction rate, edge
  *    inference and path latency), refreshed with every event frame.
  *  - `pulseQueue`: every ingest/prediction arrival the control plane reports, pushed as a

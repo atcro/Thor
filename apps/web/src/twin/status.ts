@@ -1,9 +1,11 @@
 /**
- * Display rules shared by the 3-D scene, the X-Ray HUD and the Dashboard X-Ray.
- * Status itself comes from the API (`TwinAsset.status`); these helpers only map it to a
- * glyph shape, a colour token and a word, so colour is never the only cue.
+ * Display rules shared by the 3-D scene, the X-Ray HUD and the Fleet X-Ray.
+ * Status itself comes from the API (`TwinAsset.status` / `FleetAsset.status`, the latched
+ * alarm rule in apps/api/alarms.py); these helpers only map it to a glyph shape, a colour
+ * token and a word, so colour is never the only cue.
  */
 import type { DecisionState, Thresholds, TwinStatus } from "../api/types";
+import { stateName } from "../lib/format";
 import { STATUS_COLOR } from "./palette";
 
 export type GlyphShape = "circle" | "triangle" | "octagon" | "square" | "ring" | "dash";
@@ -24,15 +26,23 @@ export const STATUS_GLYPH: Record<TwinStatus, Glyph> = {
   no_data: { shape: "dash", color: STATUS_COLOR.no_data, word: "no data" },
 };
 
-export const REGIME_WORD: Record<string, string> = {
-  R1: "startup / idle",
-  R2: "run",
-  R3: "heavy load",
+/** What green means, wherever a legend or tooltip explains it. */
+export const HEALTHY_MEANING = "within healthy baseline";
+
+/** Longer explanation of a status for legends and tooltips (the glyph word stays short). */
+export const STATUS_EXPLAIN: Record<TwinStatus, string> = {
+  healthy: `healthy · ${HEALTHY_MEANING}`,
+  warning: "warning · sustained above the early-warning threshold",
+  critical: "critical · latched until a completed work order clears it",
+  no_prediction: "no prediction yet",
+  offline: "offline · work order in progress",
+  no_data: "no data · messages stopped",
 };
 
-export function regimeWord(regime: string | null | undefined): string {
-  if (!regime) return "regime unknown";
-  return REGIME_WORD[regime] ?? regime;
+/** Plain name of the operating state the API inferred from rpm / load (API field: `regime`). */
+export function stateWord(regime: string | null | undefined): string {
+  if (!regime) return "state unknown";
+  return stateName(regime);
 }
 
 export const DECISION_WORD: Record<DecisionState, string> = {
@@ -45,10 +55,11 @@ export const DECISION_WORD: Record<DecisionState, string> = {
 };
 
 /**
- * Status of a STORED prediction at a rewind time. Mirrors the API's own rule
- * (apps/api/routes/twin.py: critical >= classification, warning >= early_warning) with the
- * thresholds the API sent; used only by the rewind scrubber, where the API has already
- * returned the probability and the thresholds and the scene needs a glyph for each.
+ * Status of a STORED prediction at a rewind time. Mirrors the API's thresholds (critical >=
+ * classification, warning >= early_warning) for stored points only; used by the rewind
+ * scrubber, where the API has already returned the probability and the thresholds and the
+ * scene needs a glyph for each. Live status is never computed here: it comes from the API's
+ * latched alarm (`TwinAsset.status`), which stays critical until a work order clears it.
  */
 export function statusForProbability(
   p: number | null | undefined,

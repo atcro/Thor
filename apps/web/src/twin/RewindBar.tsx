@@ -1,9 +1,10 @@
 /**
  * Rewind scrubber: replays STORED predictions (GET /twin/rewind) over plant time so the lead
- * time between MTR-042's early warning and its failure point is visible. Nothing here is a
- * live prediction and nothing is computed from telemetry: for every scrub position the bar
- * looks up, per asset, the last stored probability at or before that time (a step function)
- * and maps it to a status with the thresholds the API sent (statusForProbability).
+ * time between MTR-042's first sustained warning and the plant taking it offline is visible.
+ * Nothing here is a live prediction and nothing is computed from telemetry: for every scrub
+ * position the bar looks up, per asset, the last stored probability at or before that time (a
+ * step function) and maps it to a status with the thresholds the API sent
+ * (statusForProbability). The two lead-time figures and their labels are API fields.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getTwinRewind } from "../api/client";
@@ -174,7 +175,7 @@ export function RewindBar({
 
   const focus = rewind ? pickFocus(rewind, focusAssetId) : null;
   const early = markerOf(focus, "early_warning");
-  const failure = markerOf(focus, "predicted_failure");
+  const criticalAlarm = markerOf(focus, "critical_alarm");
   const workOrder = markerOf(focus, "work_order_started");
 
   if (!rewind) {
@@ -245,8 +246,8 @@ export function RewindBar({
         <button type="button" className="xray-btn" disabled={!early} onClick={() => jump(early)} title={early?.detail}>
           early warning
         </button>
-        <button type="button" className="xray-btn" disabled={!failure} onClick={() => jump(failure)} title={failure?.detail}>
-          first ≥ {fmtNum(rewind.thresholds.classification, 1)}
+        <button type="button" className="xray-btn" disabled={!criticalAlarm} onClick={() => jump(criticalAlarm)} title={criticalAlarm?.detail ?? "Critical alarm latched"}>
+          critical alarm
         </button>
         <button type="button" className="xray-btn" disabled={!workOrder} onClick={() => jump(workOrder)} title={workOrder?.detail}>
           work order
@@ -287,14 +288,19 @@ export function RewindBar({
         <span>
           {fmtShort(rewind.start)} → {fmtShort(rewind.end)} plant time
         </span>
+      </div>
+      <div className="rewind-leadtimes" data-testid="rewind-leadtimes">
         {focus && (
-          <span title={focus.lead_time_basis}>
-            {focus.asset_id} lead time <b>{focus.lead_time_h === null ? "—" : `${fmtNum(focus.lead_time_h, 1)} h`}</b> · {focus.lead_time_basis}
+          <span className="rewind-lead" title={focus.lead_time_basis} data-testid="rewind-lead-run">
+            <b>{focus.lead_time_h === null ? "—" : `${fmtNum(focus.lead_time_h, 1)} h`}</b>
+            <span className="lbl">
+              {focus.asset_id} · {focus.lead_time_label}
+            </span>
           </span>
         )}
-        <span title={rewind.validated_lead_time_basis}>
-          validated lead time <b>{rewind.validated_lead_time_h === null ? "—" : `${fmtNum(rewind.validated_lead_time_h, 1)} h`}</b> ·{" "}
-          {rewind.validated_lead_time_basis}
+        <span className="rewind-lead" title={rewind.validated_lead_time_basis} data-testid="rewind-lead-validated">
+          <b>{rewind.validated_lead_time_h === null ? "—" : `${fmtNum(rewind.validated_lead_time_h, 1)} h`}</b>
+          <span className="lbl">{rewind.validated_lead_time_label}</span>
         </span>
       </div>
     </div>

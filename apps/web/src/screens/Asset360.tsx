@@ -5,7 +5,7 @@ import type { Approval, Decision, GraphState, PipelineStage, RunSummary, WhatIfR
 import { TERMINAL_STAGES } from "../api/types";
 import { CHART, TimeSeriesChart, type TimePoint } from "../components/charts";
 import { DecisionContractPanel } from "../components/DecisionContractPanel";
-import { EmptyState, ErrorState, HealthPill, Loaded, LoadingState, Panel, Pill, RegimeBadge, StageChip, Stat, WorkOrderPill } from "../components/ui";
+import { AlarmPills, EmptyState, ErrorState, HealthPill, Loaded, LoadingState, Panel, Pill, SandboxPill, StageChip, Stat, StateBadge, STATUS_WORD, WorkOrderPill } from "../components/ui";
 import { usePolling } from "../hooks/usePolling";
 import { STAGE_LABEL, fmtNum, fmtPct, fmtRel, fmtShort, fmtTime, probTone } from "../lib/format";
 
@@ -337,10 +337,19 @@ export function Asset360() {
     <div className="stack">
       <div className="page-head">
         <div>
-          <div className="row" style={{ gap: 10 }}>
+          <div className="row wrap" style={{ gap: 10 }}>
             <h1 className="mono">{assetId}</h1>
-            <RegimeBadge regime={detail.data?.regime ?? null} />
+            <StateBadge regime={detail.data?.regime ?? null} />
             <HealthPill score={health} />
+            {detail.data?.status && (
+              <Pill
+                tone={detail.data.status === "critical" ? "bad" : detail.data.status === "warning" ? "warn" : detail.data.status === "healthy" ? "good" : "neutral"}
+                title="Status from the control plane's latched alarm rule (offline > no prediction > no data > critical > warning > healthy)"
+              >
+                Status: {STATUS_WORD[detail.data.status]}
+              </Pill>
+            )}
+            <AlarmPills alarm={detail.data?.alarm} alarmSince={detail.data?.alarm_since} alarmReason={detail.data?.alarm_reason} sandbox={detail.data?.sandbox} />
             {currentP !== null && (
               <Pill tone={probTone(currentP)}>p(fail) {fmtPct(currentP)}</Pill>
             )}
@@ -386,7 +395,7 @@ export function Asset360() {
                     yDomain={[0, 1]}
                     thresholds={[
                       { value: detail.data?.thresholds?.early_warning ?? 0.3, label: "early warning", color: CHART.amber },
-                      { value: detail.data?.thresholds?.classification ?? 0.5, label: "predicted failure", color: CHART.ember },
+                      { value: detail.data?.thresholds?.classification ?? 0.5, label: "critical (classification)", color: CHART.ember },
                     ]}
                   />
                 ) : (
@@ -474,7 +483,15 @@ export function Asset360() {
               <tbody>
                 {detail.data.contracts.map((c) => (
                   <tr key={c.contract_id}>
-                    <td className="mono">{c.contract_id}</td>
+                    <td className="mono">
+                      {c.contract_id}
+                      {c.sandbox_scenario && (
+                        <>
+                          {" "}
+                          <SandboxPill title="This contract was raised on simulated sandbox readings" />
+                        </>
+                      )}
+                    </td>
                     <td className="mono small">{fmtRel(c.created_at)}</td>
                     <td className="mono">{c.model_version}</td>
                     <td className="num">{fmtPct(c.failure_probability)}</td>

@@ -1,12 +1,12 @@
 /**
- * One drive motor: body + terminal box + fan disc, a regime ring on the floor, a status
+ * One drive motor: body + terminal box + fan disc, an operating-state ring on the floor, a status
  * glyph above it, a halo and (when selected) a primary outline ring.
  *
  * Data -> pixel:
  *   emissive colour + halo opacity  <- `status` (STATUS_GLYPH / STATUS_COLOR, palette.glow)
  *   glyph shape                      <- `status` (STATUS_GLYPH.shape)
  *   fan spin                         <- `omega` (from latest.rpm; 0 when offline / no data / rewind)
- *   ring colour + dash pattern       <- `regime` (palette.regime, resources.geo.regime)
+ *   ring colour + dash pattern       <- `regime` (the operating state; palette.regime, resources.geo.regime)
  */
 import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
@@ -105,7 +105,7 @@ export function Motor({ status, regime, omega, selected, palette }: MotorProps) 
       <mesh geometry={r.geo.cylinder} material={r.mat.steel} position={[0, 0.62, -0.95]} rotation={[HALF_PI, 0, 0]} scale={[0.18, 0.5, 0.18]} raycast={NO_RAYCAST} />
       {/* fan disc on the non-drive end */}
       <mesh ref={fan} geometry={r.geo.roller} material={r.mat.machineEdge} position={[-0.8, 0.62, 0]} rotation={[0, 0, HALF_PI]} scale={[0.8, 0.1, 0.8]} raycast={NO_RAYCAST} />
-      {/* regime ring on the floor */}
+      {/* state ring on the floor (operating state; API field `regime`) */}
       <mesh geometry={r.geo.regime[rk]} material={r.mat.regime[rk]} rotation={[-HALF_PI, 0, 0]} position={[0, 0.02, 0]} raycast={NO_RAYCAST} />
       {selected && (
         <mesh geometry={r.geo.selectRing} material={r.mat.primary} rotation={[-HALF_PI, 0, 0]} position={[0, 0.03, 0]} raycast={NO_RAYCAST} />

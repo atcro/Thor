@@ -10,11 +10,33 @@ export function healthTone(score: number | null | undefined): Tone {
   return "bad";
 }
 
+/**
+ * Pill tone for a failure probability, at the API's own thresholds (Thresholds: early warning
+ * 0.3, classification 0.5). Display only: the status word itself always comes from the API.
+ */
 export function probTone(p: number | null | undefined): Tone {
   if (p === null || p === undefined) return "neutral";
-  if (p >= 0.4) return "bad";
-  if (p >= 0.15) return "warn";
+  if (p >= 0.5) return "bad";
+  if (p >= 0.3) return "warn";
   return "good";
+}
+
+/**
+ * Plain name of an operating state (called an "operating regime" in the literature; the API
+ * field stays `regime`). The ONE place these names live: R1 startup / idle, R2 running,
+ * R3 heavy load; any other id reads "state <id>".
+ */
+export function stateName(regimeId: string): string {
+  switch (regimeId) {
+    case "R1":
+      return "startup / idle";
+    case "R2":
+      return "running";
+    case "R3":
+      return "heavy load";
+    default:
+      return `state ${regimeId}`;
+  }
 }
 
 export function fmtNum(n: number | null | undefined, digits = 2): string {

@@ -4,6 +4,7 @@
  * and colocate their own polling/state logic.
  */
 import type {
+  AlarmEvent,
   Approval,
   AssetDetail,
   ContractEvidence,
@@ -20,7 +21,12 @@ import type {
   PredictionRow,
   PromotionRequest,
   RegisteredModel,
+  ReplayState,
   RunSummary,
+  SandboxFaultRequest,
+  SandboxResetResponse,
+  SandboxSetRequest,
+  SandboxState,
   SystemHealth,
   TelemetryRow,
   TwinEventBatch,
@@ -89,6 +95,24 @@ export const getFleet = () => apiFetch<FleetAsset[]>("/fleet");
 export const getAsset = (assetId: string) =>
   apiFetch<AssetDetail>(`/assets/${encodeURIComponent(assetId)}`);
 export const getSystemHealth = () => apiFetch<SystemHealth>("/system/health");
+/** Insert-only alarm transitions (oldest first), optionally for one asset. */
+export const getAlarms = (assetId?: string) =>
+  apiFetch<AlarmEvent[]>(`/alarms${qs({ asset_id: assetId })}`);
+
+// --- routes/replay.py -------------------------------------------------------
+
+export const getReplay = () => apiFetch<ReplayState>("/replay");
+export const pauseReplay = () => post<ReplayState>("/replay/pause", {});
+export const resumeReplay = () => post<ReplayState>("/replay/resume", {});
+
+// --- routes/sandbox.py (3-D Digital Twin sandbox) ---------------------------
+
+export const getSandbox = () => apiFetch<SandboxState>("/sandbox");
+export const sandboxSet = (req: SandboxSetRequest) => post<SandboxState>("/sandbox/set", req);
+export const sandboxFault = (req: SandboxFaultRequest) => post<SandboxState>("/sandbox/fault", req);
+export const sandboxRandomFault = () => post<SandboxState>("/sandbox/random-fault", {});
+export const sandboxShake = () => post<SandboxState>("/sandbox/shake", {});
+export const sandboxReset = () => post<SandboxResetResponse>("/sandbox/reset", {});
 
 // --- routes/telemetry.py ----------------------------------------------------
 

@@ -1,33 +1,40 @@
 import type { CSSProperties } from "react";
-import type { FleetAsset } from "../api/types";
-import { fmtPct } from "../lib/format";
+import type { FleetAsset, TwinStatus } from "../api/types";
+import { fmtPct, stateName } from "../lib/format";
 
 /** Two drawing styles the user can switch between; both use the same data mapping. */
 export type SpriteStyle = "iso" | "pixel";
 
 /**
- * Risk tier from the current failure probability. This is the only thing that
- * picks a colour, and every tier is also encoded by motion and by a text tag so
- * the screen works without colour (deuteranopia / protanopia safe by default).
+ * Risk tier from the API's status (`FleetAsset.status`, the latched alarm rule in
+ * apps/api/alarms.py). This is the only thing that picks a colour, and every tier is also
+ * encoded by motion and by a text tag so the screen works without colour (deuteranopia /
+ * protanopia safe by default). Nothing is derived from the probability in the browser.
  *
- *   low    p < 0.15   green outline, gears turning normally
- *   medium p < 0.40   amber outline, pulsates
- *   high   p >= 0.40  vermillion outline, bearing glows and smokes
- *   none   no prediction yet: neutral outline, gears turn if a regime is known
+ *   low    healthy   green outline, gears turning normally ("within healthy baseline")
+ *   medium warning   amber outline, pulsates
+ *   high   critical  vermillion outline, bearing glows and smokes (latched until a work order)
+ *   none   offline / no data / no prediction / status missing: neutral outline
  */
 export type RiskTier = "low" | "medium" | "high" | "none";
 
-export function riskTier(p: number | null | undefined): RiskTier {
-  if (p === null || p === undefined || Number.isNaN(p)) return "none";
-  if (p >= 0.4) return "high";
-  if (p >= 0.15) return "medium";
-  return "low";
+export function riskTier(status: TwinStatus | null | undefined): RiskTier {
+  switch (status) {
+    case "critical":
+      return "high";
+    case "warning":
+      return "medium";
+    case "healthy":
+      return "low";
+    default:
+      return "none";
+  }
 }
 
 export const TIER_WORD: Record<RiskTier, string> = {
-  low: "low risk",
-  medium: "medium risk",
-  high: "high risk",
+  low: "within healthy baseline",
+  medium: "warning",
+  high: "critical",
   none: "no prediction",
 };
 
@@ -38,7 +45,7 @@ export const TIER_WORD: Record<RiskTier, string> = {
  */
 export interface SpriteParams {
   tier: RiskTier;
-  /** Seconds per fan revolution; null when the regime is unknown (motor drawn stopped). */
+  /** Seconds per fan revolution; null when the operating state is unknown (motor drawn stopped). */
   spinSec: number | null;
   /** 0..1 heat at the drive-end bearing, from failure probability (high tier only). */
   heat: number;
@@ -46,37 +53,28 @@ export interface SpriteParams {
   shake: number;
   /** An open Decision Contract shows a beacon over the drive end. */
   beacon: boolean;
-  /** At-risk flag, same rule the card border used before tiers existed. */
+  /** At-risk flag: the API says critical (the card border rule). */
   atRisk: boolean;
   label: string;
 }
 
 const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
 
-/** Fan period per regime (R1 idle ~600 rpm, R2 nominal ~1480, R3 high load ~1500). */
+/** Fan period per operating state (R1 startup/idle ~600 rpm, R2 running ~1480, R3 heavy load ~1500). */
 const SPIN_SEC: Record<string, number> = { R1: 1.5, R2: 0.6, R3: 0.5 };
-
-const REGIME_WORD: Record<string, string> = {
-  R1: "idle/startup",
-  R2: "nominal",
-  R3: "high load",
-};
 
 export function spriteParams(item: FleetAsset): SpriteParams {
   const p = item.failure_probability;
-  const tier = riskTier(p);
-  const atRisk = (p ?? 0) >= 0.4 || (item.health_score ?? 100) < 60;
-  const heat = tier === "high" ? clamp01(0.5 + ((p as number) - 0.4) / 1.2) : 0;
   // A motor the plant has taken offline for an approved work order stands still: no spin, no
-  // shake, whatever the (stale) last prediction says.
-  const offline = item.work_order?.status === "in_progress";
-  const shake = tier === "high" && !offline ? 0.5 + heat * 1.3 : 0;
+  // shake, whatever the (stale) last prediction says. The API's status already says offline;
+  // the work-order check keeps older payloads without `status` consistent.
+  const offline = item.status === "offline" || item.work_order?.status === "in_progress";
+  const tier = offline ? "none" : riskTier(item.status);
+  const atRisk = tier === "high";
+  const heat = tier === "high" ? clamp01(0.5 + ((p ?? 0.5) - 0.5) / 1.0) : 0;
+  const shake = tier === "high" ? 0.5 + heat * 1.3 : 0;
   const spinSec = offline ? null : item.regime ? (SPIN_SEC[item.regime] ?? 0.6) : null;
-  const regimeWord = offline
-    ? "offline for maintenance"
-    : item.regime
-      ? (REGIME_WORD[item.regime] ?? item.regime)
-      : "regime unknown";
+  const stateWord = offline ? "offline for maintenance" : item.regime ? stateName(item.regime) : "state unknown";
   const pWord = p === null || p === undefined ? "no prediction" : `p(fail) ${fmtPct(p)}`;
   return {
     tier,
@@ -85,7 +83,7 @@ export function spriteParams(item: FleetAsset): SpriteParams {
     shake,
     beacon: Boolean(item.open_contract_id),
     atRisk,
-    label: `${item.asset.asset_id}: ${TIER_WORD[tier]}, ${regimeWord}, ${pWord}${item.open_contract_id ? ", contract open" : ""}`,
+    label: `${item.asset.asset_id}: ${TIER_WORD[tier]}, ${stateWord}, ${pWord}${item.open_contract_id ? ", contract open" : ""}`,
   };
 }
 

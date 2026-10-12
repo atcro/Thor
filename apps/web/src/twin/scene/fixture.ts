@@ -7,9 +7,11 @@
  * Fixture only: the app never renders it. Every value shape matches apps/api/schemas.py.
  */
 import type {
+  AlarmLevel,
   Asset,
   DecisionState,
   ObservedTelemetryRow,
+  SandboxOverride,
   TwinAsset,
   TwinLine,
   TwinSnapshot,
@@ -78,6 +80,11 @@ interface Spec {
   latest?: ObservedTelemetryRow | null;
   dataState?: TwinAsset["data_state"];
   workOrder?: WorkOrder | null;
+  alarm?: AlarmLevel | null;
+  alarmSince?: string | null;
+  alarmReason?: string | null;
+  sandbox?: boolean;
+  sandboxOverride?: SandboxOverride | null;
 }
 
 function asset(spec: Spec): TwinAsset {
@@ -112,6 +119,21 @@ function asset(spec: Spec): TwinAsset {
     msgs_last_60s: latest ? 20 : 0,
     open_contract_id: spec.decision === "contract_pending" ? "dc-0042" : null,
     work_order: spec.workOrder ?? null,
+    // Latched alarm behind the status (apps/api/alarms.py): critical / warning carry the plant
+    // time they were raised and the rule; healthy motors have none.
+    alarm: spec.alarm === undefined ? (status === "critical" || status === "warning" ? status : null) : spec.alarm,
+    alarm_since: spec.alarmSince === undefined ? (status === "critical" || status === "warning" ? "2025-09-22T11:30:00Z" : null) : spec.alarmSince,
+    alarm_reason:
+      spec.alarmReason === undefined
+        ? status === "critical"
+          ? "sustained p >= 0.5 over 3 rows"
+          : status === "warning"
+            ? "sustained p >= 0.3 over 3 rows"
+            : null
+        : spec.alarmReason,
+    alarm_sandbox: false,
+    sandbox: spec.sandbox ?? false,
+    sandbox_override: spec.sandboxOverride ?? null,
   };
 }
 
@@ -163,6 +185,7 @@ for (const lineNo of [1, 2, 3, 4, 5]) {
             status: "in_progress",
             started_ts: "2025-09-22T13:40:00Z",
             completed_ts: null,
+            sandbox_scenario: false,
           },
         }),
       );
@@ -183,9 +206,22 @@ for (const lineNo of [1, 2, 3, 4, 5]) {
           latest: latestRow(id, 1490, 88, { bearing_temp_c: 66.5, vibration_rms: 3.2 }) }),
       );
     } else if (id === "MTR-018") {
+      // A sandbox override is active on this motor: its readings and prediction are simulated.
       assets.push(
         asset({ id, line, role, name, status: "healthy", p: 0.07, regime: "R3",
-          latest: latestRow(id, 1485, 84) }),
+          latest: latestRow(id, 1485, 84, { sandbox: true }),
+          sandbox: true,
+          sandboxOverride: {
+            asset_id: id,
+            rpm: 1485,
+            load_pct: null,
+            bearing_temp_c: null,
+            fault: false,
+            fault_since: null,
+            fault_ramp_h: null,
+            set_at: RECEIVED_AT,
+            note: "fixture",
+          } }),
       );
     } else if (id === "MTR-007" || id === "MTR-024") {
       assets.push(

@@ -263,3 +263,127 @@
     font-size: 11.5px;
   }
 }
+
+/* ---------- Sandbox (simulated readings) ---------- */
+
+/* Banner across the top of the stage while the sandbox is on: the warning amber, never the
+   brand yellow. */
+.twin-sandbox-banner {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  left: 0;
+  right: 0;
+  text-align: center;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #1a1200;
+  background: var(--tw-warn);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
+
+/* While the banner is up, the top badges and the hover card sit below it. */
+.twin-stage.sandbox .twin-badge.tr,
+.twin-stage.sandbox .twin-badge.tl,
+.twin-stage.sandbox .twin-hover {
+  top: 36px;
+}
+
+/* Panel on the left, over the canvas, above the counters badge (which sits bottom-left). */
+.twin-sandbox {
+  position: absolute;
+  z-index: 3;
+  top: 36px;
+  left: 12px;
+  width: 300px;
+  max-height: calc(100% - 300px);
+  overflow: auto;
+  padding: 10px 12px;
+  font-size: 12.5px;
+}
+
+.twin-sandbox h3 {
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--tw-warn);
+}
+
+.twin-sandbox .motor {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--tw-primary);
+}
+
+.twin-sandbox .slider {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.twin-sandbox .slider label {
+  color: var(--tw-ink-2);
+}
+
+.twin-sandbox .slider .val {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--tw-ink);
+}
+
+.twin-sandbox .slider input[type="range"] {
+  grid-column: 1 / -1;
+  width: 100%;
+  margin: 0;
+  accent-color: var(--tw-warn);
+}
+
+.twin-sandbox .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.twin-sandbox .overrides {
+  margin-top: 10px;
+  border-top: 1px solid var(--tw-line);
+  padding-top: 6px;
+}
+
+.twin-sandbox .overrides .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+  border-bottom: 1px dotted var(--tw-line);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+}
+
+.twin-sandbox .note {
+  margin-top: 6px;
+  color: var(--tw-ink-2);
+  font-size: 11.5px;
+}
+
+.twin-sandbox .flash {
+  margin-top: 6px;
+  color: var(--tw-ok);
+  font-size: 11.5px;
+}
+
+.twin-sandbox .err {
+  margin-top: 6px;
+  color: var(--tw-crit);
+  font-size: 11.5px;
+}

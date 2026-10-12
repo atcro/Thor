@@ -7,7 +7,7 @@ import { TERMINAL_STAGES } from "../api/types";
 import { AXIS_TICK, CHART, ChartTip } from "../components/charts";
 import { BarH, EmptyState, ErrorState, Kv, LoadingState, ModelStageChip, Panel, Pill, StageChip } from "../components/ui";
 import { usePolling } from "../hooks/usePolling";
-import { fmtDateTime, fmtHours, fmtInt, fmtNum, fmtPct, fmtRel, STAGE_LABEL } from "../lib/format";
+import { fmtDateTime, fmtHours, fmtInt, fmtNum, fmtPct, fmtRel, STAGE_LABEL, stateName } from "../lib/format";
 
 const IMS_PARTS: { key: keyof Omit<IndustrialModelScore, "weights" | "total">; label: string }[] = [
   { key: "recall", label: "recall" },
@@ -285,11 +285,13 @@ export function Studio() {
                   ]}
                 />
                 <div>
-                  <h3 style={{ marginBottom: 4 }}>Regimes · {dq.regimes?.method ?? "—"}</h3>
+                  <h3 style={{ marginBottom: 4 }} title="Operating states inferred from rpm and load (called operating regimes in the literature)">
+                    Operating states · {dq.regimes?.method ?? "—"}
+                  </h3>
                   <table className="tbl">
                     <thead>
                       <tr>
-                        <th>id</th>
+                        <th>state</th>
                         <th className="right">rpm</th>
                         <th className="right">load</th>
                         <th className="right">share</th>
@@ -298,7 +300,9 @@ export function Studio() {
                     <tbody>
                       {(dq.regimes?.regimes ?? []).map((r) => (
                         <tr key={r.regime_id}>
-                          <td className="mono" title={r.label}>{r.regime_id}</td>
+                          <td title={r.label}>
+                            {stateName(r.regime_id)} <span className="mono dim">{r.regime_id}</span>
+                          </td>
                           <td className="num">{fmtNum(r.rpm_mean, 0)}</td>
                           <td className="num">{fmtNum(r.load_mean, 0)}</td>
                           <td className="num">{fmtPct(r.share, 0)}</td>
@@ -348,7 +352,7 @@ export function Studio() {
           <StageCol n={3} title="FEATURES">
             {cs?.features ? (
               <div className="stack">
-                <Kv rows={[["count", String(cs.features.features.length)], ["window", `${cs.features.window_rows} rows`], ["regime-normalized", cs.features.regime_normalized ? "yes" : "no"]]} />
+                <Kv rows={[["count", String(cs.features.features.length)], ["window", `${cs.features.window_rows} rows`], ["state-normalized", cs.features.regime_normalized ? "yes" : "no"]]} />
                 <div className="feat-list">
                   {cs.features.features.map((f) => (
                     <span className="chip" key={f}>{f}</span>

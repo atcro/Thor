@@ -1,15 +1,17 @@
 /**
  * 3-D Digital Twin (Phase A): the plant's architecture running live.
  *
- * Every value on this screen comes from the control plane: GET /twin (status, regime,
+ * Every value on this screen comes from the control plane: GET /twin (status, operating state,
  * sensors, decisions, model provenance), the /ws/twin event stream (pulses and measured
- * counters) and GET /twin/rewind (stored predictions). The scene renders; it decides nothing.
+ * counters), GET /twin/rewind (stored predictions) and GET /sandbox (overrides). The scene
+ * renders; it decides nothing.
  */
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate } from "react-router-dom";
 import type { CameraFocus, RewindFrame } from "../twin/sceneTypes";
 import { twinPalette } from "../twin/palette";
-import { DECISION_WORD, regimeWord, STATUS_GLYPH } from "../twin/status";
+import { DECISION_WORD, STATUS_EXPLAIN, STATUS_GLYPH, stateWord } from "../twin/status";
+import { SANDBOX_DEFAULT_MOTOR, SandboxPanel, useSandboxState } from "../twin/SandboxPanel";
 import { SiteTabs } from "../twin/SiteTabs";
 import { TwinThemeRoot } from "../twin/TwinThemeRoot";
 import { useTwinLive } from "../twin/useTwinLive";
@@ -144,19 +146,22 @@ function Legend({ palette }: { palette: ReturnType<typeof twinPalette> }) {
       <div className="t">Encoding</div>
       <div className="twin-legend">
         {(["healthy", "warning", "critical", "no_prediction", "offline", "no_data"] as const).map((s) => (
-          <span className="row" key={s}>
+          <span className="row" key={s} title={STATUS_EXPLAIN[s]}>
             <StatusGlyph status={s} size={12} />
-            {STATUS_GLYPH[s].word}
+            {s === "healthy" ? STATUS_EXPLAIN.healthy : STATUS_GLYPH[s].word}
           </span>
         ))}
         <span className="row" style={{ color: palette.regime.R1 }}>
-          <span className="twin-ring" /> <span style={{ color: "var(--tw-ink)" }}>ring: {regimeWord("R1")}</span>
+          <span className="twin-ring" /> <span style={{ color: "var(--tw-ink)" }}>ring: state {stateWord("R1")}</span>
         </span>
         <span className="row" style={{ color: palette.regime.R2 }}>
-          <span className="twin-ring" /> <span style={{ color: "var(--tw-ink)" }}>ring: {regimeWord("R2")}</span>
+          <span className="twin-ring" /> <span style={{ color: "var(--tw-ink)" }}>ring: state {stateWord("R2")}</span>
         </span>
         <span className="row" style={{ color: palette.regime.R3 }}>
-          <span className="twin-ring" /> <span style={{ color: "var(--tw-ink)" }}>ring: {regimeWord("R3")}</span>
+          <span className="twin-ring" /> <span style={{ color: "var(--tw-ink)" }}>ring: state {stateWord("R3")}</span>
+        </span>
+        <span className="row" style={{ color: "var(--tw-warn)" }}>
+          ■ <span style={{ color: "var(--tw-ink)" }}>tag: sandbox scenario (simulated readings)</span>
         </span>
         <span className="row" style={{ color: palette.pulseIngest }}>
           ● <span style={{ color: "var(--tw-ink)" }}>pulse: telemetry message</span>
@@ -172,7 +177,7 @@ function Legend({ palette }: { palette: ReturnType<typeof twinPalette> }) {
 export function Twin() {
   const webgl = useMemo(() => supportsWebGL(), []);
   if (!webgl) {
-    return <Navigate to="/dashboard" replace state={{ twinFallback: "WebGL is not available on this device" }} />;
+    return <Navigate to="/" replace state={{ twinFallback: "WebGL is not available on this device" }} />;
   }
   return <TwinView />;
 }
@@ -189,6 +194,9 @@ function TwinView() {
   const [focusNonce, setFocusNonce] = useState(0);
   const [rewind, setRewind] = useState<RewindFrame | null>(null);
   const [showRewind, setShowRewind] = useState(false);
+  const [showSandbox, setShowSandbox] = useState(false);
+  const sandbox = useSandboxState(showSandbox);
+  const sandboxOn = showSandbox || Boolean(sandbox.state?.active);
 
   const assetsById = useMemo(() => {
     const m = new Map<string, NonNullable<typeof twin.snapshot>["assets"][number]>();
@@ -250,6 +258,15 @@ function TwinView() {
         <XRayToggle />
         <button
           type="button"
+          className={`twin-btn${showSandbox ? " on" : ""}`}
+          aria-pressed={showSandbox}
+          title="Sandbox: override one motor's recorded readings, inject a fault, shake up operations or reset (simulated readings, tagged all the way through)"
+          onClick={() => setShowSandbox((v) => !v)}
+        >
+          Sandbox
+        </button>
+        <button
+          type="button"
           className={`twin-btn${showRewind ? " on" : ""}`}
           aria-pressed={showRewind}
           onClick={() => {
@@ -275,7 +292,12 @@ function TwinView() {
         </button>
       </div>
 
-      <div className="twin-stage">
+      <div className={`twin-stage${sandboxOn ? " sandbox" : ""}`}>
+        {sandboxOn && (
+          <div className="twin-sandbox-banner" role="status" data-testid="sandbox-banner">
+            SANDBOX — simulated readings
+          </div>
+        )}
         <div className="twin-canvas">
           <Suspense fallback={<div className="twin-fallback twin-dim">Loading the scene…</div>}>
             <PlantScene
@@ -302,6 +324,15 @@ function TwinView() {
           </div>
         )}
 
+        {showSandbox && (
+          <SandboxPanel
+            assetId={selected ?? SANDBOX_DEFAULT_MOTOR}
+            asset={assetsById.get(selected ?? SANDBOX_DEFAULT_MOTOR) ?? null}
+            state={sandbox.state}
+            onState={sandbox.setState}
+          />
+        )}
+
         {xray.enabled && hoveredAsset && (
           <div className="twin-hover" data-testid="twin-hover">
             <XRayTooltip asset={hoveredAsset} />
@@ -314,9 +345,11 @@ function TwinView() {
               <b>{selectedAsset.asset.asset_id}</b> · {selectedAsset.asset.name}
             </div>
             <div className="twin-dim" style={{ fontSize: 12 }}>
-              {STATUS_GLYPH[selectedAsset.status].word} · p(fail){" "}
-              {selectedAsset.failure_probability === null ? "—" : fmtPct(selectedAsset.failure_probability)} ·{" "}
-              {regimeWord(selectedAsset.regime)} · {DECISION_WORD[selectedAsset.decision_state]} · turn on X-Ray for the HUD
+              {STATUS_GLYPH[selectedAsset.status].word}
+              {selectedAsset.alarm === "critical" ? ` · latched since ${fmtShort(selectedAsset.alarm_since)}` : ""} · p(fail){" "}
+              {selectedAsset.failure_probability === null ? "—" : fmtPct(selectedAsset.failure_probability)} · state:{" "}
+              {stateWord(selectedAsset.regime)} · Decision: {DECISION_WORD[selectedAsset.decision_state]}
+              {selectedAsset.sandbox || selectedAsset.alarm_sandbox ? " · sandbox scenario" : ""} · turn on X-Ray for the HUD
             </div>
           </div>
         )}

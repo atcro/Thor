@@ -1,4 +1,4 @@
-/** WebGL availability probe. The twin falls back to the Dashboard when this is false. */
+/** WebGL availability probe. The twin falls back to the Fleet when this is false. */
 export function supportsWebGL(): boolean {
   if (typeof document === "undefined") return false;
   try {

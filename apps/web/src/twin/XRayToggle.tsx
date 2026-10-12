@@ -1,6 +1,6 @@
 /**
- * The X-Ray toggle: a segmented button usable in any toolbar (Twin toolbar, Dashboard head).
- * State comes from useXRay(), so the Twin and the Dashboard share one setting.
+ * The X-Ray toggle: a segmented button usable in any toolbar (Twin toolbar, Fleet head).
+ * State comes from useXRay(), so the Twin and the Fleet share one setting.
  */
 import { useXRay } from "./useXRay";
 

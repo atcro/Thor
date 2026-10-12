@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { getFleet, getSystemHealth, getTwin } from "../api/client";
 import type { FleetAsset, TwinAsset } from "../api/types";
 import { MotorSprite, spriteParams, TIER_WORD, type SpriteStyle } from "../components/MotorSprite";
-import { Dot, HealthPill, Loaded, ModelStageChip, Panel, Pill, RegimeBadge, WorkOrderPill } from "../components/ui";
+import { AlarmPills, Dot, HealthPill, Loaded, ModelStageChip, Panel, Pill, StateBadge, WorkOrderPill } from "../components/ui";
 import { usePolling } from "../hooks/usePolling";
 import { fmtDateTime, fmtInt, fmtPct, fmtRel, fmtShort, probTone } from "../lib/format";
 import { TwinThemeRoot } from "../twin/TwinThemeRoot";
@@ -65,7 +65,7 @@ function StyleToggle({ value, onChange }: { value: SpriteStyle; onChange: (s: Sp
 }
 
 /**
- * X-Ray mode on the Dashboard: the card becomes a hover host (tooltip from GET /twin above it,
+ * X-Ray mode on the Fleet: the card becomes a hover host (tooltip from GET /twin above it,
  * keyboard-reachable via focus) and a click opens the HUD drawer instead of navigating.
  */
 interface XRayCardProps {
@@ -90,7 +90,10 @@ function AssetCard({ item, style, xray }: { item: FleetAsset; style: SpriteStyle
       {item.open_contract_id && <span className="flag" title={`Open decision contract ${item.open_contract_id}`} />}
       <div className="row" style={{ justifyContent: "space-between" }}>
         <span className="id">{asset.asset_id}</span>
-        <HealthPill score={item.health_score} />
+        <span className="row wrap" style={{ gap: 4, justifyContent: "flex-end" }}>
+          <HealthPill score={item.health_score} />
+          <AlarmPills alarm={item.alarm} alarmSince={item.alarm_since} alarmReason={item.alarm_reason} sandbox={item.sandbox} />
+        </span>
       </div>
       <div className="name">{asset.name}</div>
       <div className="loc">
@@ -98,7 +101,7 @@ function AssetCard({ item, style, xray }: { item: FleetAsset; style: SpriteStyle
         {asset.criticality === "high" && <span className="dim"> · critical</span>}
       </div>
       <div className="row wrap" style={{ gap: 6 }}>
-        <RegimeBadge regime={item.regime} />
+        <StateBadge regime={item.regime} />
         {p !== null && p !== undefined && (
           <Pill tone={probTone(p)} title="Current failure probability">
             p(fail) {fmtPct(p)}
@@ -218,11 +221,12 @@ function SystemPanel() {
   );
 }
 
-/** The Dashboard: the isometric/pixel fleet view (formerly "Fleet"). */
-export function Dashboard() {
-  const fleet = usePolling(getFleet, 5000, "fleet");
+/** The Fleet: the isometric/pixel fleet view (the landing view at `/`). */
+export function Fleet() {
+  // 2 s: the amber phase between the warning and the latched critical lasts a few seconds.
+  const fleet = usePolling(getFleet, 2000, "fleet");
   const xray = useXRay();
-  // X-Ray facts come from GET /twin (status, regime, decision state); polled only while X-Ray is on.
+  // X-Ray facts come from GET /twin (status, operating state, decision); polled only while X-Ray is on.
   const twin = usePolling(getTwin, 2000, "twin", xray.enabled);
   const twinById = useMemo(() => {
     const m = new Map<string, TwinAsset>();
@@ -235,7 +239,9 @@ export function Dashboard() {
     saveStyle(s);
   };
   const sorted = useMemo(() => (fleet.data ? sortByRisk(fleet.data) : []), [fleet.data]);
-  const nRisk = sorted.filter((a) => (a.failure_probability ?? 0) >= 0.4 || (a.health_score ?? 100) < 60).length;
+  // Counts come from the API's status (the latched alarm rule), never from a threshold here.
+  const nCritical = sorted.filter((a) => a.status === "critical").length;
+  const nWarning = sorted.filter((a) => a.status === "warning").length;
   const nUnscored = sorted.filter((a) => a.health_score === null || a.health_score === undefined).length;
   const nOpen = sorted.filter((a) => a.open_contract_id).length;
   const nWork = sorted.filter((a) => a.work_order && a.work_order.status !== "completed").length;
@@ -244,17 +250,17 @@ export function Dashboard() {
     <div>
       <div className="page-head">
         <div>
-          <h1>Dashboard</h1>
+          <h1>Fleet</h1>
           <div className="sub">
             {fleet.data
-              ? `${sorted.length} assets · ${nRisk} at risk · ${nUnscored} without a prediction yet · ${nOpen} open contract${nOpen === 1 ? "" : "s"} · ${nWork} work order${nWork === 1 ? "" : "s"} · sorted by failure risk`
+              ? `${sorted.length} assets · ${nCritical} critical · ${nWarning} warning · ${nUnscored} without a prediction yet · ${nOpen} open contract${nOpen === 1 ? "" : "s"} · ${nWork} work order${nWork === 1 ? "" : "s"} · sorted by failure risk`
               : "Loading fleet…"}
           </div>
         </div>
         <div className="row" style={{ gap: 12 }}>
           <XRayToggle />
           <StyleToggle value={style} onChange={changeStyle} />
-          <span className="small muted mono">poll 5s{fleet.lastUpdated ? ` · ${fmtRel(new Date(fleet.lastUpdated).toISOString())}` : ""}</span>
+          <span className="small muted mono">poll 2s{fleet.lastUpdated ? ` · ${fmtRel(new Date(fleet.lastUpdated).toISOString())}` : ""}</span>
         </div>
       </div>
       <div className="grid" style={{ gridTemplateColumns: "1fr 240px", alignItems: "start" }}>

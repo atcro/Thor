@@ -213,6 +213,24 @@ h3 {
   align-items: center;
   gap: 6px;
 }
+/* Replay indicator (GET /replay): label, plant time, phase and the Pause / Resume switch. */
+.conn .replay {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.conn .replay .btn.sm {
+  padding: 1px 7px;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.sidebar nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
 
 .main {
   overflow: auto;

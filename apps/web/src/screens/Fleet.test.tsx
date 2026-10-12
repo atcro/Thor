@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FleetAsset, SystemHealth, TwinHud, TwinSnapshot } from "../api/types";
 import { hudFixture } from "../twin/testFixtures";
 import { XRayProvider } from "../twin/useXRay";
-import { Dashboard } from "./Dashboard";
+import { Fleet } from "./Fleet";
 
 const fleet: FleetAsset[] = [
   {
@@ -24,6 +24,11 @@ const fleet: FleetAsset[] = [
     open_contract_id: "dc_MTR-042_20260913100000",
     stage: null,
     work_order: null,
+    status: "critical",
+    alarm: "critical",
+    alarm_since: "2026-09-13T08:30:00Z",
+    alarm_reason: "sustained p >= 0.5 over 3 rows",
+    sandbox: false,
   },
   {
     asset: {
@@ -42,6 +47,11 @@ const fleet: FleetAsset[] = [
     open_contract_id: null,
     stage: "production",
     work_order: null,
+    status: "healthy",
+    alarm: null,
+    alarm_since: null,
+    alarm_reason: null,
+    sandbox: true,
   },
   {
     asset: {
@@ -71,7 +81,13 @@ const fleet: FleetAsset[] = [
       status: "in_progress",
       started_ts: "2025-08-27T02:00:00Z",
       completed_ts: null,
+      sandbox_scenario: false,
     },
+    status: "offline",
+    alarm: null,
+    alarm_since: null,
+    alarm_reason: null,
+    sandbox: false,
   },
 ];
 
@@ -100,6 +116,9 @@ const twinSnapshot: TwinSnapshot = {
       regime: "R2",
       status: "critical",
       decision_state: "contract_pending",
+      alarm: "critical",
+      alarm_since: "2026-09-13T08:30:00Z",
+      alarm_reason: "sustained p >= 0.5 over 3 rows",
     },
   ],
   model: hudFixture.model,
@@ -130,7 +149,7 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
-describe("Dashboard screen", () => {
+describe("Fleet screen", () => {
   beforeEach(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (globalThis as any).fetch = vi.fn(async (input: RequestInfo | URL) => {
@@ -152,7 +171,7 @@ describe("Dashboard screen", () => {
     render(
       <MemoryRouter>
         <XRayProvider>
-          <Dashboard />
+          <Fleet />
         </XRayProvider>
       </MemoryRouter>,
     );
@@ -165,36 +184,41 @@ describe("Dashboard screen", () => {
     expect(await screen.findByText("103,680")).toBeInTheDocument();
   });
 
-  it("draws one motor sprite per asset, tiered by failure probability", async () => {
+  it("draws one motor sprite per asset, tiered by the API status (critical is latched)", async () => {
     render(
       <MemoryRouter>
         <XRayProvider>
-          <Dashboard />
+          <Fleet />
         </XRayProvider>
       </MemoryRouter>,
     );
-    const hot = await screen.findByRole("img", { name: /^MTR-042: high risk, nominal, p\(fail\) 62.0%, contract open$/ });
+    const hot = await screen.findByRole("img", { name: /^MTR-042: critical, running, p\(fail\) 62.0%, contract open$/ });
     expect(hot).toHaveAttribute("data-tier", "high");
     expect(hot).toHaveClass("iso", "tier-high", "vibrating");
     expect(hot.querySelector(".smoke")).not.toBeNull();
     expect(hot.querySelector(".beacon")).not.toBeNull();
 
-    const calm = screen.getByRole("img", { name: /^MTR-001: low risk, nominal, p\(fail\) 2.0%$/ });
+    const calm = screen.getByRole("img", { name: /^MTR-001: within healthy baseline, running, p\(fail\) 2.0%$/ });
     expect(calm).toHaveAttribute("data-tier", "low");
     expect(calm).not.toHaveClass("vibrating");
     expect(calm.querySelector(".smoke")).toBeNull();
     expect(calm.querySelector(".beacon")).toBeNull();
 
     // tier is also written as text so colour is never the only cue
-    expect(screen.getByText("high risk")).toBeInTheDocument();
-    expect(screen.getByText("low risk")).toBeInTheDocument();
+    expect(screen.getByText("critical")).toBeInTheDocument();
+    expect(screen.getByText("within healthy baseline")).toBeInTheDocument();
+    // the latched alarm and the sandbox flag are API fields shown as pills
+    const latched = screen.getByText("latched since 09-13 08:30");
+    expect(latched).toHaveAttribute("title", "sustained p >= 0.5 over 3 rows");
+    expect(screen.getByText("sandbox scenario")).toBeInTheDocument();
+    expect(screen.getAllByText("State: running")).toHaveLength(3);
   });
 
   it("switches every sprite to pixel style from the toggle and remembers it", async () => {
     render(
       <MemoryRouter>
         <XRayProvider>
-          <Dashboard />
+          <Fleet />
         </XRayProvider>
       </MemoryRouter>,
     );
@@ -215,7 +239,7 @@ describe("Dashboard screen", () => {
     render(
       <MemoryRouter>
         <XRayProvider>
-          <Dashboard />
+          <Fleet />
         </XRayProvider>
       </MemoryRouter>,
     );
@@ -230,7 +254,7 @@ describe("Dashboard screen", () => {
     render(
       <MemoryRouter>
         <XRayProvider>
-          <Dashboard />
+          <Fleet />
         </XRayProvider>
       </MemoryRouter>,
     );
@@ -252,7 +276,8 @@ describe("Dashboard screen", () => {
     expect(urls().some((u) => u.endsWith("/twin"))).toBe(true);
     expect(tip).toHaveTextContent("critical");
     expect(tip).toHaveTextContent("62.0%");
-    expect(tip).toHaveTextContent("run");
+    expect(tip).toHaveTextContent("running");
+    expect(tip).toHaveTextContent("latched since 09-13 08:30");
     expect(tip).toHaveTextContent("contract pending");
     expect(screen.getByRole("tooltip")).toBeInTheDocument();
 

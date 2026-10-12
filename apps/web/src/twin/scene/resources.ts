@@ -25,7 +25,7 @@ export interface SceneResources {
     pulse: THREE.SphereGeometry;
     selectRing: THREE.RingGeometry;
     glyph: Record<GlyphShape, THREE.ShapeGeometry>;
-    /** Regime rings: dash pattern per regime so a load change is visible without colour. */
+    /** State rings: dash pattern per operating state so a load change is visible without colour. */
     regime: Record<"R1" | "R2" | "R3" | "unknown", THREE.BufferGeometry>;
   };
   mat: {

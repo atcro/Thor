@@ -11,7 +11,7 @@ import type { DataState, PlcTag, PredictionPoint, ShapFeature, Thresholds, TwinH
 import { Loaded, WORK_ORDER_WORD } from "../components/ui";
 import { usePolling } from "../hooks/usePolling";
 import { fmtDateTime, fmtInt, fmtNum, fmtPct, fmtShort, humanise, OPTION_LABEL } from "../lib/format";
-import { DECISION_WORD, regimeWord, STATUS_GLYPH } from "./status";
+import { DECISION_WORD, HEALTHY_MEANING, STATUS_EXPLAIN, STATUS_GLYPH, stateWord } from "./status";
 import { StatusGlyph } from "./XRayTooltip";
 
 const DATA_STATE_WORD: Record<DataState, string> = { live: "live", stale: "stale", none: "no data" };
@@ -38,7 +38,10 @@ function Module({ title, children, testId }: { title: string; children: ReactNod
   );
 }
 
-/** Tiny stored-prediction sparkline with the two threshold lines. Only scaling happens here. */
+/**
+ * Tiny stored-prediction sparkline (raw per-sample rows, nothing hidden) with the two threshold
+ * lines. Samples scored from sandbox readings are drawn as amber dots. Only scaling happens here.
+ */
 function Sparkline({ points, thresholds }: { points: PredictionPoint[]; thresholds: Thresholds }) {
   const W = 200;
   const H = 56;
@@ -53,9 +56,43 @@ function Sparkline({ points, thresholds }: { points: PredictionPoint[]; threshol
       <line x1={0} x2={W} y1={y(thresholds.classification)} y2={y(thresholds.classification)} stroke="var(--tw-crit)" strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
       <line x1={0} x2={W} y1={y(thresholds.early_warning)} y2={y(thresholds.early_warning)} stroke="var(--tw-warn)" strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
       {n > 1 && <polyline points={path} fill="none" stroke="var(--tw-accent)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
-      {last && <circle cx={x(n - 1)} cy={y(last.failure_probability)} r={2.5} fill="var(--tw-primary)" />}
+      {points.map((pt, i) =>
+        pt.sandbox ? <circle key={pt.ts} cx={x(i)} cy={y(pt.failure_probability)} r={2} fill="var(--tw-warn)" data-sandbox="1" /> : null,
+      )}
+      {last && <circle cx={x(n - 1)} cy={y(last.failure_probability)} r={2.5} fill={last.sandbox ? "var(--tw-warn)" : "var(--tw-primary)"} />}
     </svg>
   );
+}
+
+/** "Status: critical · latched since <ts> · <reason>" from the API's latched alarm fields. */
+function StatusLine({ hud }: { hud: TwinHud }) {
+  const a = hud.asset;
+  if (a.alarm === "critical") {
+    return (
+      <>
+        Status: <span className="xray-bad">critical</span> · latched since{" "}
+        <span className="xray-num" title={fmtDateTime(a.alarm_since)}>{fmtShort(a.alarm_since)}</span>
+        {a.alarm_reason && <> · {a.alarm_reason}</>} · stays critical until a completed work order clears it
+      </>
+    );
+  }
+  if (a.alarm === "warning") {
+    return (
+      <>
+        Status: <span className="xray-warn">warning</span> · since{" "}
+        <span className="xray-num" title={fmtDateTime(a.alarm_since)}>{fmtShort(a.alarm_since)}</span>
+        {a.alarm_reason && <> · {a.alarm_reason}</>}
+      </>
+    );
+  }
+  if (a.status === "healthy") {
+    return (
+      <>
+        Status: <span className="xray-ok">{HEALTHY_MEANING}</span> · below the early-warning threshold
+      </>
+    );
+  }
+  return <>Status: {STATUS_EXPLAIN[a.status]}</>;
 }
 
 function tagValue(t: PlcTag): string {
@@ -96,8 +133,10 @@ function HudBody({ hud, assetId }: { hud: TwinHud; assetId: string }) {
   const wo = a.work_order;
   const c = hud.contract;
   const m = hud.model;
-  const regimes = ["R1", "R2", "R3"] as const;
-  const regimeVar: Record<(typeof regimes)[number], string> = { R1: "var(--tw-r1)", R2: "var(--tw-r2)", R3: "var(--tw-r3)" };
+  const states = ["R1", "R2", "R3"] as const;
+  const stateVar: Record<(typeof states)[number], string> = { R1: "var(--tw-r1)", R2: "var(--tw-r2)", R3: "var(--tw-r3)" };
+  const nSandbox = hud.prediction_trend.filter((pt) => pt.sandbox).length;
+  const sandboxDecision = Boolean(c?.sandbox_scenario || wo?.sandbox_scenario);
 
   return (
     <>
@@ -123,32 +162,43 @@ function HudBody({ hud, assetId }: { hud: TwinHud; assetId: string }) {
             </span>
           </div>
         </div>
+        <div className="xray-note" data-testid="hud-status-line">
+          <StatusLine hud={hud} />
+        </div>
         <Sparkline points={hud.prediction_trend} thresholds={hud.thresholds} />
         <div className="xray-note">
-          {hud.prediction_trend.length} stored sample{hud.prediction_trend.length === 1 ? "" : "s"} · lines: early warning{" "}
-          <span className="xray-warn xray-num">{fmtPct(hud.thresholds.early_warning, 0)}</span> · classification{" "}
+          {hud.prediction_trend.length} stored sample{hud.prediction_trend.length === 1 ? "" : "s"}
+          {nSandbox > 0 && (
+            <>
+              {" "}
+              (<span className="xray-warn">{nSandbox} from sandbox readings</span>)
+            </>
+          )}{" "}
+          · lines: early warning <span className="xray-warn xray-num">{fmtPct(hud.thresholds.early_warning, 0)}</span> · classification{" "}
           <span className="xray-bad xray-num">{fmtPct(hud.thresholds.classification, 0)}</span> · shown p(fail) is the median of last 3 samples
         </div>
       </Module>
 
-      <Module title="Regime" testId="hud-regime">
+      <Module title="State" testId="hud-regime">
         <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>
-          {regimeWord(a.regime)}
+          {stateWord(a.regime)}
           {a.regime && <span className="xray-dim xray-num" style={{ fontWeight: 400, marginLeft: 8 }}>{a.regime}</span>}
         </div>
         <div className="xray-chips">
-          {regimes.map((r) => (
+          {states.map((r) => (
             <span
               key={r}
               className={`xray-chip${a.regime === r ? " lit" : ""}`}
-              style={{ "--chip-color": regimeVar[r] } as CSSProperties}
+              style={{ "--chip-color": stateVar[r] } as CSSProperties}
               aria-current={a.regime === r ? "true" : undefined}
             >
-              {r} · {regimeWord(r)}
+              {r} · {stateWord(r)}
             </span>
           ))}
         </div>
-        <div className="xray-note">inferred from rpm / load against the production model's baseline</div>
+        <div className="xray-note" title="Operating state inferred from rpm and load (called an operating regime in the literature)">
+          operating state inferred from rpm / load against the production model's baseline
+        </div>
       </Module>
 
       <Module title="Live sensors" testId="hud-sensors">
@@ -168,9 +218,15 @@ function HudBody({ hud, assetId }: { hud: TwinHud; assetId: string }) {
           <div className="xray-dim">no telemetry received yet</div>
         )}
         <div className="xray-note">
-          last sample <span className="xray-num" title={fmtDateTime(a.last_ts)}>{fmtShort(a.last_ts)}</span> · data{" "}
+          last sample <span className="xray-num" title={fmtDateTime(a.last_ts)}>{fmtShort(a.last_ts)}</span> · Data:{" "}
           <span className={`xray-num ${a.data_state === "live" ? "xray-ok" : a.data_state === "stale" ? "xray-warn" : "xray-dim"}`}>{DATA_STATE_WORD[a.data_state]}</span> ·{" "}
           <span className="xray-num">{a.msgs_last_60s}</span> msgs / 60 s
+          {a.latest?.sandbox && (
+            <>
+              {" "}
+              · <span className="xray-warn">sandbox readings</span>
+            </>
+          )}
         </div>
       </Module>
 
@@ -194,7 +250,17 @@ function HudBody({ hud, assetId }: { hud: TwinHud; assetId: string }) {
       </Module>
 
       <Module title="Decision & work order" testId="hud-decision">
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{DECISION_WORD[a.decision_state]}</div>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>
+          Decision: {DECISION_WORD[a.decision_state]}
+          {sandboxDecision && (
+            <>
+              {" "}
+              <span className="xray-chip sandbox" title="This contract / work order was raised on simulated sandbox readings">
+                sandbox scenario
+              </span>
+            </>
+          )}
+        </div>
         {c && (
           <dl className="xray-kv">
             <dt>contract</dt>
@@ -369,8 +435,14 @@ export function XRayHud({ assetId, onClose }: { assetId: string; onClose: () => 
                 {a.asset.role ? ` · ${a.asset.role}` : ""}
               </div>
               {g && (
-                <div className="status" style={{ color: g.color }} data-testid="hud-status">
+                <div className="status" style={{ color: g.color }} data-testid="hud-status" title={STATUS_EXPLAIN[a.status]}>
                   {g.word}
+                  {a.alarm === "critical" && <span className="xray-dim" style={{ textTransform: "none", letterSpacing: 0 }}>· latched since {fmtShort(a.alarm_since)}</span>}
+                  {(a.sandbox || a.alarm_sandbox) && (
+                    <span className="xray-chip sandbox" title="Sandbox scenario: the displayed prediction or alarm came from simulated readings">
+                      sandbox scenario
+                    </span>
+                  )}
                 </div>
               )}
             </>

@@ -1,11 +1,11 @@
 /**
  * X-Ray hover content: the status glyph and exactly three key facts, all from a TwinAsset
  * the API returned. Also exports StatusGlyph (an inline SVG shape per status) for the scene
- * labels and the Dashboard.
+ * labels and the Fleet.
  */
 import type { TwinAsset, TwinStatus } from "../api/types";
-import { fmtPct } from "../lib/format";
-import { DECISION_WORD, regimeWord, STATUS_GLYPH, type GlyphShape } from "./status";
+import { fmtPct, fmtShort } from "../lib/format";
+import { DECISION_WORD, STATUS_EXPLAIN, STATUS_GLYPH, stateWord, type GlyphShape } from "./status";
 
 function shapePath(shape: GlyphShape): JSX.Element {
   // All shapes are drawn in a 0..20 box and filled with the status colour.
@@ -47,21 +47,28 @@ export function StatusGlyph({ status, size = 14, lit = false, className = "" }: 
 export function XRayTooltip({ asset }: { asset: TwinAsset }) {
   const g = STATUS_GLYPH[asset.status];
   const p = asset.failure_probability;
+  const sandbox = asset.sandbox || asset.alarm_sandbox;
   return (
     <div className="xray-tip" data-testid={`xray-tip-${asset.asset.asset_id}`}>
       <div className="xray-tip-head">
         <StatusGlyph status={asset.status} size={16} lit />
         <span className="xray-id">{asset.asset.asset_id}</span>
-        <span className="xray-status-word" style={{ color: g.color }}>
+        <span className="xray-status-word" style={{ color: g.color }} title={STATUS_EXPLAIN[asset.status]}>
           {g.word}
+          {asset.alarm === "critical" && ` · latched since ${fmtShort(asset.alarm_since)}`}
         </span>
+        {sandbox && (
+          <span className="xray-chip sandbox" title="Sandbox scenario: simulated readings">
+            sandbox scenario
+          </span>
+        )}
       </div>
       <div className="xray-tip-name">{asset.asset.name}</div>
       <dl className="xray-facts">
         <dt>p(fail)</dt>
         <dd className="xray-num">{p === null || p === undefined ? "no prediction yet" : fmtPct(p)}</dd>
-        <dt>regime</dt>
-        <dd>{regimeWord(asset.regime)}</dd>
+        <dt>state</dt>
+        <dd>{stateWord(asset.regime)}</dd>
         <dt>decision</dt>
         <dd>{DECISION_WORD[asset.decision_state]}</dd>
       </dl>

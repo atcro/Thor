@@ -1,6 +1,6 @@
 /**
  * X-Ray mode state: the toggle (persisted per viewer in localStorage `thor.xray`) and which
- * asset's HUD is open. Shared by the 3-D Digital Twin and the Dashboard.
+ * asset's HUD is open. Shared by the 3-D Digital Twin and the Fleet.
  *
  * The state lives in a tiny external store so every `useXRay()` caller sees the same value.
  * `XRayProvider` scopes a fresh store to a subtree (App.tsx mounts one app-wide; tests mount

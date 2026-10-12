@@ -1,4 +1,4 @@
-/* X-Ray HUD, tooltip, toggle and rewind bar for the 3-D Digital Twin and the Dashboard.
+/* X-Ray HUD, tooltip, toggle and rewind bar for the 3-D Digital Twin and the Fleet.
    Every colour is a --tw-* custom property set by TwinThemeRoot from src/twin/palette.ts
    (one place to switch the scheme). Status colours never use the primary yellow.
    Readability on a projector: body text >= 13 px, light ink on a dark panel.
@@ -190,7 +190,7 @@
   color: var(--tw-ink);
 }
 
-/* Dashboard: the card is the hover host; the tooltip floats above it (outside the card, so the
+/* Fleet: the card is the hover host; the tooltip floats above it (outside the card, so the
    card's overflow:hidden cannot clip it). */
 .xray-host {
   position: relative;
@@ -228,7 +228,7 @@
   }
 }
 
-/* ---------- HUD drawer (Dashboard; the Twin has its own .twin-drawer) ---------- */
+/* ---------- HUD drawer (Fleet; the Twin has its own .twin-drawer) ---------- */
 
 .xray-drawer {
   position: fixed;
@@ -489,6 +489,17 @@
   cursor: help;
 }
 
+/* Sandbox scenario: the warning amber (never the brand / primary yellow). */
+.xray-chip.sandbox {
+  color: var(--tw-warn);
+  border-color: var(--tw-warn);
+  font-size: 10.5px;
+  padding: 0 6px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: help;
+}
+
 .xray-sensors {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -695,7 +706,7 @@
   background: var(--tw-warn);
 }
 
-.rewind-tick.predicted_failure {
+.rewind-tick.critical_alarm {
   background: var(--tw-crit);
 }
 
@@ -732,4 +743,41 @@
   color: var(--tw-ink);
   font-family: var(--font-mono);
   font-weight: 600;
+}
+
+/* The two lead-time figures side by side, each with the API's own label. */
+.rewind-leadtimes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 14px;
+  margin-top: 8px;
+}
+
+.rewind-lead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--tw-line);
+  border-radius: 3px;
+  cursor: help;
+}
+
+.rewind-lead b {
+  color: var(--tw-primary);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.rewind-lead .lbl {
+  color: var(--tw-ink-2);
+  font-size: 11.5px;
+}
+
+@media (max-width: 1100px) {
+  .rewind-leadtimes {
+    grid-template-columns: 1fr;
+  }
 }
