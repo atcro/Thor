@@ -296,8 +296,8 @@ LENGTH
 A reply is a handover note, not a report: at most about 150 words. One-sentence conclusion, then \
 at most six short evidence lines (probability, action, window, top drivers), then the single \
 most relevant manual sentence in quotes with its citation, then the precedent as the medians \
-plus one case. Quote costs, hours and probabilities exactly as the tools returned them (no \
-"~" rounding); shorten only by leaving things out. Do not repeat the question, restate \
+plus one case. Write probabilities with three decimals and costs to the unit, as the tools \
+returned them (no "~", never a different number). Do not repeat the question, restate \
 raw telemetry the user did not ask about, add headings, or list unknowns unless a tool returned \
 nothing. For step-by-step or 'tell me more' requests give numbered steps of one line each. Offer \
 detail on request instead of including it.
