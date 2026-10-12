@@ -377,3 +377,17 @@ def test_calibration_uses_the_probability_for_every_family(frame: pd.DataFrame) 
     raw = model.predict_proba(hold[FEATURES])[:, 1]
     a, b = rep.transform["a"], rep.transform["b"]
     np.testing.assert_allclose(1.0 / (1.0 + np.exp(a * raw + b)), p, atol=1e-9)
+    # and the ONNX export unwraps the calibrator down to the tree: edge parity passes
+    import tempfile
+    from pathlib import Path
+
+    import joblib
+
+    from agents.mlops.lifecycle import check_edge_parity
+
+    with tempfile.TemporaryDirectory() as tmp:
+        artifact = Path(tmp) / "champion.joblib"
+        joblib.dump(wrapper, artifact)
+        report = check_edge_parity(artifact, FEATURES, hold[FEATURES].head(50), workdir=Path(tmp))
+    assert report.passed, report.notes
+    assert report.calibration_method == "sigmoid"

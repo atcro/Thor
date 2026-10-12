@@ -668,8 +668,12 @@ def _unwrap_estimator(model: Any) -> tuple[Any, dict[str, Any]]:
         if calibrated:
             current = calibrated[0].estimator
             continue
-        # sklearn >= 1.6 wraps a prefit estimator in FrozenEstimator inside the calibrator
-        if type(current).__name__ == "FrozenEstimator" and hasattr(current, "estimator"):
+        # sklearn >= 1.6 wraps a prefit estimator in FrozenEstimator inside the calibrator;
+        # the validation step wraps the tree model in _ProbabilityOnly (calibration on the
+        # probability). Both expose the wrapped model as `.estimator`.
+        if type(current).__name__ in ("FrozenEstimator", "_ProbabilityOnly") and hasattr(
+            current, "estimator"
+        ):
             current = current.estimator
             continue
         base = getattr(current, "estimator", None)
