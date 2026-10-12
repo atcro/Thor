@@ -222,3 +222,32 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
   flicker, analysis 15 s with the same probability as the card (maintain_now), approval →
   in maintenance → green with the work order completed in 14 s, registry untouched.
   `docs/finals/prep-report.json` is the v64634 record.
+
+# Phase A — 3-D Digital Twin + X-Ray (2026-10-11, session 2)
+
+## 2026-10-11 18:00 — contract, plant layout, Dashboard rename
+
+- `f10936a`: the Twin API contract (`apps/api/schemas.py` Twin section, `Asset.role`,
+  `assets.role` column with an idempotent ALTER on old databases, real asset upsert) and its
+  TypeScript mirror + client calls (`getTwin`, `getTwinHud`, `getTwinRewind`, `getTwinEvents`,
+  `twinWsUrl`).
+- Plant layout in one place: `data/simulator/layout.py` (`PLANT_LAYOUT`, `duty_profile`,
+  `python -m data.simulator.layout` prints the measured duty table). Packaging Lines 1-5 × 4 roles
+  (infeed conveyor, filler, capper/labeler, case packer) + Compressor Hall × 4 air compressors.
+  Lines 3-4 = the seven fault-history motors + MTR-018; Lines 1-2 = the eight lowest-duty healthy
+  motors. Measured: Lines 3-4 bearing temp mean 53.4 °C / max 91.2 °C vs 50.8 / 72.9 on Lines 1-2;
+  vibration 2.66 / 8.18 vs 2.07 / 3.13 mm/s; load and starts flat by design. `generate.py` keeps
+  `rated_kw`/`criticality` per asset id (`_RATINGS`); regenerated `data/simulator/out` and proved
+  the telemetry parquet byte-identical (`DataFrame.equals` → True). Seed now upserts the catalogue
+  on every start. `data/simulator/out` added to `.dockerignore` (images generate it; no stale
+  catalogue can be baked in).
+- Web: `Fleet` → `Dashboard` (`/dashboard`, nav "Dashboard"), `/` → `Twin` placeholder, nav
+  "3-D Digital Twin"; three@0.169 + @react-three/fiber@8.18 + drei@9.122 installed (React 18 kept).
+- **Tests run:** `pytest tests/test_simulator.py tests/test_replay_work_orders.py` → 25 passed;
+  `pytest tests/test_api.py tests/test_ground_truth_isolation.py` → 19 passed; ruff clean on the
+  touched files; `tsc --noEmit` clean; vitest 4 passed.
+- Running in parallel: backend sub-agent on `apps/api/live.py`, `apps/api/plant.py`,
+  `apps/api/routes/twin.py`, edge `inference_ms`, `tests/test_twin.py`.
+- **Next:** twin scaffolding (`apps/web/src/twin/{palette,status,sceneTypes}.ts`), then the HUD /
+  X-Ray / rewind sub-agent and the 3D scene sub-agent; I write `Twin.tsx`, `useTwinLive.ts` and the
+  route smoke test.

@@ -1,7 +1,8 @@
 """Synthetic fleet telemetry generator -- Thor's primary demo data.
 
 Produces 30 days (default) of 10-minute sensor samples for 24 induction motors at a single
-plant site. Every asset cycles through three operating regimes on a shift schedule:
+plant site (five packaging lines plus a compressor hall; the layout and its reasoning live in
+`data/simulator/layout.py`). Every asset cycles through three operating regimes on a shift schedule:
 
 * R1 idle / startup  (rpm ~ 600,  load ~ 10 %)
 * R2 nominal         (rpm ~ 1480, load ~ 55 %)
@@ -72,6 +73,7 @@ except ModuleNotFoundError:  # pragma: no cover - replay container ships only da
         asset_type: str = "induction_motor"
         rated_kw: float = 75.0
         criticality: Literal["low", "medium", "high"] = "medium"
+        role: str = ""
 
 
 # --------------------------------------------------------------------------------------
@@ -126,65 +128,63 @@ TELEMETRY_COLUMNS: list[str] = [
 DEFAULT_START = datetime(2025, 8, 1, 0, 0, tzinfo=UTC)
 
 SITE = "Ludvika"
-LINES: tuple[str, str, str] = ("Compressor Hall", "Pump House", "Conveyor A")
 
-# (name, rated_kw, criticality) for each of the 8 motors per line, in ASSET_IDS order.
-_CATALOGUE: dict[str, list[tuple[str, float, str]]] = {
-    "Compressor Hall": [
-        ("Main air compressor K-1 drive motor", 160.0, "high"),
-        ("Instrument air compressor K-3 drive motor", 55.0, "medium"),
-        ("Chiller CH-1 compressor motor", 110.0, "high"),
-        ("Main air compressor K-2 drive motor", 160.0, "high"),  # MTR-042 (demo asset)
-        ("Cooling tower fan CT-1 motor", 37.0, "medium"),
-        ("Cooling tower fan CT-2 motor", 37.0, "medium"),
-        ("Dryer regeneration blower B-1 motor", 22.0, "low"),
-        ("Aftercooler circulation pump P-12 motor", 30.0, "low"),
-    ],
-    "Pump House": [
-        ("Cooling water pump P-101 motor", 75.0, "high"),
-        ("Cooling water pump P-102 motor", 75.0, "high"),
-        ("Boiler feed pump P-201 motor", 110.0, "high"),
-        ("Boiler feed pump P-202 motor", 110.0, "medium"),
-        ("Fire water jockey pump P-301 motor", 15.0, "medium"),
-        ("Process water pump P-110 motor", 55.0, "medium"),
-        ("Condensate return pump P-120 motor", 30.0, "low"),
-        ("Sump pump P-130 motor", 11.0, "low"),
-    ],
-    "Conveyor A": [
-        ("Conveyor A1 head drive motor", 75.0, "medium"),  # MTR-017
-        ("Conveyor A1 tail drive motor", 45.0, "low"),
-        ("Conveyor A2 head drive motor", 75.0, "medium"),
-        ("Conveyor A2 tail drive motor", 45.0, "low"),
-        ("Transfer tower T-1 drive motor", 55.0, "medium"),
-        ("Screen feeder F-1 drive motor", 30.0, "low"),
-        ("Bucket elevator E-1 drive motor", 90.0, "high"),
-        ("Stacker S-1 slew drive motor", 37.0, "medium"),
-    ],
+#: asset_id -> (rated_kw, criticality). Fixed per asset id: `rated_kw` sets the motor's
+#: current draw in `_simulate_asset`, so it must never move with the plant layout. Lines,
+#: roles and display names come from `data/simulator/layout.py` (metadata only).
+_RATINGS: dict[str, tuple[float, str]] = {
+    "MTR-001": (160.0, "high"),
+    "MTR-002": (55.0, "medium"),
+    "MTR-003": (110.0, "high"),
+    DEMO_ASSET: (160.0, "high"),
+    "MTR-005": (37.0, "medium"),
+    "MTR-006": (37.0, "medium"),
+    "MTR-007": (22.0, "low"),
+    "MTR-008": (30.0, "low"),
+    "MTR-009": (75.0, "high"),
+    "MTR-010": (75.0, "high"),
+    "MTR-011": (110.0, "high"),
+    "MTR-012": (110.0, "medium"),
+    "MTR-013": (15.0, "medium"),
+    "MTR-014": (55.0, "medium"),
+    "MTR-015": (30.0, "low"),
+    "MTR-016": (11.0, "low"),
+    "MTR-017": (75.0, "medium"),
+    "MTR-018": (45.0, "low"),
+    "MTR-019": (75.0, "medium"),
+    "MTR-020": (45.0, "low"),
+    "MTR-021": (55.0, "medium"),
+    "MTR-022": (30.0, "low"),
+    "MTR-023": (90.0, "high"),
+    "MTR-024": (37.0, "medium"),
 }
 
 
 def build_assets() -> list[Asset]:
     """Return the 24-asset catalogue.
 
-    Inputs: none. Output: list[Asset] in ASSET_IDS order (8 motors per line, 3 lines,
-    site "Ludvika"). Names/kW/criticality look like a real plant register.
+    Inputs: none. Output: list[Asset] in ASSET_IDS order. Line, role and name come from
+    `data.simulator.layout.PLANT_LAYOUT` (Packaging Lines 1-5 of four motors each plus the
+    Compressor Hall); rated kW and criticality are fixed per asset id in `_RATINGS`.
     """
+    from data.simulator.layout import PLANT_LAYOUT
+
     out: list[Asset] = []
-    i = 0
-    for line in LINES:
-        for name, kw, crit in _CATALOGUE[line]:
-            out.append(
-                Asset(
-                    asset_id=ASSET_IDS[i],
-                    name=name,
-                    site=SITE,
-                    line=line,
-                    asset_type="induction_motor",
-                    rated_kw=kw,
-                    criticality=crit,  # type: ignore[arg-type]
-                )
+    for asset_id in ASSET_IDS:
+        kw, crit = _RATINGS[asset_id]
+        slot = PLANT_LAYOUT[asset_id]
+        out.append(
+            Asset(
+                asset_id=asset_id,
+                name=slot.name,
+                site=SITE,
+                line=slot.line,
+                asset_type="induction_motor",
+                rated_kw=kw,
+                criticality=crit,  # type: ignore[arg-type]
+                role=slot.role,
             )
-            i += 1
+        )
     return out
 
 

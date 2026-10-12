@@ -5,20 +5,22 @@ import { fmtDateTime } from "../lib/format";
 import { Dot } from "./ui";
 
 const NAV: { to: string; label: string; key: string; end?: boolean }[] = [
-  { to: "/", label: "Fleet", key: "1", end: true },
-  { to: "/studio", label: "AutoML Studio", key: "2" },
-  { to: "/modelops", label: "ModelOps", key: "3" },
-  { to: "/copilot", label: "Copilot · Bolt", key: "4" },
+  { to: "/", label: "3-D Digital Twin", key: "1", end: true },
+  { to: "/dashboard", label: "Dashboard", key: "2" },
+  { to: "/studio", label: "AutoML Studio", key: "3" },
+  { to: "/modelops", label: "ModelOps", key: "4" },
+  { to: "/copilot", label: "Copilot · Bolt", key: "5" },
 ];
 
 function crumbFor(pathname: string): { section: string; detail?: string } {
   if (pathname.startsWith("/assets/")) {
     return { section: "Asset 360", detail: decodeURIComponent(pathname.split("/")[2] ?? "") };
   }
+  if (pathname.startsWith("/dashboard")) return { section: "Dashboard" };
   if (pathname.startsWith("/studio")) return { section: "AutoML Studio" };
   if (pathname.startsWith("/modelops")) return { section: "ModelOps" };
   if (pathname.startsWith("/copilot")) return { section: "Copilot · Bolt" };
-  return { section: "Fleet" };
+  return { section: "3-D Digital Twin" };
 }
 
 export function Layout() {
@@ -43,7 +45,7 @@ export function Layout() {
             to={n.to}
             end={n.end}
             className={({ isActive }) =>
-              `nav-link${isActive || (n.to === "/" && pathname.startsWith("/assets/")) ? " active" : ""}`
+              `nav-link${isActive || (n.to === "/dashboard" && pathname.startsWith("/assets/")) ? " active" : ""}`
             }
           >
             <span className="lbl">

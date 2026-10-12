@@ -162,7 +162,8 @@ function SystemPanel() {
   );
 }
 
-export function Fleet() {
+/** The Dashboard: the isometric/pixel fleet view (formerly "Fleet"). */
+export function Dashboard() {
   const fleet = usePolling(getFleet, 5000, "fleet");
   const [style, setStyle] = useState<SpriteStyle>(readStyle);
   const changeStyle = (s: SpriteStyle) => {
@@ -179,7 +180,7 @@ export function Fleet() {
     <div>
       <div className="page-head">
         <div>
-          <h1>Fleet</h1>
+          <h1>Dashboard</h1>
           <div className="sub">
             {fleet.data
               ? `${sorted.length} assets · ${nRisk} at risk · ${nUnscored} without a prediction yet · ${nOpen} open contract${nOpen === 1 ? "" : "s"} · ${nWork} work order${nWork === 1 ? "" : "s"} · sorted by failure risk`

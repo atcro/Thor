@@ -1,7 +1,8 @@
 """Startup seeding: assets + bulk telemetry from `data/simulator/out/`.
 
-`seed_if_needed()` is idempotent: it only inserts assets when the assets table is empty and
-only bulk-loads telemetry when the telemetry table is empty. When the simulator output is
+`seed_if_needed()` is idempotent: it upserts the asset catalogue on every start (so a
+metadata change reaches an existing database) and only bulk-loads telemetry when the
+telemetry table is empty. When the simulator output is
 missing and `SEED_ON_START=1`, it generates the fleet via `data.simulator.generate`.
 """
 
@@ -100,16 +101,20 @@ def seed_if_needed(engine: Engine | None = None) -> dict[str, int]:
 
     n_assets = len(db.list_assets(engine))
     n_rows = _telemetry_count(engine)
-    if n_assets and n_rows:
-        return result
     if not assets_path.exists() and os.environ.get("SEED_ON_START", "0") == "1":
         _generate(out_dir)
-    if n_assets == 0 and assets_path.exists():
+    # Assets are upserted on every start (24 rows): a catalogue change such as the plant
+    # layout (name, line, role) must reach a database that was seeded before it existed.
+    # Telemetry is only bulk-loaded once.
+    if assets_path.exists():
         try:
             result["assets"] = db.upsert_assets(_load_assets(assets_path), engine=engine)
-            log.info("seeded %d assets from %s", result["assets"], assets_path)
+            if result["assets"]:
+                log.info("seeded %d assets from %s", result["assets"], assets_path)
         except Exception as e:
             log.warning("asset seeding failed: %s", e)
+    if n_assets and n_rows:
+        return result
     if n_rows == 0 and parquet_path.exists():
         try:
             result["telemetry"] = load_telemetry_parquet(parquet_path, engine)

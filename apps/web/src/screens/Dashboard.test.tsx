@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FleetAsset, SystemHealth } from "../api/types";
-import { Fleet } from "./Fleet";
+import { Dashboard } from "./Dashboard";
 
 const fleet: FleetAsset[] = [
   {
@@ -89,7 +89,7 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
-describe("Fleet screen", () => {
+describe("Dashboard screen", () => {
   beforeEach(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (globalThis as any).fetch = vi.fn(async (input: RequestInfo | URL) => {
@@ -107,7 +107,7 @@ describe("Fleet screen", () => {
   it("renders asset ids from GET /fleet sorted by risk", async () => {
     render(
       <MemoryRouter>
-        <Fleet />
+        <Dashboard />
       </MemoryRouter>,
     );
     expect(await screen.findByText("MTR-042")).toBeInTheDocument();
@@ -122,7 +122,7 @@ describe("Fleet screen", () => {
   it("draws one motor sprite per asset, tiered by failure probability", async () => {
     render(
       <MemoryRouter>
-        <Fleet />
+        <Dashboard />
       </MemoryRouter>,
     );
     const hot = await screen.findByRole("img", { name: /^MTR-042: high risk, nominal, p\(fail\) 62.0%, contract open$/ });
@@ -145,7 +145,7 @@ describe("Fleet screen", () => {
   it("switches every sprite to pixel style from the toggle and remembers it", async () => {
     render(
       <MemoryRouter>
-        <Fleet />
+        <Dashboard />
       </MemoryRouter>,
     );
     await screen.findByText("MTR-042");
@@ -164,7 +164,7 @@ describe("Fleet screen", () => {
   it("shows a motor under an approved work order as offline, not as failing", async () => {
     render(
       <MemoryRouter>
-        <Fleet />
+        <Dashboard />
       </MemoryRouter>,
     );
     const offline = await screen.findByRole("img", { name: /^MTR-021: no prediction, offline for maintenance/ });

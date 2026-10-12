@@ -20,6 +20,7 @@ from data.simulator.generate import (
     generate_fleet,
     write_outputs,
 )
+from data.simulator.layout import LINES, PACKAGING_ROLES, PLANT_LAYOUT, duty_profile, line_members
 
 DAYS = 3
 STEP = 10
@@ -51,11 +52,46 @@ def test_assets_catalogue_matches_contract() -> None:
     assets = build_assets()
     assert [a.asset_id for a in assets] == ASSET_IDS
     assert {a.site for a in assets} == {"Ludvika"}
-    assert {a.line for a in assets} == {"Compressor Hall", "Pump House", "Conveyor A"}
+    assert {a.line for a in assets} == set(LINES)
+    assert {a.line for a in assets} == {*(f"Packaging Line {i}" for i in range(1, 6)), "Compressor Hall"}
     demo = next(a for a in assets if a.asset_id == DEMO_ASSET)
-    assert demo.criticality == "high"
+    assert demo.criticality == "high" and demo.rated_kw == 160.0
+    assert demo.line == "Packaging Line 3" and demo.role == "filler"
     for a in assets:
         Asset.model_validate(a.model_dump())  # round-trips through the shared contract
+
+
+def test_plant_layout_groups_and_roles() -> None:
+    """Five packaging lines of four roles each plus a four-motor Compressor Hall; the
+    fault-history motors sit on Lines 3-4 and ratings never moved with the layout."""
+    assets = {a.asset_id: a for a in build_assets()}
+    assert set(PLANT_LAYOUT) == set(ASSET_IDS)
+    for line in LINES:
+        members = line_members(line)
+        assert len(members) == 4
+        roles = [assets[a].role for a in members]
+        if line == "Compressor Hall":
+            assert roles == ["air compressor"] * 4
+        else:
+            assert roles == list(PACKAGING_ROLES)
+    lines_3_4 = {a for a, s in PLANT_LAYOUT.items() if s.line in ("Packaging Line 3", "Packaging Line 4")}
+    assert set(FAULTY_ASSETS) <= lines_3_4
+    # ratings are keyed by asset id (the generator's current draw depends on them)
+    assert assets["MTR-042"].rated_kw == 160.0 and assets["MTR-016"].rated_kw == 11.0
+    assert assets["MTR-003"].criticality == "high" and assets["MTR-007"].criticality == "low"
+
+
+def test_lines_3_4_measure_harder_duty_than_lines_1_2(fleet: tuple[pd.DataFrame, list[Asset]]) -> None:
+    """The layout's premise is true in the data: Lines 3-4 run hotter and vibrate more than
+    Lines 1-2 over the generated history (observable sensors only)."""
+    df, _ = fleet
+    prof = duty_profile(df)
+    hard = prof[prof["line"].isin(["Packaging Line 3", "Packaging Line 4"])]
+    easy = prof[prof["line"].isin(["Packaging Line 1", "Packaging Line 2"])]
+    assert len(hard) == 8 and len(easy) == 8
+    assert hard["bearing_temp_max"].mean() > easy["bearing_temp_max"].mean() + 5.0
+    assert hard["vibration_max"].mean() > 1.5 * easy["vibration_max"].mean()
+    assert hard["vibration_mean"].mean() > easy["vibration_mean"].mean()
 
 
 def test_shape_and_columns(fleet: tuple[pd.DataFrame, list[Asset]]) -> None:
