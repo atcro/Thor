@@ -234,8 +234,8 @@
 }
 
 .twin-rewind.with-badges {
-  left: 240px;
-  right: 240px;
+  left: 345px;
+  right: 345px;
 }
 
 .twin-fallback {
@@ -246,7 +246,7 @@
   position: absolute;
   z-index: 2;
   left: 50%;
-  bottom: 12px;
+  bottom: 124px;
   transform: translateX(-50%);
   font-size: 12px;
   color: var(--tw-ink-2);

@@ -287,3 +287,24 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
 - **Next:** scene sub-agent report → commit `twin/scene/`; native end-to-end (API :8010 + prep +
   replay + web dev server) to view the twin, measure fps, check pulses/counters/rewind; full
   pytest; Docker build; fresh-context audit; docs (session-notes, CLAUDE.md §15 status).
+
+## 2026-10-11 20:15 — scene landed, end-to-end on a live stack, measured
+
+- Scene sub-agent delivered `apps/web/src/twin/scene/` (`5f252be`): procedural lines/machines/
+  motors/compressors, edge node + control plane + path lines, instanced pulses driven only by the
+  event queue, regime rings, status glyphs, decision chips, camera rig with overview/line/asset
+  fly-to, fps reporter, performance mode, fixture + 11 layout tests.
+- Native end-to-end (API :8010 + native edge :8011 subscribed read-only to the Docker broker on
+  :1883, prep v68365 promoted by demo-prep@thor, parity 3.4e-5): `/twin` live counters
+  36 msgs/s, 24 preds/s, edge inference p50 0.45 ms, path latency p50 514 ms, 240 samples,
+  24/24 motors live. Headless Chrome (Iris Xe, 1920×1080, D3D11): overview with live pulses
+  **56-60 fps**, performance mode 60 fps, HUD open 48 fps; counters/provenance/HUD/PLC/MES/rewind
+  all read from the API (console errors: 0). Dashboard X-Ray hover + HUD drawer verified in the
+  browser. Synthetic predictions on the scratch stack: MTR-042 critical (median 0.62), HUD trend
+  rising, rewind markers early_warning / predicted_failure, label "MTR-042 critical p 0.62".
+- **Tests run:** full `pytest` → 237 passed in 189 s; `vitest run` → 20 passed; `npm run build`
+  ok (PlantScene chunk 873 kB / 233 kB gzip, lazy). Fixed two overlay overlaps (rewind bar vs
+  badges, rewind status line). `docs/finals/session-notes.md` has the Phase A notes.
+- **Next:** fresh-context audit of the "done" list; `docker compose build` (python images
+  running, web after the CSS fix); CLAUDE.md §15 Phase A status; final report; stop native
+  processes (API 8010, edge 8011, vite 5175, chrome 9333).

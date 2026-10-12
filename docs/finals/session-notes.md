@@ -105,3 +105,75 @@ Prompt B (Bolt Designer) build on this. Keep these true.
   dashboard never freezes. Anything keyed on absolute plant time must tolerate that.
 - Demo timings from the rehearsal: MTR-042 red ~75 s after prep finishes; analysis 17 s;
   approval → green ~30 s. See `demo-walkthrough.md`.
+
+# Phase A notes (3-D Digital Twin + X-Ray, 2026-10-11 evening)
+
+## What exists now (for Prompt B / Bolt Designer)
+
+- Screens: `/` is the **3-D Digital Twin** (`apps/web/src/screens/Twin.tsx`), `/dashboard` is the
+  old Fleet view renamed **Dashboard**. Nav keys 1-5: Twin, Dashboard, AutoML Studio, ModelOps,
+  Copilot. `App.tsx` mounts `XRayProvider`; the X-Ray toggle state is shared across screens
+  (localStorage `thor.xray`).
+- Plant layout: `data/simulator/layout.py` (`PLANT_LAYOUT`, `line_members`, `duty_profile`,
+  `python -m data.simulator.layout`). Lines 3-4 hold the seven fault-history motors + MTR-018.
+  `Asset.role` is a DB column (`assets.role`, ALTER on old databases in `db.init_db`), and the seed
+  upserts the catalogue on every start, so a Docker volume seeded before Phase A gets the new
+  names/lines/roles on restart. MTR-042 = Packaging Line 3 filler. Rated kW/criticality are keyed
+  by asset id in `generate.py::_RATINGS`; the telemetry is byte-identical to before (checked).
+- Twin API (`apps/api/routes/twin.py`): `GET /twin` (snapshot, polled every 2 s by the page),
+  `GET /twin/hud/{id}`, `GET /twin/rewind`, `GET /twin/events?since=`, `WS /ws/twin` (250 ms
+  frames). The live bus `apps/api/live.py` is in-process: it starts empty on every API restart
+  (all motors show "no data" until the first message arrives; this is honest, not a bug).
+  `TWIN_STALE_AFTER_S` (30 s) decides "no data".
+- Status precedence (API, `twin_status`): offline (work order in progress) > no_data > critical
+  (p ≥ 0.5) > warning (p ≥ 0.3) > healthy > no_prediction. The Dashboard sprite tiers still use
+  0.15/0.4; the twin and HUD use the API thresholds. Colours: `apps/web/src/twin/palette.ts`
+  (`TWIN_THEME = "neon" | "app"`, one line) and `STATUS_COLOR`; glyph shapes in `status.ts`.
+- Decision badges come from `decision_state`; a pending contract created after the newest work
+  order's approval wins over that older work order (so a second analysis after a repair shows
+  "contract pending"). Prompt B should add its own `DecisionState` value(s) (e.g.
+  `design_change_pending`, `upgraded_spec_installed`) in `schemas.py` + `types.ts` +
+  `DECISION_WORD` + the scene's badge styles (`scene/PlantScene.tsx` / `scene.css`).
+- HUD modules each have a `data-testid` (`hud-probability`, `hud-regime`, `hud-sensors`,
+  `hud-drivers`, `hud-decision`, `hud-provenance`, `hud-plc`, `hud-mes`); add a Designer module
+  there rather than a new panel. PLC tags: `apps/api/plant.py::plc_tags` (`source` = telemetry
+  field, `simulated` + `basis` otherwise). MES: `simulated_mes_context`, imported by the twin
+  route only; `tests/test_twin.py` greps `agents/`, orchestrator, scoring, pipeline, approvals and
+  `edge/` for it. Keep it that way.
+- The simulated-CMMS "upgraded spec installed" step (Prompt B) can be surfaced as a work-order
+  event note + a new decision state; the replay's `work_orders.py` already posts insert-only
+  events the twin reads through `db.work_order_by_asset`.
+
+## Verified in a real browser (headless Chrome over CDP, this laptop = Iris Xe, 1080p)
+
+- Overview with live pulses at 33.6 msgs/s: 56-60 fps; performance mode 60 fps; HUD open 48 fps
+  (drei `Html` labels + 420 px drawer; still above the 45 fps bar).
+- Counters are measured at the control plane: msgs/s, preds/s, edge inference p50 0.6 ms,
+  motor→edge→control plane p50 ~525 ms (dominated by the edge's 0.5 s POST batching interval
+  `EDGE_POST_INTERVAL_S`, which is a real property of the system; say so if asked).
+- No Chrome extension / in-app browser is available to Claude Code on this laptop; the
+  screenshot route is `chrome.exe --headless=new --remote-debugging-port=9333` + a small CDP
+  script (scratchpad `app_cdp.mjs` pattern) against `npx vite --port 5175` with
+  `VITE_API_BASE_URL=http://127.0.0.1:8010`.
+
+## Native end-to-end recipe that worked (while the team's Docker stack was up)
+
+- API on :8010 with scratch `DATABASE_URL`/`MODELS_DIR`/`CHROMA_PATH`/`MLFLOW_TRACKING_URI`,
+  `THOR_SKIP_BACKGROUND=0`, `MQTT_BROKER_URL=mqtt://127.0.0.1:1883` (the Docker broker, read-only
+  subscription), `EDGE_URL=http://127.0.0.1:8011`; native edge `uvicorn edge.main:app --port 8011`
+  with the same `MODELS_DIR` and `CONTROL_PLANE_URL=http://127.0.0.1:8010`; `scripts.demo_prep`
+  against :8010. The Docker replay's MQTT stream then feeds the native stack without touching the
+  Docker one. Do NOT run a second replay against the Docker broker: it would feed the team's stack.
+- With the Docker stack down, the simpler recipe in CLAUDE.md §16 (HTTP replay) works but has no
+  edge, so only `POST /pipeline/score` / Run analysis produce predictions.
+
+## Gotchas
+
+- Bash heredocs with apostrophes/backticks silently failed on this machine; use the Write tool
+  for files, Python scripts for patching.
+- `data/simulator/out` is now in `.dockerignore`; images generate the fleet at startup
+  (`SEED_ON_START=1`), so a stale local catalogue can never be baked in.
+- `edge_up` in `/twin` probes `EDGE_URL`; natively that can hit the Docker edge on :8001 and
+  truthfully report "up" for the other stack.
+- The rewind bar lays its series on plant time; contract/approval wall-clock times are not on
+  the axis (only early_warning, predicted_failure, work_order_started/completed are).
