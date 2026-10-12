@@ -123,6 +123,30 @@ def test_no_prediction_means_no_health_score(client: TestClient) -> None:
     assert asset["health_score"] == 40.0 and asset["model_version"] == "v9"
 
 
+def test_fleet_probability_is_the_median_of_the_last_three_samples(client: TestClient) -> None:
+    """One noisy sample never flips a colour: the displayed probability is the median of the
+    asset's last three predictions (the alarm's own sustained-rows rule), stamped with the
+    newest row's time and model."""
+    from datetime import timedelta
+
+    engine = db.get_engine()
+    base = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    for i, p in enumerate([0.9, 0.0, 0.8, 0.05]):  # newest last
+        db.insert_prediction("MTR-003", base + timedelta(minutes=10 * i), "v9", p, engine=engine)
+    row = db.latest_prediction_rows(engine)["MTR-003"]
+    assert row["failure_probability"] == 0.05  # median of [0.0, 0.8, 0.05] -> 0.05
+    assert row["n_rows"] == 3 and row["ts"] == base + timedelta(minutes=30)
+    db.insert_prediction("MTR-003", base + timedelta(minutes=40), "v9", 0.95, engine=engine)
+    row = db.latest_prediction_rows(engine)["MTR-003"]
+    assert row["failure_probability"] == 0.8  # median of [0.8, 0.05, 0.95]
+    fleet = {f["asset"]["asset_id"]: f for f in client.get("/fleet").json()}
+    assert fleet["MTR-003"]["failure_probability"] == 0.8
+    assert fleet["MTR-003"]["health_score"] == pytest.approx(20.0)
+    # a single prediction is its own median
+    db.insert_prediction("MTR-001", base, "v9", 0.4, engine=engine)
+    assert db.latest_prediction_rows(engine)["MTR-001"]["failure_probability"] == 0.4
+
+
 def test_fleet_regime_is_inferred_from_rpm_and_load(client: TestClient) -> None:
     """With a production model the regime comes from rpm/load vs the model's centroids, not
     from the simulator's `regime` column (which says R2 for every seeded row)."""

@@ -34,6 +34,11 @@ CLASSIFICATION_THRESHOLD: float = 0.5
 EARLY_WARNING_THRESHOLD: float = 0.3
 #: Consecutive rows (10-min samples) required for an alarm, so a single noisy row never counts.
 EARLY_WARNING_SUSTAINED_ROWS: int = 3
+#: The same rule for what is DISPLAYED and ANALYSED: an asset's current failure probability is
+#: the median of its last EARLY_WARNING_SUSTAINED_ROWS predictions (fleet, Asset 360, Bolt) and
+#: "Run analysis" explains the median window of its last EARLY_WARNING_SUSTAINED_ROWS windows,
+#: so one noisy sample never drives a colour or a Decision Contract.
+DISPLAY_MEDIAN_ROWS: int = EARLY_WARNING_SUSTAINED_ROWS
 
 
 class Thresholds(BaseModel):

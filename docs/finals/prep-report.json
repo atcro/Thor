@@ -1,10 +1,10 @@
 {
-  "api": "http://127.0.0.1:8010",
+  "api": "http://api:8000",
   "asset_held_out": "MTR-042",
-  "started_at": "2026-10-11T22:20:11.877839+00:00",
+  "started_at": "2026-10-12T00:11:46.643156+00:00",
   "training": {
-    "run_id": "a7d611188ec64383",
-    "version": "v57257",
+    "run_id": "7a3426d51c264e9f",
+    "version": "v63956",
     "champion_family": "lightgbm",
     "split": {
       "seed": 0,
@@ -100,7 +100,7 @@
     ],
     "candidates": [
       {
-        "candidate_id": "random_forest-15c44fb0",
+        "candidate_id": "random_forest-313c7ffb",
         "family": "random_forest",
         "validation_metrics": {
           "recall": 0.9688581314878892,
@@ -110,7 +110,7 @@
           "brier": 0.0011855724150436908,
           "lead_time_h": 56.0
         },
-        "validation_ims": 0.925531,
+        "validation_ims": 0.926549,
         "params": {
           "n_estimators": 200,
           "max_depth": 11,
@@ -119,34 +119,34 @@
           "class_weight": "balanced_subsample",
           "random_state": 0
         },
-        "latency_ms": 2.0776581142855175
+        "latency_ms": 1.5687785344640082
       },
       {
-        "candidate_id": "xgboost-35fa4859",
+        "candidate_id": "xgboost-2e93cdf8",
         "family": "xgboost",
         "validation_metrics": {
           "recall": 1.0,
-          "precision": 0.9292604501607717,
-          "f1": 0.9633333333333334,
-          "auroc": 0.9999814495919561,
-          "brier": 0.0008373013184607934,
+          "precision": 0.9413680781758957,
+          "f1": 0.9697986577181208,
+          "auroc": 0.9999892407633344,
+          "brier": 0.0006678089767041776,
           "lead_time_h": 51.666666666666664
         },
-        "validation_ims": 0.916303,
+        "validation_ims": 0.916492,
         "params": {
-          "n_estimators": 100,
-          "max_depth": 7,
-          "learning_rate": 0.06878669038001532,
-          "min_child_weight": 6,
-          "subsample": 0.607515920174542,
-          "colsample_bytree": 0.8470541988303508,
+          "n_estimators": 200,
+          "max_depth": 8,
+          "learning_rate": 0.024242359249562032,
+          "min_child_weight": 1,
+          "subsample": 0.6080873589761303,
+          "colsample_bytree": 0.9330479382191752,
           "scale_pos_weight": 64.5433,
           "random_state": 0
         },
-        "latency_ms": 0.9908299020173381
+        "latency_ms": 1.8552279590260459
       },
       {
-        "candidate_id": "lightgbm-885d48c6",
+        "candidate_id": "lightgbm-0bafdbfb",
         "family": "lightgbm",
         "validation_metrics": {
           "recall": 1.0,
@@ -156,7 +156,7 @@
           "brier": 0.0009461272267152338,
           "lead_time_h": 61.333333333333336
         },
-        "validation_ims": 0.950275,
+        "validation_ims": 0.951034,
         "params": {
           "n_estimators": 50,
           "max_depth": 3,
@@ -168,23 +168,23 @@
           "scale_pos_weight": 64.5433,
           "random_state": 0
         },
-        "latency_ms": 0.9796220037716243
+        "latency_ms": 0.6000709006385065
       }
     ],
     "ranked": [
-      "lightgbm-885d48c6",
-      "random_forest-15c44fb0",
-      "xgboost-35fa4859"
+      "lightgbm-0bafdbfb",
+      "random_forest-313c7ffb",
+      "xgboost-2e93cdf8"
     ],
     "test_metrics": {
       "recall": 0.8650519031141869,
       "precision": 1.0,
       "f1": 0.9276437847866419,
-      "brier": 0.0020589166930630345,
+      "brier": 0.0020613984765959843,
       "n_test": 18942.0,
       "n_pos_test": 289.0,
       "threshold": 0.5,
-      "auroc": 0.9325259515570934,
+      "auroc": 0.9324466485627051,
       "lead_time_h": 41.5,
       "n_assets": 6.0,
       "n_failure_events": 1.0
@@ -193,8 +193,8 @@
       "recall": 0.8650519031141869,
       "precision": 1.0,
       "lead_time_score": 0.5763888888888888,
-      "calibration_score": 0.9917643332277478,
-      "latency_score": 0.9804075599245675,
+      "calibration_score": 0.9917544060936161,
+      "latency_score": 0.9879985819872299,
       "weights": {
         "recall": 0.35,
         "lead_time_score": 0.25,
@@ -202,7 +202,7 @@
         "calibration_score": 0.15,
         "latency_score": 0.1
       },
-      "total": 0.843671
+      "total": 0.844428
     },
     "lead_time": {
       "median_h": 41.5,
@@ -213,9 +213,9 @@
       "sustained_rows": 3
     },
     "calibration": {
-      "method": "isotonic",
+      "method": "sigmoid",
       "brier_before": 0.0009461272267152338,
-      "brier_after": 0.00033650226871639606
+      "brier_after": 0.00043994492134823436
     },
     "thresholds": {
       "classification": 0.5,
@@ -254,59 +254,59 @@
       {
         "name": "edge_parity",
         "passed": true,
-        "value": 0.0,
+        "value": 3.383408241453001e-05,
         "threshold": 0.001,
-        "detail": "200 held-out vectors: edge vs centre max |dp| = 0.00e+00 (calibration isotonic); 18 raw windows: edge vs centre max relative |df| = 1.55e-15"
+        "detail": "200 held-out vectors: edge vs centre max |dp| = 3.38e-05 (calibration sigmoid); 18 raw windows: edge vs centre max relative |df| = 1.55e-15"
       }
     ],
     "parity": {
       "passed": true,
       "n_rows": 200,
-      "max_abs_diff_probability": 0.0,
+      "max_abs_diff_probability": 3.383408241453001e-05,
       "tolerance_probability": 0.001,
       "n_windows": 18,
       "max_abs_diff_features": 1.5543122344752192e-15,
       "tolerance_features": 1e-06,
-      "calibration_method": "isotonic",
+      "calibration_method": "sigmoid",
       "notes": [
-        "200 held-out vectors: edge vs centre max |dp| = 0.00e+00 (calibration isotonic)",
+        "200 held-out vectors: edge vs centre max |dp| = 3.38e-05 (calibration sigmoid)",
         "18 raw windows: edge vs centre max relative |df| = 1.55e-15"
       ]
     },
     "passed": true,
     "notes": [
-      "champion_artifact=C:\\Users\\Kang\\AppData\\Local\\Temp\\claude\\C--Thor-main\\43f6d281-0911-4b04-8d41-b844a4ac7e36\\scratchpad\\native\\models\\artifacts\\a7d611188ec64383\\lightgbm-885d48c6_calibrated.joblib",
-      "calibration (isotonic) fitted on 18942 rows of ['MTR-008', 'MTR-009', 'MTR-011', 'MTR-014', 'MTR-019', 'MTR-020']",
+      "champion_artifact=/models/artifacts/7a3426d51c264e9f/lightgbm-0bafdbfb_calibrated.joblib",
+      "calibration (sigmoid) fitted on 18942 rows of ['MTR-008', 'MTR-009', 'MTR-011', 'MTR-014', 'MTR-019', 'MTR-020'] with 1 failing asset(s)",
       "final metrics on test assets ['MTR-001', 'MTR-003', 'MTR-012', 'MTR-018', 'MTR-022', 'MTR-042'] (never used before this step)",
-      "ranking (validation IMS): lightgbm-885d48c6=0.950, random_forest-15c44fb0=0.926, xgboost-35fa4859=0.916"
+      "ranking (validation IMS): lightgbm-0bafdbfb=0.951, random_forest-313c7ffb=0.927, xgboost-2e93cdf8=0.916"
     ],
-    "seconds": 54.9
+    "seconds": 66.5
   },
   "promotion": {
-    "approval_id": "d748d05ea1534c72805811e31a4923dc",
+    "approval_id": "9f43367bdc7c4dbd9b15977800e90e26",
     "contract_id": null,
-    "promotion_id": "pr_v57257_production_a16fa634",
+    "promotion_id": "pr_v63956_production_345ecfb0",
     "decision": "approved",
     "approver": "demo-prep@thor",
     "note": "demo preparation: validated champion promoted before the live demo",
-    "decided_at": "2026-10-11T22:20:58.264317Z",
+    "decided_at": "2026-10-12T00:12:37.002139Z",
     "detail": {
       "promoted": {
         "name": "thor-bearing-classifier",
-        "version": "v57257",
+        "version": "v63956",
         "stage": "production"
       },
       "edge": {
-        "onnx_path": "C:\\Users\\Kang\\AppData\\Local\\Temp\\claude\\C--Thor-main\\43f6d281-0911-4b04-8d41-b844a4ac7e36\\scratchpad\\native\\models\\thor-bearing-classifier_v57257.onnx",
-        "deployed_at": "2026-10-11T22:20:58.287970Z"
+        "onnx_path": "/models/thor-bearing-classifier_v63956.onnx",
+        "deployed_at": "2026-10-12T00:12:37.022033Z"
       }
     }
   },
   "fleet_scoring": {
-    "model_version": "v57257",
+    "model_version": "v63956",
     "n_scored": 24,
     "skipped": {}
   },
-  "finished_at": "2026-10-11T22:20:59.553610+00:00",
-  "seconds_total": 56.2
+  "finished_at": "2026-10-12T00:12:37.373745+00:00",
+  "seconds_total": 66.9
 }

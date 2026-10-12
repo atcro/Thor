@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from sqlalchemy.engine import Engine
 
 from apps.api import db
-from apps.api.schemas import SIMULATOR_ONLY_COLUMNS, FeatureSpec, ModelRef
+from apps.api.schemas import DISPLAY_MEDIAN_ROWS, SIMULATOR_ONLY_COLUMNS, FeatureSpec, ModelRef
 
 log = logging.getLogger("thor.scoring")
 
@@ -71,14 +71,15 @@ def observed_only(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=[c for c in SIMULATOR_ONLY_COLUMNS if c in df.columns])
 
 
-def latest_feature_row(
-    df_asset: pd.DataFrame, spec: FeatureSpec, horizon_h: float = 48.0
-) -> tuple[pd.DataFrame, datetime] | None:
-    """Feature vector of the asset's latest window with the production baseline (no refit).
+def latest_feature_rows(
+    df_asset: pd.DataFrame, spec: FeatureSpec, horizon_h: float = 48.0, n: int = DISPLAY_MEDIAN_ROWS
+) -> list[tuple[pd.DataFrame, datetime]] | None:
+    """Feature vectors of the asset's last `n` windows with the production baseline (no refit).
 
     Input: one asset's telemetry (at least `spec.window_rows` rows, observed columns), the
-    production FeatureSpec. Output: (one-row frame with `spec.features`, plant timestamp of the
-    window's last row), or None when the asset has fewer rows than the window.
+    production FeatureSpec. Output: up to `n` (one-row frame with `spec.features`, plant
+    timestamp of the window's last row) pairs, oldest first, or None when the asset has fewer
+    rows than one window.
     """
     from agents.ml_architect.features import build_feature_pipeline
 
@@ -93,11 +94,22 @@ def latest_feature_row(
     )
     if fdf.empty:
         return None
-    last = fdf.sort_values("ts").tail(1)
-    ts = pd.Timestamp(last["ts"].iloc[0])
-    if ts.tzinfo is None:
-        ts = ts.tz_localize("UTC")
-    return last[list(spec.features)].reset_index(drop=True).astype(float), ts.to_pydatetime()
+    out: list[tuple[pd.DataFrame, datetime]] = []
+    for _, row in fdf.sort_values("ts").tail(n).iterrows():
+        ts = pd.Timestamp(row["ts"])
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        x = pd.DataFrame([row[list(spec.features)].astype(float).to_dict()])
+        out.append((x, ts.to_pydatetime()))
+    return out
+
+
+def latest_feature_row(
+    df_asset: pd.DataFrame, spec: FeatureSpec, horizon_h: float = 48.0
+) -> tuple[pd.DataFrame, datetime] | None:
+    """The asset's latest window only (see `latest_feature_rows`)."""
+    rows = latest_feature_rows(df_asset, spec, horizon_h, n=1)
+    return rows[-1] if rows else None
 
 
 def score_assets(
@@ -122,27 +134,37 @@ def score_assets(
     scored: list[ScoredAsset] = []
     skipped: dict[str, str] = {}
     rows: list[dict[str, Any]] = []
+    n_windows = int(DISPLAY_MEDIAN_ROWS)
     for asset_id in ids:
-        tail = db.read_telemetry(asset_id=asset_id, limit=int(spec.window_rows), engine=engine)
-        latest = latest_feature_row(tail, spec, horizon_h)
-        if latest is None:
+        # enough raw rows for the last n windows: window_rows + (n - 1)
+        tail = db.read_telemetry(
+            asset_id=asset_id, limit=int(spec.window_rows) + n_windows - 1, engine=engine
+        )
+        windows = latest_feature_rows(tail, spec, horizon_h, n=n_windows)
+        if not windows:
             skipped[asset_id] = f"fewer than {spec.window_rows} telemetry rows"
             continue
-        x, ts = latest
-        proba = model.predict_proba(x)
-        p = float(proba[0, 1]) if getattr(proba, "ndim", 1) == 2 else float(proba[0])
-        p = max(0.0, min(1.0, p))
+        for x, ts in windows:  # one prediction row per window; the fleet view takes the median
+            proba = model.predict_proba(x)
+            p = float(proba[0, 1]) if getattr(proba, "ndim", 1) == 2 else float(proba[0])
+            p = max(0.0, min(1.0, p))
+            rows.append(
+                {
+                    "asset_id": asset_id,
+                    "ts": ts,
+                    "model_version": ref.version,
+                    "failure_probability": p,
+                    "source": source,
+                }
+            )
+        x, ts = windows[-1]
         scored.append(
-            ScoredAsset(asset_id=asset_id, ts=ts, failure_probability=p, model_version=ref.version)
-        )
-        rows.append(
-            {
-                "asset_id": asset_id,
-                "ts": ts,
-                "model_version": ref.version,
-                "failure_probability": p,
-                "source": source,
-            }
+            ScoredAsset(
+                asset_id=asset_id,
+                ts=ts,
+                failure_probability=rows[-1]["failure_probability"],
+                model_version=ref.version,
+            )
         )
     if rows:
         db.insert_predictions(rows, engine=engine)

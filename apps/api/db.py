@@ -40,6 +40,7 @@ from sqlalchemy import (
 from sqlalchemy.engine import Engine
 
 from apps.api.schemas import (
+    DISPLAY_MEDIAN_ROWS,
     SENSOR_COLUMNS,
     Approval,
     Asset,
@@ -448,28 +449,56 @@ def insert_prediction(
     )
 
 
-def latest_prediction_rows(engine: Engine | None = None) -> dict[str, dict[str, Any]]:
-    """asset_id -> newest prediction {failure_probability, ts, model_version, source}.
+def latest_prediction_rows(
+    engine: Engine | None = None, median_rows: int = DISPLAY_MEDIAN_ROWS
+) -> dict[str, dict[str, Any]]:
+    """asset_id -> current prediction {failure_probability, ts, model_version, source, n_rows}.
 
-    One index probe per registered asset (see `_latest_rows_query`); the predictions table
-    grows by one row per telemetry message, so it must never be read whole. Ties on ts are
-    broken by the newest row id.
+    `failure_probability` is the MEDIAN of the asset's last `median_rows` predictions (the
+    same 3-sample rule as the early-warning alarm, so one noisy sample never flips a colour);
+    `ts`, `model_version` and `source` are those of the newest row and `n_rows` says how many
+    rows the median used. One window-function query over all assets; the predictions table
+    grows by one row per telemetry message, so it is never read whole.
     """
     engine = engine or get_engine()
-    q = _latest_rows_query(predictions).order_by(predictions.c.asset_id, predictions.c.id)
+    p = predictions
+    rn = (
+        func.row_number()
+        .over(partition_by=p.c.asset_id, order_by=(p.c.ts.desc(), p.c.id.desc()))
+        .label("rn")
+    )
+    ranked = select(
+        p.c.asset_id, p.c.ts, p.c.model_version, p.c.failure_probability, p.c.source, rn
+    ).subquery("ranked")
+    q = (
+        select(ranked)
+        .where(ranked.c.rn <= max(1, int(median_rows)))
+        .order_by(ranked.c.asset_id, ranked.c.rn)
+    )
     with engine.connect() as conn:
         rows = conn.execute(q).mappings().all()
     out: dict[str, dict[str, Any]] = {}
-    for r in rows:  # ordered by id, so the last write per asset wins
-        ts = r["ts"]
-        if isinstance(ts, datetime) and ts.tzinfo is None:
-            ts = ts.replace(tzinfo=UTC)
-        out[r["asset_id"]] = {
-            "failure_probability": float(r["failure_probability"]),
-            "ts": ts,
-            "model_version": str(r["model_version"]),
-            "source": str(r["source"]),
-        }
+    probs: dict[str, list[float]] = {}
+    for r in rows:  # rn == 1 is the newest row per asset
+        aid = r["asset_id"]
+        probs.setdefault(aid, []).append(float(r["failure_probability"]))
+        if r["rn"] == 1:
+            ts = r["ts"]
+            if isinstance(ts, datetime) and ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            out[aid] = {
+                "failure_probability": float(r["failure_probability"]),
+                "ts": ts,
+                "model_version": str(r["model_version"]),
+                "source": str(r["source"]),
+            }
+    for aid, entry in out.items():
+        vals = sorted(probs.get(aid, [entry["failure_probability"]]))
+        mid = len(vals) // 2
+        entry["failure_probability"] = float(
+            vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2.0
+        )
+        entry["n_rows"] = len(vals)
     return out
 
 

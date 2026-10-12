@@ -140,11 +140,12 @@ def test_predictions_roundtrip(client: TestClient) -> None:
     assert client.get("/assets/MTR-001/predictions").json() == []
     assert db.latest_predictions(engine=client.app.dependency_overrides[tel.get_db_engine]())[
         "MTR-042"
-    ] == pytest.approx(0.6)
+    ] == pytest.approx(0.5)  # median of the last three (0.4, 0.5, 0.6), not the newest alone
 
 
 def test_predictions_batch_post_and_latest_per_asset(client: TestClient) -> None:
-    """The edge posts JSON arrays; latest_predictions picks the newest ts (then newest id)."""
+    """The edge posts JSON arrays; latest_predictions reports the median of the last three
+    rows per asset (two rows -> their mean), stamped with the newest ts (then newest id)."""
     base = datetime(2025, 8, 21, 8, 0, tzinfo=UTC)
     batch = [
         {
@@ -165,7 +166,7 @@ def test_predictions_batch_post_and_latest_per_asset(client: TestClient) -> None
     assert client.post("/predictions", json=[]).json() == {"ok": True, "inserted": 0}
     engine = client.app.dependency_overrides[tel.get_db_engine]()
     latest = db.latest_predictions(engine=engine)
-    assert latest["MTR-042"] == pytest.approx(0.35)
+    assert latest["MTR-042"] == pytest.approx(0.325)  # median of (0.30, 0.35)
     assert latest["MTR-001"] == pytest.approx(0.05)
     assert len(client.get("/assets/MTR-042/predictions").json()) == 2
     # A newer model version at the same ts is a distinct row, and the later write wins.
@@ -173,7 +174,7 @@ def test_predictions_batch_post_and_latest_per_asset(client: TestClient) -> None
         "/predictions", json=[{**batch[1], "model_version": "v3", "failure_probability": 0.50}]
     )
     assert r.status_code == 200
-    assert db.latest_predictions(engine=engine)["MTR-042"] == pytest.approx(0.50)
+    assert db.latest_predictions(engine=engine)["MTR-042"] == pytest.approx(0.35)  # median of (0.30, 0.35, 0.50)
     assert len(client.get("/assets/MTR-042/predictions").json()) == 3
 
 

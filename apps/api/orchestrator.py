@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
+import numpy as np
 import pandas as pd
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -42,6 +43,7 @@ from apps.api.graph_state import (
     state_to_json,
 )
 from apps.api.schemas import (
+    DISPLAY_MEDIAN_ROWS,
     Approval,
     AssetSplit,
     CandidateSet,
@@ -1141,7 +1143,13 @@ def _features_for(
     return fdf, spec
 
 
-def _latest_features(features_df: pd.DataFrame, spec: FeatureSpec, asset_id: str) -> pd.DataFrame:
+def _latest_features(
+    features_df: pd.DataFrame, spec: FeatureSpec, asset_id: str, model: Any | None = None
+) -> pd.DataFrame:
+    """The feature row "Run analysis" explains: with a `model`, the window whose probability
+    is the median of the asset's last DISPLAY_MEDIAN_ROWS windows (the same 3-sample rule the
+    fleet view and the alarm use, so the contract agrees with the card and one noisy sample
+    never drives a decision); without a model, simply the latest window."""
     sub = features_df
     if "asset_id" in features_df.columns:
         sub = features_df[features_df["asset_id"] == asset_id]
@@ -1149,7 +1157,21 @@ def _latest_features(features_df: pd.DataFrame, spec: FeatureSpec, asset_id: str
         sub = features_df
     if "ts" in sub.columns:
         sub = sub.sort_values("ts")
-    return sub.tail(1)[spec.features].reset_index(drop=True).copy()
+    tail = sub.tail(DISPLAY_MEDIAN_ROWS)[spec.features].reset_index(drop=True).copy()
+    if model is None or len(tail) < 2:
+        return tail.tail(1).reset_index(drop=True)
+    try:
+        proba = np.asarray(model.predict_proba(tail))
+        p = proba[:, 1] if proba.ndim == 2 else proba.reshape(-1)
+        order = np.argsort(p, kind="stable")
+        pick = int(order[len(order) // 2]) if len(order) % 2 else int(order[len(order) // 2 - 1])
+        if len(order) % 2 == 0:
+            # even count: take the lower-median window so the number is one the model produced
+            pick = int(order[len(order) // 2 - 1])
+        return tail.iloc[[pick]].reset_index(drop=True)
+    except Exception as e:  # noqa: BLE001 - fall back to the latest window
+        log.warning("median-window selection failed (%s); using the latest window", e)
+        return tail.tail(1).reset_index(drop=True)
 
 
 def _profile(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
@@ -1443,7 +1465,7 @@ def _explain(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
             raise RuntimeError("no champion artifact to explain")
         model = tool_load_model(artifact)
         h.cache["model"] = model
-    x_latest = _latest_features(features_df, spec, gs.asset_id)
+    x_latest = _latest_features(features_df, spec, gs.asset_id, model)
     h.cache["x_latest"] = x_latest
     background = _explain_background(features_df, spec, gs.asset_id)
     exp = tool_explain(model, x_latest, spec, gs.asset_id, v.model_version, background)
