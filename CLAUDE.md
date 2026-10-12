@@ -263,7 +263,8 @@ Competing teams also build with Claude, so polish and a coherent story beat feat
     result;
   - an AI4I benchmark rerun with the corrected method;
   - a Bolt evaluation case proving it refuses approvals.
-- **Phase A — 3-D Digital Twin + X-Ray.** The plant has two views of the same live data,
+- **Phase A — 3-D Digital Twin + X-Ray.** Built 2026-10-11 (see `docs/finals/status.md` Phase A
+  and `docs/finals/session-notes.md`; file map in §16). The plant has two views of the same live data,
   with exactly these names in the UI:
   - **Dashboard:** the existing isometric/pixel fleet view (formerly "Fleet").
   - **3-D Digital Twin:** a 3D, low-poly, "corporate clean" modern factory showing five packaging
