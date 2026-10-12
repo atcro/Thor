@@ -13,10 +13,14 @@ load change alone must never look like a fault. Seven assets receive an injected
 bearing degradation between an onset and a failure point (see FAULTY_ASSETS); after the
 failure the bearing is replaced and the motor returns to its healthy baseline:
 
-* MTR-042 (the demo motor)  onset at 55 % of the horizon, not yet failed at the end
-* MTR-017 (subtler)         onset at 80 % of the horizon
-* MTR-003/009/013/023       completed historical failures the model learns from
-* MTR-021                   fails live during the replay, on a held-out motor
+* MTR-003/009/013/017/021/023  completed historical failures, all inside the seeded 80 % of
+                               the history, so the model learns from six past failures
+* MTR-042 (the demo motor)     healthy for the whole seeded history; its degradation starts
+                               in the replayed part and is never repaired in the data (see
+                               FAULT_RAMP_H) -- the engineer's work order is the only repair
+
+Re-timed on 2026-10-12 (the team approved relaxing the "never change FAULTY_ASSETS timing"
+rule, CLAUDE.md section 15) so that only MTR-042 goes wrong live.
 
 Ground truth columns: `health` (1 -> 0) and `failure_within_h` (hours to failure, NaN when
 no failure lies ahead). Models may use `failure_within_h` only to build labels, never as a
@@ -62,6 +66,7 @@ except ModuleNotFoundError:  # pragma: no cover - replay container ships only da
         regime: str | None = None
         health: float | None = Field(default=None, ge=0.0, le=1.0)
         failure_within_h: float | None = None
+        sandbox: bool = False
 
     class Asset(BaseModel):  # type: ignore[no-redef]
         """Local mirror of apps.api.schemas.Asset."""
@@ -86,23 +91,46 @@ DEMO_ASSET = "MTR-042"
 ASSET_IDS: list[str] = [f"MTR-{i:03d}" for i in range(1, 25)]
 ASSET_IDS[3] = DEMO_ASSET
 
-#: asset_id -> onset of bearing degradation as a fraction of the horizon.
+#: Fraction of the timeline the API seeds at start-up (SEED_FRACTION) and where the replay's
+#: first pass begins (REPLAY_START_FRACTION). Every historical failure completes before it;
+#: the demo motor's onset lies after it.
+SEED_FRACTION_DEFAULT: float = 0.80
+
+#: Onset of the demo motor's degradation as a fraction of the horizon: DEMO_ONSET_AFTER_H
+#: plant hours after the replay's first pass begins (16 s of wall clock at 900x). Measured on
+#: 2026-10-12 (docs/finals/demo-walkthrough.md): green for ~20 s, amber, then sustained red.
+DEMO_ONSET_AFTER_H: float = 4.0
+DEMO_ONSET: float = SEED_FRACTION_DEFAULT + DEMO_ONSET_AFTER_H / (30 * 24)
+
 #: asset_id -> (onset, failure) as fractions of the horizon. Degradation runs from onset to
-#: failure; after the failure index the motor is repaired (healthy baseline again). The API
-#: seeds the first ~80% of the timeline and the replay streams the rest, so faults that
-#: complete before 0.80 are "history" the model learns from, and later ones happen live.
+#: failure with severity = progress ** 2 (smooth, monotone, accelerating); after the failure
+#: index the motor is repaired (healthy baseline again). The API seeds the first
+#: SEED_FRACTION_DEFAULT of the timeline and the replay streams the rest, so every failure that
+#: completes before 0.80 is history the model learns from, and only MTR-042 happens live.
 FAULTY_ASSETS: dict[str, tuple[float, float]] = {
-    DEMO_ASSET: (0.55, 1.0),  # the demo motor: degrades during the replay, caught in time
-    "MTR-017": (0.80, 1.0),  # subtle, late
+    DEMO_ASSET: (DEMO_ONSET, 1.0),  # the demo motor: see FAULT_RAMP_H
     "MTR-003": (0.05, 0.25),  # historical failures (training set)
     "MTR-009": (0.12, 0.35),
     "MTR-013": (0.20, 0.42),
     "MTR-023": (0.08, 0.30),  # historical failure on a held-out motor (last 25% of ids)
-    "MTR-021": (0.60, 0.85),  # fails live, held-out
+    "MTR-017": (0.50, 0.72),  # subtle (see FAULT_AMPLITUDE), completed before the seed point
+    "MTR-021": (0.40, 0.62),  # completed before the seed point (used to fail live at 85 %)
 }
 
 #: asset_id -> amplitude multiplier of the fault signature (MTR-017 is deliberately subtler).
 FAULT_AMPLITUDE: dict[str, float] = {DEMO_ASSET: 1.0, "MTR-017": 0.6}
+
+#: asset_id -> hours the severity takes to ramp from 0 to 1 as ((t - onset) / ramp) ** 2,
+#: after which it HOLDS at full severity until the failure point instead of the bearing being
+#: replaced. Only the demo motor has one. Why: with the plain progress ** 2 progression the
+#: model's sustained critical comes at roughly 70 % of the onset-to-failure span and the
+#: self-repair at 100 %, so at ANY replay speed the motor would heal itself in the data only
+#: ~40 % of the time-to-red after turning red -- too short for an engineer to analyse, ask
+#: Bolt and sign a work order. MTR-042 therefore ramps to full severity over FAULT_RAMP_H plant
+#: hours (the same per-sensor signature as every other fault, amplitude 1.0) and then runs on
+#: the damaged bearing until the end of the timeline; nothing in the data ever repairs it. The
+#: ground truth reads: health = 1 - severity, failure_within_h = hours to the failure point.
+FAULT_RAMP_H: dict[str, float] = {DEMO_ASSET: 16.0}
 
 SENSOR_COLUMNS: tuple[str, ...] = (
     "vibration_rms",
@@ -254,6 +282,57 @@ def _lag_alpha(step_min: int, tau_min: float) -> float:
     return float(1.0 - np.exp(-step_min / tau_min))
 
 
+def rated_current_a(rated_kw: float) -> float:
+    """Rated current of a 400 V motor at ~0.88 pf and ~94 % efficiency (A)."""
+    return float(rated_kw * 1000.0 / (np.sqrt(3) * 400.0 * 0.88 * 0.94))
+
+
+def bearing_fault_delta(
+    severity: float,
+    load_pct: float,
+    rated_a: float,
+    rng: np.random.Generator,
+    amp: float = 1.0,
+) -> dict[str, float]:
+    """The drive-end bearing fault signature for ONE row at `severity` in [0, 1].
+
+    The same per-sensor relations `_simulate_asset` applies (vibration RMS, kurtosis, crest
+    factor, bearing housing temperature target and current), as additive deltas, so the twin's
+    sandbox injects exactly the fault the model was trained on. Inputs: severity, load (%),
+    rated current (A), a Generator for the signature's noise, amplitude. Output: deltas for
+    `vibration_rms`, `vibration_kurtosis`, `vibration_crest`, `bearing_target_c` (the lagged
+    housing temperature's target, +30 C at full severity) and `current_a`.
+    """
+    s = float(min(1.0, max(0.0, severity)))
+    return {
+        "vibration_rms": amp * s * (5.5 + 0.4 * load_pct / 55.0) + float(rng.normal(0, 1)) * 0.35 * s,
+        "vibration_kurtosis": amp * 4.5 * s + abs(float(rng.normal(0, 1))) * 1.5 * s,
+        "vibration_crest": amp * 2.2 * s + float(rng.normal(0, 1)) * 0.25 * s,
+        "bearing_target_c": amp * 30.0 * s,
+        "current_a": amp * 0.03 * rated_a * s,
+    }
+
+
+def fault_severity(
+    idx: np.ndarray, onset: int, fail_idx: int, step_min: int, asset_id: str
+) -> np.ndarray:
+    """Severity in [0, 1] of the bearing fault at each row index (rows outside
+    [onset, fail_idx] are the caller's business).
+
+    Inputs: row indices, onset and failure row indices, sampling step and the asset id.
+    Output: `progress ** 2` with progress = (idx - onset) / (fail_idx - onset) -- smooth,
+    monotone, accelerating -- or, for an asset in `FAULT_RAMP_H`, ((idx - onset) * step /
+    ramp) ** 2 clipped at 1.0: the same accelerating ramp compressed into `ramp` hours and
+    then held at full severity until the failure point (the demo motor; see FAULT_RAMP_H).
+    """
+    ramp_h = FAULT_RAMP_H.get(asset_id)
+    if ramp_h is None:
+        progress = np.clip((idx - onset) / max(fail_idx - onset, 1), 0.0, 1.0)
+        return progress**2.0
+    ramp_rows = max(ramp_h * 60.0 / step_min, 1.0)
+    return np.clip((idx - onset) / ramp_rows, 0.0, 1.0) ** 2.0
+
+
 # --------------------------------------------------------------------------------------
 # Per-asset sensor physics
 # --------------------------------------------------------------------------------------
@@ -294,7 +373,7 @@ def _simulate_asset(
     rpm = np.clip(rpm, 0.0, None)
 
     # Rated current for a 400 V motor at ~0.88 pf and ~94 % efficiency.
-    rated_a = rated_kw * 1000.0 / (np.sqrt(3) * 400.0 * 0.88 * 0.94)
+    rated_a = rated_current_a(rated_kw)
     current = rated_a * (0.10 + 0.90 * load / 100.0) + rng.normal(0, 0.012 * rated_a, n)
 
     vib_wander = _ewm(rng.normal(0, 1, n), alpha=0.15) * 0.15
@@ -317,9 +396,8 @@ def _simulate_asset(
         onset = int(round(onset_f * (n - 1)))
         fail_idx = int(round(fail_f * (n - 1)))
         idx = np.arange(n)
-        progress = np.clip((idx - onset) / max(fail_idx - onset, 1), 0.0, 1.0)
         active = (idx >= onset) & (idx <= fail_idx)
-        severity = np.where(active, progress**2.0, 0.0)  # smooth, monotone, accelerating
+        severity = np.where(active, fault_severity(idx, onset, fail_idx, step_min, asset_id), 0.0)
         vib = (
             vib + amp * severity * (5.5 + 0.4 * load / 55.0) + rng.normal(0, 1, n) * 0.35 * severity
         )

@@ -106,6 +106,10 @@ class TelemetryRow(BaseModel):
     failure_within_h: float | None = Field(
         default=None, description="Simulator ground truth: hours to failure, null if none"
     )
+    #: True when the row carries sandbox readings (3-D twin sandbox overrides applied by the
+    #: replay). Tagged rows are excluded from training, validation, drift and the rewind's
+    #: lead-time figure; the UI labels what they produce "sandbox scenario".
+    sandbox: bool = False
 
 
 class ObservedTelemetryRow(BaseModel):
@@ -125,12 +129,14 @@ class ObservedTelemetryRow(BaseModel):
     current_a: float
     rpm: float
     load_pct: float
+    #: Sandbox readings are observable too; the flag travels with them (never ground truth).
+    sandbox: bool = False
 
     @classmethod
     def from_row(cls, row: TelemetryRow | dict[str, Any]) -> ObservedTelemetryRow:
         """Project a stored TelemetryRow (or dict) onto the observable fields only."""
         data = row if isinstance(row, dict) else row.model_dump()
-        return cls(**{k: data[k] for k in cls.model_fields})
+        return cls(**{k: data[k] for k in cls.model_fields if k in data})
 
 
 class Asset(BaseModel):
@@ -526,6 +532,8 @@ class DecisionContract(BaseModel):
     explanation_text: str
     explanation_source: Literal["llm", "template"]
     evidence_hash: str
+    #: True when the analysed window contained sandbox readings ("sandbox scenario").
+    sandbox_scenario: bool = False
 
 
 class Approval(BaseModel):
@@ -582,6 +590,8 @@ class WorkOrder(BaseModel):
     status: WorkOrderStatus
     started_ts: datetime | None = None
     completed_ts: datetime | None = None
+    #: Carried over from the contract: the work order repairs a sandbox scenario.
+    sandbox_scenario: bool = False
 
 
 # --------------------------------------------------------------------------------------
@@ -739,6 +749,15 @@ class FleetAsset(BaseModel):
     stage: ModelStage | None
     #: Newest approved work order for this asset (plant-reported status), if any.
     work_order: WorkOrder | None = None
+    #: The ONE status rule (apps/api/alarms.py::asset_status): offline > no_prediction >
+    #: no_data > critical (latched) > warning > healthy. Cards, sprites, twin and HUD use it.
+    status: TwinStatus | None = None
+    #: Latched alarm level and when it was raised (plant time); None = healthy / no alarm.
+    alarm: AlarmLevel | None = None
+    alarm_since: datetime | None = None
+    alarm_reason: str | None = None
+    #: True when the displayed prediction (or the current alarm) came from sandbox readings.
+    sandbox: bool = False
 
 
 class PipelineRunRequest(BaseModel):
@@ -761,6 +780,102 @@ class DecisionRequest(BaseModel):
     decision: Literal["approved", "rejected"]
     approver: str
     note: str = ""
+
+
+# --------------------------------------------------------------------------------------
+# Alarms (apps/api/alarms.py): the one status rule. Insert-only events.
+# --------------------------------------------------------------------------------------
+
+
+class AlarmLevel(StrEnum):
+    """Alarm level of one motor: healthy (within healthy baseline) / warning / critical
+    (latched until a completed work order or a sandbox reset clears it)."""
+
+    healthy = "healthy"
+    warning = "warning"
+    critical = "critical"
+
+
+class AlarmEvent(BaseModel):
+    """One insert-only alarm transition. `plant_ts` is the plant time of the prediction (or
+    the work-order / sandbox event) that caused it; `sandbox` says the triggering prediction
+    came from sandbox readings."""
+
+    event_id: str
+    asset_id: str
+    level: AlarmLevel
+    reason: str
+    plant_ts: datetime
+    recorded_at: datetime
+    probability: float | None = None
+    model_version: str | None = None
+    sandbox: bool = False
+
+
+# --------------------------------------------------------------------------------------
+# Replay control (GET /replay, POST /replay/pause|resume)
+# --------------------------------------------------------------------------------------
+
+
+class ReplayState(BaseModel):
+    """What the replay container polls and the topbar shows. `released` is a consequence of
+    the human sign-off: it is True exactly when a production model exists. `paused` is the
+    presenter's recovery switch (in-memory; a restart resumes)."""
+
+    label: Literal["Replay (recorded plant history)"] = "Replay (recorded plant history)"
+    released: bool
+    paused: bool
+    production_model_version: str | None = None
+    plant_time: datetime | None = None
+    #: Rows seeded at start-up (the recorded history the replay continues from).
+    seeded_until: datetime | None = None
+    paused_at: datetime | None = None
+
+
+# --------------------------------------------------------------------------------------
+# Sandbox (3-D Digital Twin): overrides the replay applies to its recorded stream.
+# Readings produced under an override are tagged sandbox=True all the way through.
+# --------------------------------------------------------------------------------------
+
+
+class SandboxOverride(BaseModel):
+    """The active sandbox override of one motor (the newest non-reset event for it)."""
+
+    asset_id: str
+    #: Absolute setpoints applied to the recorded rows (None = leave the recorded value).
+    rpm: float | None = None
+    load_pct: float | None = None
+    bearing_temp_c: float | None = None
+    #: Drive-end bearing fault: severity ramps from 0 at `fault_since` to 1 over
+    #: `fault_ramp_h` plant hours ((t / ramp) ** 2, the simulator's own progression) and holds.
+    fault: bool = False
+    fault_since: datetime | None = None
+    fault_ramp_h: float | None = None
+    set_at: datetime
+    note: str = ""
+
+
+class SandboxEvent(BaseModel):
+    """Insert-only record of every sandbox action (set / fault / shake / reset)."""
+
+    event_id: str
+    kind: Literal["set", "fault", "shake", "reset"]
+    asset_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    recorded_at: datetime
+    note: str = ""
+
+
+class SandboxState(BaseModel):
+    """GET /sandbox: the active overrides plus the last reset marker."""
+
+    active: bool
+    overrides: list[SandboxOverride]
+    #: predictions.id at the newest reset; sandbox-flagged prediction rows at or below it are
+    #: retired from the displayed probability and the alarm walk.
+    retired_prediction_max_id: int = 0
+    last_reset_at: datetime | None = None
+    events: list[SandboxEvent] = Field(default_factory=list)
 
 
 COPILOT_MAX_MESSAGE_CHARS = 2000
@@ -811,15 +926,16 @@ class CopilotResponse(BaseModel):
 
 
 class TwinStatus(StrEnum):
-    """Status glyph of one motor. Precedence: offline > no_data > critical > warning >
-    healthy > no_prediction. Encoded as green circle / amber triangle / red stop-octagon."""
+    """Status glyph of one motor (apps/api/alarms.py::asset_status). Precedence: offline >
+    no_prediction > no_data > critical > warning > healthy. Encoded as green circle / amber
+    triangle / red stop-octagon; green means "within healthy baseline"."""
 
-    healthy = "healthy"  # p < early_warning
-    warning = "warning"  # early_warning <= p < classification
-    critical = "critical"  # p >= classification
+    healthy = "healthy"  # no alarm: within healthy baseline (p below early warning, sustained)
+    warning = "warning"  # alarm: sustained p >= early_warning (clears after sustained < it)
+    critical = "critical"  # alarm: sustained p >= classification, LATCHED until a work order
     no_prediction = "no_prediction"  # no approved-model prediction yet
     offline = "offline"  # the plant has it offline for an approved work order
-    no_data = "no_data"  # its messages stopped (see LiveCounters.stale_after_s)
+    no_data = "no_data"  # had predictions, but its messages stopped (LiveCounters.stale_after_s)
 
 
 class DataState(StrEnum):
@@ -865,6 +981,16 @@ class TwinAsset(BaseModel):
     msgs_last_60s: int = 0
     open_contract_id: str | None = None
     work_order: WorkOrder | None = None
+    #: Latched alarm level behind `status` (None = healthy / none), when it was raised (plant
+    #: time), the rule that raised it, and whether sandbox readings raised it.
+    alarm: AlarmLevel | None = None
+    alarm_since: datetime | None = None
+    alarm_reason: str | None = None
+    alarm_sandbox: bool = False
+    #: True when the displayed prediction came from sandbox readings ("sandbox scenario").
+    sandbox: bool = False
+    #: The active sandbox override on this motor, if any.
+    sandbox_override: SandboxOverride | None = None
 
 
 class MesContext(BaseModel):
@@ -971,6 +1097,7 @@ class PredictionPoint(BaseModel):
     failure_probability: float
     model_version: str
     source: str
+    sandbox: bool = False
 
 
 class DriverSource(BaseModel):
@@ -1002,7 +1129,7 @@ class TwinHud(BaseModel):
 class RewindMarker(BaseModel):
     kind: Literal[
         "early_warning",
-        "predicted_failure",
+        "critical_alarm",
         "contract_created",
         "approved",
         "rejected",
@@ -1020,10 +1147,12 @@ class RewindSeries(BaseModel):
     points: list[tuple[datetime, float]]
     n_rows: int
     markers: list[RewindMarker]
-    #: Plant hours from the first sustained early warning to the plant acting (work order
-    #: started, else the approval); None when either end is missing.
+    #: Plant hours from the first sustained early warning to the plant taking the motor
+    #: offline (work order started); None when either end is missing. Sandbox predictions
+    #: are excluded from the series and from this figure.
     lead_time_h: float | None = None
     lead_time_basis: str = ""
+    lead_time_label: str = "this run: first sustained warning -> motor taken offline"
 
 
 class TwinRewind(BaseModel):
@@ -1035,6 +1164,7 @@ class TwinRewind(BaseModel):
     assets: list[RewindSeries]
     validated_lead_time_h: float | None = None
     validated_lead_time_basis: str = ""
+    validated_lead_time_label: str = "validated on held-out motors"
 
 
 class TwinEvent(BaseModel):

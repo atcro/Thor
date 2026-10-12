@@ -186,6 +186,11 @@ def decide_promotion_db(
         except Exception as e:
             log.warning("promotion %s: edge deploy error: %s", promotion_id, e)
             detail["error"] = f"{type(e).__name__}: {e}"
+        # Consequences of the sign-off, so the fleet turns green right away and the replay
+        # (which polls GET /replay) starts: the edge reloads the bundle now instead of at its
+        # next poll, and the control plane scores every motor's latest window once.
+        detail["edge_refresh"] = _refresh_edge()
+        detail["fleet_scored"] = _score_fleet(engine)
     else:
         try:
             from agents.mlops.lifecycle import reject_promotion
@@ -197,6 +202,31 @@ def decide_promotion_db(
     out = approval.model_dump(mode="json")
     out["detail"] = detail
     return out
+
+
+def _refresh_edge() -> bool:
+    """Ask the edge container to reload MODELS_DIR now (best effort; it polls anyway)."""
+    import os
+
+    import httpx
+
+    url = os.environ.get("EDGE_URL", "http://localhost:8001").rstrip("/") + "/models/refresh"
+    try:
+        return httpx.post(url, timeout=5.0).status_code < 300
+    except Exception as e:  # noqa: BLE001 - the edge polls MODELS_DIR every few seconds anyway
+        log.info("edge refresh skipped: %s", e)
+        return False
+
+
+def _score_fleet(engine: Engine) -> int:
+    """Score every motor's latest windows with the just-promoted model (best effort)."""
+    try:
+        from apps.api.scoring import score_assets
+
+        return len(score_assets(engine=engine).scored)
+    except Exception as e:  # noqa: BLE001 - the edge will score the live stream regardless
+        log.warning("fleet scoring after promotion failed: %s", e)
+        return 0
 
 
 @router.post("/promotions/{promotion_id}/decision")

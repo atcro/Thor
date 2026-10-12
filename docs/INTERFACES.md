@@ -59,8 +59,10 @@ def generate_fleet(days: int = 30, seed: int = 42, step_min: int = 10) -> tuple[
 def write_outputs(df, assets, out_dir: Path) -> None   # telemetry.parquet, telemetry.csv, assets.json
 def main() -> None                                     # python -m data.simulator.generate [--days 30 --out data/simulator/out]
 ```
-Two faulty assets: `MTR-042` (onset at 55% of horizon — the demo motor) and `MTR-017`
-(onset at 80%, subtler). Everything else healthy. Deterministic under `seed`.
+Seven faulty assets (`FAULTY_ASSETS`): six completed historical failures inside the seeded
+80 % (MTR-003/009/013/017/021/023) and `MTR-042`, the demo motor, healthy until 4 plant hours
+after the seed point and then degrading in the replay (ramp over `FAULT_RAMP_H`, never repaired
+in the data). Everything else healthy. Deterministic under `seed`.
 
 ### `streaming/replay/replay.py`
 ```python

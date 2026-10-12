@@ -1,25 +1,27 @@
 <#
 .SYNOPSIS
-  Reset Thor to the start of the demo timeline (Windows / PowerShell).
+  Reset Thor to the start of the demo (Windows / PowerShell).
 .DESCRIPTION
   Uses the root-level `docker compose` (project name taken from the repo folder, e.g.
   `thor-main`), so it acts on the same stack the team starts by hand.
 
-  Stops the stack, drops the TimescaleDB volume (telemetry, predictions, runs, contracts,
-  approvals, registry rows) and, unless -KeepModels is given, the model + MLflow volumes too,
-  then starts the stack again. On start-up the api reseeds the first 80% of the synthetic
-  history, the one-shot `prep` service trains + validates a champion (MTR-042 held out),
-  approves its promotion as demo-prep@thor (parity was proven at validation), exports it for the
-  edge and scores the fleet; only then do the replay and the edge start, streaming the remaining 20%
-  live. The Chroma index and embedding-model cache volumes are always kept.
+  Stops the stack, drops the TimescaleDB volume (telemetry, predictions, alarms, runs,
+  contracts, approvals, registry rows) and, unless -KeepModels is given, the model + MLflow
+  volumes too, then starts the stack again. On start-up the api seeds the first 80% of the
+  recorded history and then NOTHING else happens: there is no production model, every motor
+  shows "no prediction yet", and the replay container holds until a named approver promotes a
+  model in ModelOps. The presenter drives it from there (docs/finals/demo-walkthrough.md):
+  AutoML Studio > Train new model, ModelOps > Approve promotion, and the recorded history
+  starts streaming by itself. The Chroma index and embedding-model cache volumes are kept.
 
-  Expect 2-3 minutes for the prep step on first start (DEMO_PREP_TRIALS in .env sets the Optuna
-  trials per family; default 6).
+  -Prep runs the manual fallback instead (docker compose run --rm prep): train, validate,
+  promote as demo-prep@thor and score the fleet, for when training on stage is not an option.
 .EXAMPLE
-  .\scripts\demo_reset.ps1               # full reset (recommended before a rehearsal)
-  .\scripts\demo_reset.ps1 -KeepModels   # keep model + MLflow volumes (prep still re-registers)
+  .\scripts\demo_reset.ps1               # clean start: seeded, no model, replay held
+  .\scripts\demo_reset.ps1 -KeepModels   # keep model + MLflow volumes (the stage still starts clean: the registry rows live in the DB)
+  .\scripts\demo_reset.ps1 -Prep         # clean start + the fallback prep job (no training on stage)
 #>
-param([switch]$KeepModels)
+param([switch]$KeepModels, [switch]$Prep)
 # "Continue", not "Stop": docker writes its progress to stderr, which Windows PowerShell 5.1
 # would otherwise turn into a terminating error. Exit codes are checked explicitly instead.
 $ErrorActionPreference = "Continue"
@@ -40,36 +42,40 @@ foreach ($v in $vols) {
   if ($existing -contains $v) { Write-Host "==> removing volume $v"; docker volume rm $v | Out-Null }
 }
 
-Write-Host "==> starting stack (api seeds 80%, prep trains + promotes, then replay + edge start)"
+Write-Host "==> starting stack (api seeds 80% of the recorded history; no model, no predictions, replay held)"
 docker compose up -d
 Assert-Ok "docker compose up"
-Write-Host "==> waiting for the prep service (train, validate incl. parity, promote, export, score; ~2 min)"
-# docker compose wait only sees running containers, so poll the container state instead and
-# read the exit code the container recorded.
-$prepExit = $null
-for ($i = 0; $i -lt 360; $i++) {
-  $info = docker compose ps -a --format json prep | ConvertFrom-Json | Select-Object -First 1
-  if ($info -and $info.State -eq "exited") { $prepExit = [int]$info.ExitCode; break }
-  Start-Sleep -Seconds 5
-}
-docker compose logs --no-log-prefix prep
-if ($null -eq $prepExit) { throw "demo prep did not finish within 30 minutes; see 'docker compose logs prep'" }
-if ($prepExit -ne 0) { throw "demo prep failed with exit code $prepExit; see 'docker compose logs prep'" }
 
-Write-Host -NoNewline "==> waiting for api"
+Write-Host -NoNewline "==> waiting for the api to finish seeding"
 $ready = $false
-for ($i = 0; $i -lt 90 -and -not $ready; $i++) {
-  try { Invoke-RestMethod http://localhost:8000/system/health -TimeoutSec 15 | Out-Null; $ready = $true }
-  catch { Write-Host -NoNewline "."; Start-Sleep -Seconds 2 }
+for ($i = 0; $i -lt 150 -and -not $ready; $i++) {
+  try {
+    $h = Invoke-RestMethod http://localhost:8000/system/health -TimeoutSec 15
+    if ($h.n_telemetry_rows -gt 0) { $ready = $true } else { Write-Host -NoNewline "."; Start-Sleep -Seconds 2 }
+  } catch { Write-Host -NoNewline "."; Start-Sleep -Seconds 2 }
 }
-Write-Host (" ready" * [int]$ready)
+if (-not $ready) { throw "api did not come up within 5 minutes; see 'docker compose logs api'" }
+Write-Host " ready"
 Invoke-RestMethod http://localhost:8000/system/health | ConvertTo-Json -Compress
-Write-Host "==> production model"
-(Invoke-RestMethod http://localhost:8000/models) | Where-Object { $_.stage -eq "production" } | ForEach-Object {
-  Write-Host ("  {0} {1} {2} IMS {3} onnx {4}" -f $_.name, $_.version, $_.family, $_.ims_total, $_.onnx_path)
+
+if ($Prep) {
+  Write-Host "==> fallback prep: train, validate, promote as demo-prep@thor, score the fleet (~60-90 s)"
+  docker compose run --rm prep
+  Assert-Ok "docker compose run prep"
 }
-Write-Host "==> fleet top 3 (approved-model health)"
-(Invoke-RestMethod http://localhost:8000/fleet) | Select-Object -First 3 | ForEach-Object {
-  Write-Host ("  {0} health {1} p {2} regime {3}" -f $_.asset.asset_id, $_.health_score, $_.failure_probability, $_.regime)
-}
-Write-Host "==> done. Web: http://localhost:5173  (replay streams the last 20% over ~5 min per pass)"
+
+$replay = Invoke-RestMethod http://localhost:8000/replay
+$models = @(Invoke-RestMethod http://localhost:8000/models)
+$prod = $models | Where-Object { $_.stage -eq "production" }
+Write-Host "==> production model:" $(if ($prod) { "$($prod.name) $($prod.version) $($prod.family) IMS $($prod.ims_total)" } else { "none (expected before the demo)" })
+Write-Host "==> replay: released=$($replay.released) paused=$($replay.paused) plant time $($replay.plant_time)"
+$fleet = @(Invoke-RestMethod http://localhost:8000/fleet)
+$noPred = @($fleet | Where-Object { $null -eq $_.health_score }).Count
+Write-Host "==> fleet: $($fleet.Count) motors, $noPred without a prediction yet"
+Write-Host ""
+Write-Host "==> done. Open http://localhost:5173 (lands on Fleet: every motor grey, 'no prediction yet')."
+Write-Host "    1. AutoML Studio > Train new model (about 60 s; talk over the split, trials, gate, parity)"
+Write-Host "    2. ModelOps > Approve promotion with your name -> the fleet turns green and the replay starts"
+Write-Host "    3. MTR-042 goes amber then red on its own ~20-60 s later; Run analysis, ask Bolt, approve"
+Write-Host "    Recovery: Pause/Resume in the top bar; fallback training: .\scripts\demo_reset.ps1 -Prep"
+Write-Host "    Full click path and timings: docs\finals\demo-walkthrough.md"

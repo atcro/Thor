@@ -108,7 +108,7 @@ def check_drift(req: DriftCheckRequest) -> DriftReport:
         from agents.mlops.drift import detect_drift
     except ImportError as e:
         raise HTTPException(status_code=503, detail=f"drift toolbox unavailable: {e}") from e
-    df = db.read_telemetry(asset_id=req.asset_id, engine=engine)
+    df = db.read_telemetry(asset_id=req.asset_id, engine=engine, include_sandbox=False)
     if df.empty:
         raise HTTPException(status_code=404, detail=f"no telemetry for {req.asset_id}")
     try:

@@ -5,8 +5,9 @@ The 24 motors of the synthetic fleet are grouped into five packaging lines of fo
 air-compressor drives. This module is the ONE place that defines the mapping and the
 reasoning behind it. It changes names, lines and roles only: `rated_kw` and `criticality`
 stay exactly what they were per asset id (the generator uses `rated_kw` for the current
-signal), the telemetry generator and `FAULTY_ASSETS` are untouched, and MTR-042 remains the
-live demo fault.
+signal), the telemetry generator's signals are untouched, and MTR-042 remains the live demo
+fault (the fault schedule itself was re-timed on 2026-10-12 so that only MTR-042 degrades
+during the replay; see `FAULTY_ASSETS`).
 
 Why these motors are on these lines
 -----------------------------------
@@ -19,8 +20,8 @@ with ``python -m data.simulator.layout``.
    mean vibration RMS, computed over its *baseline* rows (rows before the known fault onset for
    the motors in `FAULTY_ASSETS`, all rows otherwise), using observable sensors only.
 2. **Lines 3-4** hold the seven motors with a drive-end bearing fault in their history
-   (`FAULTY_ASSETS`: MTR-042 live demo, MTR-021 fails live, MTR-017 subtle, MTR-003/009/013/023
-   completed historical failures) plus the healthy motor with the highest baseline duty index.
+   (`FAULTY_ASSETS`: MTR-042 live demo, MTR-003/009/013/017/021/023 completed historical
+   failures) plus the healthy motor with the highest baseline duty index.
 3. **Lines 1-2** hold the eight healthy motors with the lowest baseline duty index.
 4. Of the remaining eight healthy motors, the **Compressor Hall** takes the four with the
    highest rated power (as air-compressor drives would); **Line 5** takes the other four.
@@ -35,14 +36,14 @@ and vibration, and that separation is driven by the degradation events. Measured
 full history (`duty_profile`), per group of motors:
 
     group          bearing_temp mean / max   vibration_rms mean / max   load   starts
-    Lines 1-2      50.6 C / 72.1 C           2.07 / 3.10 mm/s           52.0   95
-    Lines 3-4      53.4 C / 91.2 C           2.66 / 8.18 mm/s           53.4   97
-    Line 5         52.9 C / 74.4 C           2.30 / 3.40 mm/s           52.1   98
-    Compressor     52.7 C / 74.0 C           2.21 / 3.25 mm/s           55.7   94
+    Lines 1-2      50.6 C / 76.6 C           2.07 / 3.38 mm/s           52.0   95
+    Lines 3-4      53.4 C / 104.6 C          2.67 / 10.07 mm/s          53.4   97
+    Line 5         52.9 C / 76.1 C           2.30 / 3.60 mm/s           52.1   98
+    Compressor     52.7 C / 75.7 C           2.21 / 3.60 mm/s           55.7   94
 
 So "why do Lines 3-4 struggle while 1-2 run well?" has an answer that is true in the data:
 their motors have the failure history, and over that history they ran hotter on average
-(19 C hotter at the worst sample) and vibrated more (2.6x at the worst sample), at
+(28 C hotter at the worst sample) and vibrated more (3.0x at the worst sample), at
 essentially the same load and start count. Nothing is tuned to make that so; the line
 assignment follows the measurement.
 """

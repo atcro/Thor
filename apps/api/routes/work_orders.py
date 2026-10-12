@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 
-from apps.api import db
+from apps.api import alarms, db
 from apps.api.schemas import WorkOrder, WorkOrderEvent, WorkOrderEventRequest
 
 router = APIRouter(tags=["work-orders"])
@@ -63,4 +63,18 @@ def post_work_order_event(contract_id: str, req: WorkOrderEventRequest) -> WorkO
         engine=engine,
     )
     updated = next(o for o in db.list_work_orders(engine=engine) if o.contract_id == contract_id)
+    if req.status == "in_progress" and updated.sandbox_scenario:
+        # Approving a sandbox motor's contract ends its sandbox fault: the plant's repair wins.
+        from apps.api import sandbox
+
+        sandbox.clear_asset(current.asset_id, f"work order {contract_id} started", engine)
+    if req.status == "completed":
+        # A completed work order is the only thing that clears a latched critical alarm.
+        alarms.clear_alarm(
+            current.asset_id,
+            "work_order_completed",
+            req.plant_ts,
+            engine=engine,
+            sandbox=updated.sandbox_scenario,
+        )
     return updated

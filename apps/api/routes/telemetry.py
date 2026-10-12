@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
 
-from apps.api import db, live
+from apps.api import alarms, db, live
 from apps.api.schemas import ObservedTelemetryRow, TelemetryRow
 from apps.api.settings import get_settings
 
@@ -63,6 +63,8 @@ class PredictionIn(BaseModel):
     #: Edge-reported inference time for this row (ms). Measured, not stored: it feeds the
     #: twin's live counters (apps/api/live.py) and is ignored by the database insert.
     inference_ms: float | None = None
+    #: True when the scored window contained sandbox readings (stored with the row).
+    sandbox: bool = False
 
 
 class PredictionOut(BaseModel):
@@ -70,6 +72,7 @@ class PredictionOut(BaseModel):
     failure_probability: float
     model_version: str
     source: str
+    sandbox: bool = False
 
 
 def _as_utc(ts: datetime) -> datetime:
@@ -161,6 +164,7 @@ def get_asset_predictions(
             failure_probability=float(r["failure_probability"]),
             model_version=str(r["model_version"]),
             source=str(r["source"]),
+            sandbox=bool(r["sandbox"]),
         )
         for r in rows
     ]
@@ -188,6 +192,7 @@ def post_prediction(
                 "model_version": p.model_version,
                 "failure_probability": float(p.failure_probability),
                 "source": p.source,
+                "sandbox": bool(p.sandbox),
             }
             for p in preds
         ],
@@ -195,6 +200,11 @@ def post_prediction(
     )
     for p in preds:
         live.record_prediction(p.asset_id, _as_utc(p.ts), float(p.failure_probability), p.inference_ms)
+    # The one status rule runs on every arrival: sustained rows raise, critical latches.
+    try:
+        alarms.update_alarms(engine, sorted({p.asset_id for p in preds}))
+    except Exception as exc:  # noqa: BLE001 - never fail the edge sink; the next batch retries
+        log.warning("alarm update failed: %s", exc)
     if isinstance(payload, list):
         return {"ok": True, "inserted": n}
     return {"ok": True}

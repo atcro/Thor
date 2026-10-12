@@ -23,9 +23,11 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 
-from apps.api import db
+from apps.api import alarms, db, live
 from apps.api.graph_state import run_summary
 from apps.api.schemas import (
+    AlarmEvent,
+    AlarmLevel,
     Asset,
     FeatureSpec,
     FleetAsset,
@@ -140,6 +142,8 @@ class FleetInputs:
     work_orders: dict[str, WorkOrder] = field(default_factory=dict)
     spec: FeatureSpec | None = None
     regime_by_asset: dict[str, str | None] = field(default_factory=dict)
+    #: asset_id -> newest alarm event (absent = healthy); apps/api/alarms.py.
+    alarms: dict[str, AlarmEvent] = field(default_factory=dict)
 
 
 def load_fleet_inputs(engine: Engine | None = None) -> FleetInputs:
@@ -156,6 +160,7 @@ def load_fleet_inputs(engine: Engine | None = None) -> FleetInputs:
     open_contracts = db.open_contract_by_asset(engine)
     work_orders = db.work_order_by_asset(engine)
     spec = production_spec(engine)
+    alarm_by_asset = alarms.latest_alarms(engine)
     latest_by_asset: dict[str, dict[str, Any]] = {}
     if not latest.empty:
         latest_by_asset = {r["asset_id"]: r for r in latest.to_dict("records")}
@@ -175,7 +180,15 @@ def load_fleet_inputs(engine: Engine | None = None) -> FleetInputs:
         work_orders=work_orders,
         spec=spec,
         regime_by_asset=regime_by_asset,
+        alarms=alarm_by_asset,
     )
+
+
+def alarm_fields(ev: AlarmEvent | None) -> dict[str, Any]:
+    """FleetAsset / TwinAsset alarm fields from the newest alarm event (None = healthy)."""
+    if ev is None or ev.level == AlarmLevel.healthy:
+        return {"alarm": None, "alarm_since": None, "alarm_reason": None}
+    return {"alarm": ev.level, "alarm_since": ev.plant_ts, "alarm_reason": ev.reason}
 
 
 def compute_fleet(engine: Engine | None = None) -> list[FleetAsset]:
@@ -200,6 +213,9 @@ def compute_fleet(engine: Engine | None = None) -> list[FleetAsset]:
         p = preds.get(a.asset_id)
         p_fail = float(p["failure_probability"]) if p else None
         health = _health_score(p_fail)
+        wo = work_orders.get(a.asset_id)
+        ev = inputs.alarms.get(a.asset_id)
+        af = alarm_fields(ev)
         out.append(
             FleetAsset(
                 asset=a,
@@ -211,7 +227,10 @@ def compute_fleet(engine: Engine | None = None) -> list[FleetAsset]:
                 last_ts=_ts_of(row["ts"]) if row else None,
                 open_contract_id=open_contracts.get(a.asset_id),
                 stage=stage,
-                work_order=work_orders.get(a.asset_id),
+                work_order=wo,
+                status=alarms.asset_status(af["alarm"], p_fail, live.bus.data_state(a.asset_id), wo),
+                sandbox=bool(p and p.get("sandbox")) or bool(ev and ev.sandbox and af["alarm"]),
+                **af,
             )
         )
     out.sort(key=lambda f: (f.health_score is None, f.health_score or 0.0, f.asset.asset_id))
@@ -222,6 +241,12 @@ def compute_fleet(engine: Engine | None = None) -> list[FleetAsset]:
 def get_fleet() -> list[FleetAsset]:
     """Fleet overview sorted by risk (lowest health score first; unscored assets last)."""
     return compute_fleet(db.get_engine())
+
+
+@router.get("/alarms", response_model=list[AlarmEvent])
+def get_alarms(asset_id: str | None = None) -> list[AlarmEvent]:
+    """Insert-only alarm transitions (apps/api/alarms.py), oldest first; optionally one asset."""
+    return alarms.list_alarm_events(asset_id=asset_id, engine=db.get_engine())
 
 
 @router.get("/assets/{asset_id}")
@@ -246,6 +271,9 @@ def get_asset(asset_id: str) -> dict[str, Any]:
     pred = db.latest_prediction_rows(engine).get(asset_id)
     contracts = db.list_decision_contracts(asset_id=asset_id, engine=engine)
     work_orders = db.list_work_orders(asset_id=asset_id, engine=engine)
+    ev = alarms.latest_alarms(engine).get(asset_id)
+    af = alarm_fields(ev)
+    newest_wo = work_orders[0] if work_orders else None
     runs = []
     for r in db.list_runs(asset_id=asset_id, engine=engine):
         s = run_summary(r["state"])
@@ -261,6 +289,9 @@ def get_asset(asset_id: str) -> dict[str, Any]:
         "prediction_ts": _ts_of(pred["ts"]) if pred else None,
         "model_version": pred["model_version"] if pred else None,
         "health_score": _health_score(p_fail),
+        "status": alarms.asset_status(af["alarm"], p_fail, live.bus.data_state(asset_id), newest_wo),
+        "sandbox": bool(pred and pred.get("sandbox")),
+        **af,
         "thresholds": Thresholds(),
         "contracts": contracts,
         "work_orders": work_orders,

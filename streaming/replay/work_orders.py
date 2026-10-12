@@ -247,7 +247,7 @@ class RepairSimulator:
 
     def _healthy(self, row: TelemetryRow) -> TelemetryRow:
         donor = self._baseline(row.asset_id).next_row(row.regime, row.ts)
-        update: dict[str, Any] = {"health": 1.0, "failure_within_h": None}
+        update: dict[str, Any] = {"health": 1.0, "failure_within_h": None, "sandbox": False}
         if donor:
             update.update(donor)
         return row.model_copy(update=update)

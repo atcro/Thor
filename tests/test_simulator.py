@@ -13,7 +13,10 @@ from apps.api.schemas import SENSOR_COLUMNS, Asset, TelemetryRow
 from data.simulator.generate import (
     ASSET_IDS,
     DEMO_ASSET,
+    DEMO_ONSET,
+    FAULT_RAMP_H,
     FAULTY_ASSETS,
+    SEED_FRACTION_DEFAULT,
     TELEMETRY_COLUMNS,
     build_assets,
     df_to_rows,
@@ -29,7 +32,7 @@ from data.simulator.layout import (
     line_members,
 )
 
-DAYS = 3
+DAYS = 5
 STEP = 10
 ROWS_PER_ASSET = DAYS * 24 * 60 // STEP
 
@@ -47,12 +50,16 @@ def test_asset_ids_replace_mtr_004_with_demo_asset() -> None:
     assert "MTR-004" not in ASSET_IDS
     assert ASSET_IDS[0] == "MTR-001" and ASSET_IDS[-1] == "MTR-024"
     assert {"MTR-042", "MTR-017"} <= set(FAULTY_ASSETS)
-    assert FAULTY_ASSETS["MTR-042"] == (pytest.approx(0.55), pytest.approx(1.0))
-    assert FAULTY_ASSETS["MTR-017"] == (pytest.approx(0.80), pytest.approx(1.0))
-    for onset, fail in FAULTY_ASSETS.values():
+    # Only the demo motor goes wrong live: its onset lies after the seed point and it is
+    # never repaired in the data; every other failure completes inside the seeded history.
+    assert FAULTY_ASSETS["MTR-042"] == (pytest.approx(DEMO_ONSET), pytest.approx(1.0))
+    assert SEED_FRACTION_DEFAULT < DEMO_ONSET < SEED_FRACTION_DEFAULT + 0.01
+    assert set(FAULT_RAMP_H) == {DEMO_ASSET}
+    for asset_id, (onset, fail) in FAULTY_ASSETS.items():
         assert 0.0 <= onset < fail <= 1.0
-    # at least three failures complete before the seed cutoff (0.45): training history
-    assert sum(1 for _, fail in FAULTY_ASSETS.values() if fail <= 0.45) >= 3
+        if asset_id != DEMO_ASSET:
+            assert fail < SEED_FRACTION_DEFAULT, asset_id
+    assert sum(1 for _, fail in FAULTY_ASSETS.values() if fail < SEED_FRACTION_DEFAULT) == 6
 
 
 def test_assets_catalogue_matches_contract() -> None:
@@ -182,7 +189,13 @@ def test_bearing_degradation_signature(
     assert active["failure_within_h"].iloc[-1] == 0.0
     assert (np.diff(active["failure_within_h"].to_numpy()) < 0).all()  # counts down
     assert (np.diff(active["health"].to_numpy()) <= 0).all()  # monotone decay 1 -> 0
-    assert active["health"].iloc[-1] == 0.0
+    if asset_id in FAULT_RAMP_H:
+        # the demo motor ramps over FAULT_RAMP_H hours and then holds at full severity
+        ramp_rows = FAULT_RAMP_H[asset_id] * 60 / STEP
+        expected = 1.0 - min(1.0, (len(active) - 1) / ramp_rows) ** 2
+        assert active["health"].iloc[-1] == pytest.approx(expected, abs=1e-4)
+    else:
+        assert active["health"].iloc[-1] == 0.0
     # after the failure the bearing is replaced: healthy again
     assert (after["health"] == 1.0).all()
     assert after["failure_within_h"].isna().all()
@@ -194,7 +207,15 @@ def test_bearing_degradation_signature(
     if len(after) > 50:
         assert after["vibration_rms"].mean() < 0.6 * tail["vibration_rms"].mean()
     assert tail["vibration_crest"].mean() > pre["vibration_crest"].mean() + 0.5
-    assert tail["bearing_temp_c"].mean() > pre["bearing_temp_c"].mean() + 10.0
+    # bearing temperature depends on the operating state (load), so compare like with like:
+    # within every state the tail has enough rows for, the damaged bearing runs >= 10 C hotter
+    pre_by_state = pre.groupby("regime")["bearing_temp_c"].mean()
+    compared = 0
+    for state, rows in tail.groupby("regime"):
+        if len(rows) >= 6 and state in pre_by_state.index:
+            assert rows["bearing_temp_c"].mean() > pre_by_state[state] + 10.0, state
+            compared += 1
+    assert compared >= 1
 
 
 def test_demo_asset_is_more_severe_than_mtr_017(fleet: tuple[pd.DataFrame, list[Asset]]) -> None:
@@ -210,7 +231,7 @@ def test_rows_validate_against_telemetry_row(fleet: tuple[pd.DataFrame, list[Ass
     sample = pd.concat([df[df["asset_id"] == DEMO_ASSET].tail(3), df.head(3)])
     rows = df_to_rows(sample)
     assert all(isinstance(r, TelemetryRow) for r in rows)
-    assert rows[2].failure_within_h == 0.0 and rows[2].health == 0.0  # last row of MTR-042
+    assert rows[2].failure_within_h == 0.0 and rows[2].health < 1.0  # last row of MTR-042
     assert rows[0].failure_within_h == pytest.approx(2 * STEP / 60, abs=1e-3)
     assert rows[-1].failure_within_h is None and rows[-1].health == 1.0  # MTR-001 healthy
     TelemetryRow.model_validate_json(rows[2].model_dump_json())

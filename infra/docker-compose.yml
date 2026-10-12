@@ -1,9 +1,15 @@
 # Thor -- one command: `docker compose -f infra/docker-compose.yml up --build`
 # (or `docker compose up --build` from the repo root via the symlinked compose.yaml).
 #
-# Services: timescale, mqtt, mlflow, api (control plane + orchestrator), prep (one-shot demo
-# preparation: train, validate, promote, export, score), edge (ONNX inference), replay (MQTT
-# telemetry replay), web (React). No Kubernetes, no MinIO, no Redis.
+# Services: timescale, mqtt, mlflow, api (control plane + orchestrator), edge (ONNX
+# inference), replay (MQTT telemetry replay), web (React), plus the optional one-shot `prep`
+# job (profile "prep": train, validate, promote, export, score -- the manual fallback when the
+# presenter cannot train on stage). No Kubernetes, no MinIO, no Redis.
+#
+# A clean `docker compose up` does NOTHING on its own beyond seeding the recorded history: no
+# model is trained, no prediction exists (every motor shows "no prediction yet") and the replay
+# container holds (it polls GET /replay) until a named approver promotes a model in ModelOps.
+# That sign-off releases the recorded plant history. See docs/finals/demo-walkthrough.md.
 
 name: thor
 
@@ -91,12 +97,14 @@ services:
       mlflow:
         condition: service_started
 
-  # One-shot demo preparation through the api's own governed endpoints: train + validate a
+  # MANUAL FALLBACK ONLY (profile "prep", never started by a plain `docker compose up`):
+  # one-shot demo preparation through the api's own governed endpoints -- train + validate a
   # champion (MTR-042 held out), approve its promotion as demo-prep@thor, export it for the
-  # edge, re-check parity on the deployed files, score the fleet. Idempotent: skips training
-  # when a production model already exists. The replay and the edge wait for it, so the live
-  # demo never shows training. ~2-3 min on first start.
+  # edge, score the fleet. Idempotent: skips training when a production model already exists.
+  # Use it when training on stage fails:  docker compose run --rm prep
+  # (or natively: python -m scripts.demo_prep --api http://localhost:8000). ~60-90 s.
   prep:
+    profiles: ["prep"]
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
@@ -105,7 +113,7 @@ services:
       DATABASE_URL: postgresql+psycopg://thor:thor@timescale:5432/thor
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MODELS_DIR: /models
-      DEMO_PREP_TRIALS: ${DEMO_PREP_TRIALS:-6}
+      DEMO_PREP_TRIALS: ${DEMO_PREP_TRIALS:-4}
     volumes:
       - models:/models
     restart: "no"
@@ -130,9 +138,12 @@ services:
     depends_on:
       mqtt:
         condition: service_started
-      prep:
-        condition: service_completed_successfully
+      api:
+        condition: service_started
 
+  # Streams the recorded plant history over MQTT -- but only once GET /replay says a
+  # production model exists (the human sign-off); pause/resume via POST /replay/pause|resume.
+  # Also applies the twin's sandbox overrides (GET /sandbox) and executes approved work orders.
   replay:
     build:
       context: ..
@@ -150,8 +161,6 @@ services:
         condition: service_started
       api:
         condition: service_started
-      prep:
-        condition: service_completed_successfully
 
   web:
     build:

@@ -722,13 +722,31 @@ def tool_create_decision_contract(
     explanation_text: str,
     explanation_source: Literal["llm", "template"],
     engine: Engine | None,
+    sandbox_scenario: bool = False,
 ) -> DecisionContract:
-    """07: `agents.reliability.contract.create_decision_contract(...)` (inserts the row)."""
+    """07: `agents.reliability.contract.create_decision_contract(...)` (inserts the row).
+    `sandbox_scenario` marks a contract drawn from sandbox readings."""
     from agents.reliability.contract import create_decision_contract
 
     return create_decision_contract(
-        bundle, run_id, explanation_text, explanation_source, engine=engine
+        bundle,
+        run_id,
+        explanation_text,
+        explanation_source,
+        engine=engine,
+        sandbox_scenario=sandbox_scenario,
     )
+
+
+def _window_is_sandbox(h: RunHandle, gs: GraphState, spec: FeatureSpec) -> bool:
+    """True when the analysed asset's latest feature window holds a sandbox reading."""
+    df = h.cache.get("df")
+    if df is None or "sandbox" not in df.columns or "asset_id" not in df.columns:
+        return False
+    sub = df[df["asset_id"] == gs.asset_id]
+    if "ts" in sub.columns:
+        sub = sub.sort_values("ts")
+    return bool(sub.tail(int(spec.window_rows))["sandbox"].fillna(False).astype(bool).any())
 
 
 def tool_check_parity(
@@ -1080,9 +1098,11 @@ ANALYZE_RECENT_H = 72.0
 
 
 def _telemetry(h: RunHandle, engine: Engine | None) -> pd.DataFrame:
+    """The whole fleet's stored telemetry for a TRAIN run, without sandbox readings: a
+    sandbox scenario is never training data, a validation metric or a drift baseline."""
     df = h.cache.get("df")
     if df is None:
-        df = db.read_telemetry(engine=engine)
+        df = db.read_telemetry(engine=engine, include_sandbox=False)
         h.cache["df"] = df
     return df
 
@@ -1536,7 +1556,9 @@ def _explain(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
     if _llm_enabled():
         gs.llm_calls += 1
     append_event(gs, gs.stage, f"explanation drafted ({source})", tool="draft_explanation")
-    contract = tool_create_decision_contract(bundle, gs.run_id, text, source, engine)
+    contract = tool_create_decision_contract(
+        bundle, gs.run_id, text, source, engine, sandbox_scenario=_window_is_sandbox(h, gs, spec)
+    )
     gs.contract = contract
     append_event(
         gs,
@@ -1841,13 +1863,81 @@ def _fleet_rows(engine: Engine | None) -> list[dict[str, Any]]:
                 "failure_probability": fa.failure_probability,
                 "prediction_ts": fa.prediction_ts.isoformat() if fa.prediction_ts else None,
                 "model_version": fa.model_version,
+                # Operating state inferred from rpm/load (field name kept; Bolt says "state").
                 "regime": fa.regime,
                 "open_contract_id": fa.open_contract_id,
                 "model_stage": fa.stage.value if fa.stage else None,
+                # The ONE status rule (apps/api/alarms.py): offline > no_prediction > no_data >
+                # critical (latched) > warning > healthy; alarm fields from the newest event.
+                "status": fa.status.value if fa.status else None,
+                "alarm": fa.alarm.value if fa.alarm else None,
+                "alarm_since": fa.alarm_since.isoformat() if fa.alarm_since else None,
+                "alarm_reason": fa.alarm_reason,
+                "sandbox": bool(fa.sandbox),
             }
         )
     # compute_fleet already orders worst-first with unscored assets last; keep that order
     return rows
+
+
+#: Per-sample predictions Bolt looks back over for a trend (same window as the X-Ray HUD).
+COPILOT_TREND_ROWS = 36
+COPILOT_RECENT_PREDICTIONS = 6
+COPILOT_CITATION_EXCERPT_CHARS = 200
+
+
+def _plain_drivers(top_features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """SHAP drivers with their plain names (FEATURE_PHRASES), direction and observed value."""
+    from agents.reliability.explain import FEATURE_PHRASES
+
+    return [
+        {
+            "driver": FEATURE_PHRASES.get(f["feature"], f["feature"].replace("_", " ")),
+            "feature": f["feature"],
+            "direction": f["direction"],
+            "value": f.get("feature_value"),
+            "shap_value": f.get("shap_value"),
+        }
+        for f in top_features
+    ]
+
+
+def _contract_detail(dc: DecisionContract, engine: Engine | None) -> dict[str, Any]:
+    """The 'details' view of one Decision Contract for Bolt: ids, recommendation, numbers,
+    window, plain-named drivers, the cost options, the manual citations (source, section and
+    a short excerpt) and the sandbox flag. Every value is copied from the stored contract."""
+    payload = db.dump_model(dc)
+    citations = []
+    for p in dc.manual_context:
+        body = " ".join(p.text.split())
+        if len(body) > COPILOT_CITATION_EXCERPT_CHARS:
+            body = body[:COPILOT_CITATION_EXCERPT_CHARS].rsplit(" ", 1)[0] + " ..."
+        citations.append({"source": p.source, "section": p.section, "excerpt": body})
+    return {
+        "contract_id": dc.contract_id,
+        "created_at": dc.created_at.isoformat(),
+        "status": db.contract_status(dc.contract_id, engine=engine),
+        "recommendation": dc.recommendation,
+        "failure_probability": dc.failure_probability,
+        "expected_cost": dc.expected_cost,
+        "window_start": dc.window_start.isoformat() if dc.window_start else None,
+        "window_end": dc.window_end.isoformat() if dc.window_end else None,
+        "lead_time_h": dc.lead_time_h,
+        "model_version": dc.model_version,
+        "top_features_plain": _plain_drivers(payload.get("top_features", [])),
+        "cost_options": [
+            {
+                "option": o.option,
+                "expected_cost": o.expected_cost,
+                "probability": o.p_failure_before,
+                "downtime_h": o.downtime_h,
+                "recommended": o.option == dc.cost_comparison.recommended,
+            }
+            for o in dc.cost_comparison.options
+        ],
+        "manual_citations": citations,
+        "sandbox_scenario": bool(dc.sandbox_scenario),
+    }
 
 
 def copilot_get_fleet(engine: Engine | None = None) -> dict[str, Any]:
@@ -1864,7 +1954,18 @@ def copilot_get_fleet(engine: Engine | None = None) -> dict[str, Any]:
 
 
 def copilot_get_asset(asset_id: str, engine: Engine | None = None) -> dict[str, Any]:
-    """Tool: one asset's fleet row, latest telemetry, contracts and runs."""
+    """Tool: everything Bolt needs to say what is happening with one asset.
+
+    Returns {"asset": fleet row (health, failure_probability, operating state in `regime`,
+    status, alarm, alarm_since, sandbox ...), "status", "alarm": {level, since, reason,
+    sandbox} | None, "trend": rising|falling|flat|None over the last COPILOT_TREND_ROWS
+    per-sample predictions, "recent_predictions": the newest COPILOT_RECENT_PREDICTIONS rows
+    as {ts, p} oldest first, "latest_telemetry": the observable sensors only,
+    "contracts": up to five summaries, "contract": the newest contract's details (id,
+    recommendation, probability, expected cost, window, plain-named drivers, cost options,
+    manual citations with a short excerpt, sandbox_scenario) or None, "runs". Simulator
+    ground truth (health, failure_within_h, the simulator's regime label) never appears.
+    """
     asset_id = asset_id.upper()
     row = next((r for r in _fleet_rows(engine) if r["asset_id"] == asset_id), None)
     if row is None:
@@ -1879,6 +1980,29 @@ def copilot_get_asset(asset_id: str, engine: Engine | None = None) -> dict[str, 
             for k, v in rec.items()
             if k in ObservedTelemetryRow.model_fields
         }
+    alarm = None
+    if row.get("alarm"):
+        alarm = {
+            "level": row["alarm"],
+            "since": row["alarm_since"],
+            "reason": row["alarm_reason"],
+            "sandbox": row["sandbox"],
+        }
+    # Per-sample prediction history and trend: the same helpers the X-Ray HUD uses.
+    trend = None
+    recent: list[dict[str, Any]] = []
+    try:
+        from apps.api.routes.twin import _prediction_history, trend_of
+
+        history = _prediction_history(engine or db.get_engine(), asset_id, COPILOT_TREND_ROWS)
+        trend = trend_of([h.failure_probability for h in history])
+        recent = [
+            {"ts": h.ts.isoformat(), "p": round(h.failure_probability, 3)}
+            for h in history[-COPILOT_RECENT_PREDICTIONS:]
+        ]
+    except Exception as e:  # noqa: BLE001 - a trend is a nicety; the status never depends on it
+        log.debug("copilot get_asset: prediction history unavailable for %s: %s", asset_id, e)
+    stored = db.list_decision_contracts(asset_id=asset_id, engine=engine)
     contracts = [
         {
             "contract_id": c.contract_id,
@@ -1886,11 +2010,23 @@ def copilot_get_asset(asset_id: str, engine: Engine | None = None) -> dict[str, 
             "failure_probability": c.failure_probability,
             "expected_cost": c.expected_cost,
             "status": db.contract_status(c.contract_id, engine=engine),
+            "sandbox_scenario": bool(c.sandbox_scenario),
         }
-        for c in db.list_decision_contracts(asset_id=asset_id, engine=engine)[:5]
+        for c in stored[:5]
     ]
+    contract = _contract_detail(stored[0], engine) if stored else None
     runs = [run_summary(r["state"]) for r in db.list_runs(asset_id=asset_id, engine=engine)[:5]]
-    return {"asset": row, "latest_telemetry": latest_row, "contracts": contracts, "runs": runs}
+    return {
+        "asset": row,
+        "status": row.get("status"),
+        "alarm": alarm,
+        "trend": trend,
+        "recent_predictions": recent,
+        "latest_telemetry": latest_row,
+        "contracts": contracts,
+        "contract": contract,
+        "runs": runs,
+    }
 
 
 def copilot_get_contract(contract_id: str, engine: Engine | None = None) -> dict[str, Any]:
@@ -1901,17 +2037,7 @@ def copilot_get_contract(contract_id: str, engine: Engine | None = None) -> dict
     out = db.dump_model(dc)
     out["status"] = db.contract_status(contract_id, engine=engine)
     try:
-        from agents.reliability.explain import FEATURE_PHRASES
-
-        out["top_features_plain"] = [
-            {
-                "driver": FEATURE_PHRASES.get(f["feature"], f["feature"].replace("_", " ")),
-                "feature": f["feature"],
-                "direction": f["direction"],
-                "shap_value": f["shap_value"],
-            }
-            for f in out.get("top_features", [])
-        ]
+        out["top_features_plain"] = _plain_drivers(out.get("top_features", []))
     except Exception:  # noqa: BLE001 - plain names are a courtesy, never required
         pass
     return out
@@ -2131,7 +2257,8 @@ COPILOT_TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_fleet",
         "description": (
-            "Fleet overview: every asset with health score, failure probability, regime and "
+            "Fleet overview: every asset with health score, failure probability, operating "
+            "state (field `regime`; say 'state' to the engineer), status, latched alarm and "
             "open contract, sorted by risk. health_score is null for assets no approved model "
             "has scored yet (say 'no prediction yet'; never guess a health)."
         ),
@@ -2139,7 +2266,16 @@ COPILOT_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "get_asset",
-        "description": "Details for one asset id (e.g. MTR-042): latest telemetry, contracts, runs.",
+        "description": (
+            "Everything about one asset id (e.g. MTR-042): status (healthy | warning | critical "
+            "| no_prediction | offline | no_data), the latched alarm (level, since = plant time, "
+            "reason, sandbox), the probability trend over the last 36 predictions, the last 6 "
+            "predictions {ts, p}, the latest sensor readings, its operating state (field "
+            "`regime`; say 'state'), contract summaries, and `contract` = the newest Decision "
+            "Contract's details (id, recommendation, probability, expected cost, window, "
+            "top_features_plain, cost_options, manual_citations, sandbox_scenario) or null when "
+            "no analysis has produced one yet."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {"asset_id": {"type": "string"}},
@@ -2278,7 +2414,16 @@ def _result_summary(result: dict[str, Any]) -> str:
         a = result["asset"]
         if a["health_score"] is None:
             return f"{a['asset_id']} no prediction yet"
-        return f"{a['asset_id']} health {a['health_score']}, p_fail {a['failure_probability']}"
+        status = result.get("status") or a.get("status") or "scored"
+        tail = f" status {status}"
+        if result.get("alarm"):
+            tail += f", alarm {result['alarm']['level']} since {result['alarm']['since']}"
+        if result.get("trend"):
+            tail += f", trend {result['trend']}"
+        dc = result.get("contract")
+        if dc:
+            tail += f", contract {dc['contract_id']} {dc['recommendation']} ({dc['status']})"
+        return f"{a['asset_id']} health {a['health_score']}, p_fail {a['failure_probability']}{tail}"
     if "contracts" in result and "promotions" in result:
         return (
             f"{len(result['contracts'])} contracts, {len(result['promotions'])} promotions pending"
@@ -2327,14 +2472,17 @@ def _template_asset_text(res: dict[str, Any]) -> str:
         health = f"health {a['health_score']}"
         if a["failure_probability"] is not None:
             health += f", failure probability {a['failure_probability']:.2f}"
+    status = res.get("status") or a.get("status")
+    status_bit = f", status {_STATUS_WORDS.get(status, status)}" if status else ""
     text = (
-        f"{a['asset_id']} ({a['name']}, {a['site']}/{a['line']}): {health}, "
-        f"regime {a['regime'] or 'unknown'}."
+        f"{a['asset_id']} ({a['name']}, {a['site']}/{a['line']}): {health}{status_bit}, "
+        f"state {_state_name(a.get('regime'))}."
     )
     if res["contracts"]:
         c = res["contracts"][0]
+        sandbox = " (sandbox scenario)" if c.get("sandbox_scenario") else ""
         text += (
-            f" Latest decision contract {c['contract_id']}: {c['recommendation']} "
+            f" Latest decision contract {c['contract_id']}{sandbox}: {c['recommendation']} "
             f"(p_fail {c['failure_probability']:.2f}, expected cost {c['expected_cost']:.0f}), "
             f"status {c['status']}."
         )
@@ -2342,6 +2490,274 @@ def _template_asset_text(res: dict[str, Any]) -> str:
         r = res["runs"][0]
         text += f" Latest run {r['run_id']} is {r['stage']}."
     return text
+
+
+# Status words as Bolt says them (TwinStatus values -> plain phrase).
+_STATUS_WORDS: dict[str, str] = {
+    "healthy": "healthy",
+    "warning": "warning",
+    "critical": "critical",
+    "no_prediction": "no prediction yet",
+    "offline": "offline",
+    "no_data": "no data",
+}
+# Plain names of the three operating states the production model clusters (R1..R3). The
+# field is still called `regime` in the API; Bolt says "state".
+_STATE_NAMES: dict[str, str] = {
+    "R1": "R1 idle/startup",
+    "R2": "R2 nominal",
+    "R3": "R3 heavy load",
+}
+RECOMMENDATION_WORDS: dict[str, str] = {
+    "maintain_now": "maintain now",
+    "maintain_later": "maintain at the next planned window",
+    "run_to_failure": "run to failure",
+}
+ALARM_RULE_LINE = (
+    "Alarm rule: 3 consecutive predictions >= 0.3 raise a warning, 3 consecutive >= 0.5 latch "
+    "critical until a work order completes, and a warning clears after 6 consecutive < 0.3."
+)
+
+
+def _state_name(regime: str | None) -> str:
+    if not regime:
+        return "unknown"
+    return _STATE_NAMES.get(str(regime), str(regime))
+
+
+def _plant_ts(value: str | None) -> str:
+    """ISO timestamp -> 'YYYY-MM-DD HH:MM UTC' (plant time, as stored); '' when missing."""
+    if not value:
+        return ""
+    v = str(value)
+    if len(v) >= 16 and v[10] == "T":
+        return v[:16].replace("T", " ") + " UTC"
+    return v
+
+
+def _money(x: float | None) -> str:
+    return "n/a" if x is None else f"{x:,.0f}"
+
+
+def _rec_phrase(rec: str | None) -> str:
+    return RECOMMENDATION_WORDS.get(str(rec), str(rec))
+
+
+def _status_sentence(res: dict[str, Any]) -> str:
+    """One-sentence conclusion: status word, latch/alarm facts, probability and trend --
+    every value straight from get_asset."""
+    a = res["asset"]
+    aid = a["asset_id"]
+    status = res.get("status") or a.get("status") or (
+        "no_prediction" if a["health_score"] is None else "healthy"
+    )
+    p = a.get("failure_probability")
+    p_bit = f"the calibrated failure probability is {p:.2f}" if p is not None else ""
+    trend = res.get("trend")
+    trend_bit = f"the trend is {trend}" if trend else "no trend yet (fewer than 6 predictions)"
+    alarm = res.get("alarm") or {}
+    since = _plant_ts(alarm.get("since"))
+    sandbox = " from sandbox readings" if alarm.get("sandbox") else ""
+    if status == "critical":
+        head = (
+            f"{aid} is critical -- the alarm latched at {since}{sandbox} after "
+            f"{alarm.get('reason') or '3 consecutive predictions >= 0.5'} and stays critical "
+            "until a work order completes"
+        )
+    elif status == "warning":
+        head = (
+            f"{aid} is in warning -- raised at {since}{sandbox} after "
+            f"{alarm.get('reason') or '3 consecutive predictions >= 0.3'}"
+        )
+    elif status == "healthy":
+        head = f"{aid} is healthy (within its healthy baseline)"
+    elif status == "offline":
+        head = f"{aid} is offline -- the plant has it out under an approved work order"
+    elif status == "no_data":
+        head = f"{aid} has stopped reporting (no data) -- its last prediction still stands"
+    else:
+        return (
+            f"{aid} ({a['name']}, {a['site']}/{a['line']}) has no prediction yet -- no approved "
+            "model has scored it, so there is no health score or alarm."
+        )
+    bits = [b for b in (p_bit, trend_bit) if b]
+    return head + ("; " + " and ".join(bits) if bits else "") + "."
+
+
+def _readings_line(res: dict[str, Any]) -> str:
+    """The live readings that matter, from the observable telemetry only."""
+    t = res.get("latest_telemetry")
+    if not t:
+        return "No telemetry stored for this asset yet."
+    return (
+        f"Latest readings ({_plant_ts(t.get('ts'))}): vibration RMS {t['vibration_rms']:.2f} mm/s, "
+        f"kurtosis {t['vibration_kurtosis']:.1f}, crest {t['vibration_crest']:.1f}, "
+        f"bearing temp {t['bearing_temp_c']:.1f} C, motor temp {t['motor_temp_c']:.1f} C, "
+        f"current {t['current_a']:.1f} A, {t['rpm']:.0f} rpm, load {t['load_pct']:.0f} %, "
+        f"state {_state_name(res['asset'].get('regime'))}"
+        + (" (sandbox readings)" if t.get("sandbox") else "")
+        + "."
+    )
+
+
+def _contract_line(dc: dict[str, Any]) -> str:
+    sandbox = " (sandbox scenario)" if dc.get("sandbox_scenario") else ""
+    window = ""
+    if dc.get("window_start"):
+        window = f", window {_plant_ts(dc['window_start'])} to {_plant_ts(dc['window_end'])}"
+    return (
+        f"Decision Contract {dc['contract_id']}{sandbox} recommends "
+        f"{_rec_phrase(dc['recommendation'])}: failure probability "
+        f"{dc['failure_probability']:.2f}, expected cost {_money(dc['expected_cost'])} under the "
+        f"configured plant-cost assumptions{window}; status {dc['status']}."
+    )
+
+
+RUN_ANALYSIS_LINE = "Run analysis in Asset 360 to get a Decision Contract."
+APPROVAL_LINE = "The contract is approved or rejected on Asset 360; I cannot approve it."
+
+
+def _template_status_text(res: dict[str, Any]) -> str:
+    """'What's happening with X?': conclusion, the readings, then the contract or the next step."""
+    if "error" in res:
+        return str(res["error"])
+    lines = [_status_sentence(res), _readings_line(res)]
+    dc = res.get("contract")
+    if dc:
+        lines.append(_contract_line(dc))
+        if dc.get("status") == "pending":
+            lines.append(APPROVAL_LINE)
+    else:
+        lines.append(RUN_ANALYSIS_LINE)
+    return "\n".join(lines)
+
+
+def _best_sentence(text: str, keywords: list[str]) -> str:
+    """The sentence of `text` sharing the most words with `keywords` (ties -> the earliest)."""
+    body = " ".join(text.split())
+    sentences = [s.strip() for s in re.split(r"(?<=[.;])\s+", body) if s.strip()]
+    if not sentences:
+        return body
+    words = {w.lower() for k in keywords for w in re.findall(r"[A-Za-z]{3,}", k)}
+    best, best_score = sentences[0], -1
+    for s in sentences:
+        score = len(words & {w.lower() for w in re.findall(r"[A-Za-z]{3,}", s)})
+        if score > best_score:
+            best, best_score = s, score
+    return best
+
+
+def _template_precedent_brief(res: dict[str, Any]) -> str:
+    """Field history as medians plus one case (the 'details' format)."""
+    if "error" in res:
+        return str(res["error"])
+    if not res["cases"]:
+        return f"No field-history cases matched '{res['query']}'."
+    parts = []
+    if res["median_labor_hours"] is not None:
+        parts.append(f"median labor {res['median_labor_hours']:g} h")
+    if res["median_total_cost"] is not None:
+        parts.append(f"median cost {res['median_total_cost']:,.0f}")
+    c = res["cases"][0]
+    year = c["start_date"][:4] if c["start_date"] else "n/a"
+    bits = []
+    if c["labor_hours"] is not None:
+        bits.append(f"{c['labor_hours']:g} labor h")
+    if c["total_cost"] is not None:
+        bits.append(f"cost {c['total_cost']:,.0f}")
+    tail = f" ({', '.join(bits)})" if bits else ""
+    return (
+        f"Field history ({res['n_cases']} similar unplanned work orders from {res['source']}; "
+        f"precedent, not from this plant): {', '.join(parts) or 'no cost data'}. "
+        f"For example [{c['component']}, {year}] {c['description']}{tail}."
+    )
+
+
+def _template_details_text(res: dict[str, Any], precedent: dict[str, Any] | None) -> str:
+    """'Give me the details.': readings + predictions + alarm rule before a contract; drivers,
+    cost options, the most relevant manual sentence and precedent once one exists."""
+    if "error" in res:
+        return str(res["error"])
+    lines = [_status_sentence(res)]
+    dc = res.get("contract")
+    if not dc:
+        lines.append(_readings_line(res))
+        recent = res.get("recent_predictions") or []
+        if recent:
+            lines.append(f"Last {len(recent)} predictions:")
+            lines.extend(f"- {_plant_ts(r['ts'])}: {r['p']:.2f}" for r in recent)
+        lines.append(ALARM_RULE_LINE)
+        lines.append(RUN_ANALYSIS_LINE)
+        return "\n".join(lines)
+    lines.append(_contract_line(dc))
+    drivers = dc.get("top_features_plain") or []
+    if drivers:
+        lines.append("Top drivers:")
+        for d in drivers[:4]:
+            tag = "raises risk" if d["direction"] == "raises_risk" else "lowers risk"
+            value = f" {d['value']:.3g}" if d.get("value") is not None else ""
+            lines.append(f"- {d['driver']}:{value} ({tag})")
+    options = dc.get("cost_options") or []
+    if options:
+        lines.append("Cost options under the configured plant-cost assumptions:")
+        for o in options:
+            rec = " -- recommended" if o.get("recommended") else ""
+            lines.append(
+                f"- {_rec_phrase(o['option'])}: expected cost {_money(o['expected_cost'])} "
+                f"({o['probability']:.0%} chance of failing first){rec}"
+            )
+    cites = dc.get("manual_citations") or []
+    if cites:
+        c = cites[0]
+        sentence = _best_sentence(c["excerpt"], [d["driver"] for d in drivers[:3]])
+        lines.append(f'Manual: "{sentence}" ({c["source"]} section {c["section"]})')
+    if precedent is not None:
+        lines.append(_template_precedent_brief(precedent))
+    if dc.get("status") == "pending":
+        lines.append(APPROVAL_LINE)
+    return "\n".join(lines)
+
+
+FIX_PROCEDURE_QUERY = "drive-end bearing inspection and replacement procedure"
+
+
+def _template_fixes_text(res: dict[str, Any], manuals: dict[str, Any]) -> str:
+    """'What are the possible fixes?': the contract's costed options and window plus the manual
+    procedure; before a contract, the procedure and the pointer to Run analysis."""
+    if "error" in res:
+        return str(res["error"])
+    lines = [_status_sentence(res)]
+    dc = res.get("contract")
+    if dc:
+        lines.append(_contract_line(dc))
+        options = dc.get("cost_options") or []
+        if options:
+            lines.append("Options under the configured plant-cost assumptions:")
+            for o in options:
+                rec = " -- recommended" if o.get("recommended") else ""
+                lines.append(f"- {_rec_phrase(o['option'])}: expected cost {_money(o['expected_cost'])}{rec}")
+        cites = dc.get("manual_citations") or []
+        if cites:
+            lines.append("Manual guidance cited in the contract:")
+            for c in cites[:2]:
+                lines.append(f'- "{c["excerpt"]}" ({c["source"]} section {c["section"]})')
+    else:
+        lines.append(
+            "There is no Decision Contract for it yet, so there is no costed recommendation. "
+            + RUN_ANALYSIS_LINE
+        )
+    passages = manuals.get("passages") or []
+    if passages:
+        lines.append(f"Procedure from the plant manuals (query: {manuals['query']}):")
+        for p in passages[:3]:
+            body = " ".join(p["text"].split())
+            if len(body) > 300:
+                body = body[:300].rsplit(" ", 1)[0] + " ..."
+            lines.append(f"- [{p['source']} section {p['section']}] {body}")
+    else:
+        lines.append(f"No manual passages matched '{manuals.get('query', FIX_PROCEDURE_QUERY)}'.")
+    lines.append(APPROVAL_LINE if dc else "Approvals happen on Asset 360; I cannot approve anything.")
+    return "\n".join(lines)
 
 
 def _template_pending_text(res: dict[str, Any]) -> str:

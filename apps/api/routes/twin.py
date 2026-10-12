@@ -36,12 +36,13 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 
-from apps.api import db, live, plant
+from apps.api import alarms, db, live, plant
 from apps.api.routes.fleet import (
     FleetInputs,
     _clean_row,
     _health_score,
     _ts_of,
+    alarm_fields,
     load_fleet_inputs,
 )
 from apps.api.schemas import (
@@ -62,7 +63,6 @@ from apps.api.schemas import (
     TwinLine,
     TwinRewind,
     TwinSnapshot,
-    TwinStatus,
     WorkOrder,
 )
 
@@ -164,26 +164,7 @@ def lines_with_mes(assets: list[Asset], plant_time: datetime | None) -> list[Twi
 # --------------------------------------------------------------------------------------
 
 
-def twin_status(
-    p_fail: float | None,
-    data_state: DataState,
-    work_order: WorkOrder | None,
-    thresholds: Thresholds,
-) -> TwinStatus:
-    """Status glyph with the precedence offline > no_data > critical > warning > healthy >
-    no_prediction. Inputs: displayed (median) failure probability, wall-clock data state,
-    newest work order and the thresholds. Output: TwinStatus."""
-    if work_order is not None and work_order.status == "in_progress":
-        return TwinStatus.offline
-    if data_state != DataState.live:
-        return TwinStatus.no_data
-    if p_fail is None:
-        return TwinStatus.no_prediction
-    if p_fail >= thresholds.classification:
-        return TwinStatus.critical
-    if p_fail >= thresholds.early_warning:
-        return TwinStatus.warning
-    return TwinStatus.healthy
+twin_status = alarms.asset_status  # the one status rule (apps/api/alarms.py)
 
 
 def _newest_contract_states(engine: Engine) -> dict[str, tuple[str, datetime, str | None]]:
@@ -263,7 +244,7 @@ def compute_twin_assets(
     inputs = load_fleet_inputs(engine)
     contract_states = _newest_contract_states(engine)
     live_stats = live.bus.asset_live_stats(now)
-    thresholds = Thresholds()
+    overrides = sandbox_overrides_by_asset(engine)
     out: list[TwinAsset] = []
     for a in inputs.assets:
         row = inputs.latest_by_asset.get(a.asset_id)
@@ -271,6 +252,8 @@ def compute_twin_assets(
         p_fail = float(p["failure_probability"]) if p else None
         health = _health_score(p_fail)
         wo = inputs.work_orders.get(a.asset_id)
+        ev = inputs.alarms.get(a.asset_id)
+        af = alarm_fields(ev)
         stats = live_stats.get(a.asset_id)
         if stats is None:
             state = DataState.none
@@ -286,7 +269,7 @@ def compute_twin_assets(
         out.append(
             TwinAsset(
                 asset=a,
-                status=twin_status(p_fail, state, wo, thresholds),
+                status=alarms.asset_status(af["alarm"], p_fail, state, wo),
                 data_state=state,
                 decision_state=decision_state(wo, contract_states.get(a.asset_id)),
                 failure_probability=p_fail,
@@ -301,9 +284,24 @@ def compute_twin_assets(
                 msgs_last_60s=stats[1] if stats else 0,
                 open_contract_id=inputs.open_contracts.get(a.asset_id),
                 work_order=wo,
+                alarm_sandbox=bool(ev and ev.sandbox and af["alarm"]),
+                sandbox=bool(p and p.get("sandbox")),
+                sandbox_override=overrides.get(a.asset_id),
+                **af,
             )
         )
     return inputs, out
+
+
+def sandbox_overrides_by_asset(engine: Engine) -> dict[str, Any]:
+    """Active sandbox overrides keyed by asset (empty when the sandbox module is idle)."""
+    try:
+        from apps.api import sandbox
+
+        return {o.asset_id: o for o in sandbox.active_overrides(engine)}
+    except Exception as exc:  # noqa: BLE001 - a label, never a failure of the snapshot
+        log.debug("sandbox overrides unavailable: %s", exc)
+        return {}
 
 
 def model_provenance(engine: Engine) -> ModelProvenance | None:
@@ -412,7 +410,7 @@ def _prediction_history(engine: Engine, asset_id: str, limit: int) -> list[Predi
     """Newest `limit` per-sample prediction rows for one asset, returned oldest first."""
     p = db.predictions
     q = (
-        select(p.c.ts, p.c.failure_probability, p.c.model_version, p.c.source)
+        select(p.c.ts, p.c.failure_probability, p.c.model_version, p.c.source, p.c.sandbox)
         .where(p.c.asset_id == asset_id)
         .order_by(p.c.ts.desc(), p.c.id.desc())
         .limit(limit)
@@ -425,8 +423,9 @@ def _prediction_history(engine: Engine, asset_id: str, limit: int) -> list[Predi
             failure_probability=float(prob),
             model_version=str(version),
             source=str(source),
+            sandbox=bool(sandbox),
         )
-        for ts, prob, version, source in rows
+        for ts, prob, version, source, sandbox in rows
     ]
     out.reverse()
     return out
@@ -514,7 +513,9 @@ def _rewind_rows(
         .over(partition_by=p.c.asset_id, order_by=(p.c.ts.desc(), p.c.id.desc()))
         .label("rn")
     )
-    ranked = select(p.c.asset_id, p.c.ts, p.c.id, p.c.failure_probability, rn)
+    ranked = select(p.c.asset_id, p.c.ts, p.c.id, p.c.failure_probability, rn).where(
+        p.c.sandbox.is_(False)  # the rewind and its lead time are plant readings only
+    )
     if asset_id:
         ranked = ranked.where(p.c.asset_id == asset_id)
     ranked = ranked.subquery("ranked")
@@ -569,11 +570,13 @@ def rewind_series(
 ) -> RewindSeries:
     """Markers and lead time for one asset's prediction series (oldest first).
 
-    Markers sit on the plant-time axis only: `early_warning` (first of
-    `thresholds.sustained_rows` consecutive rows >= early_warning), `predicted_failure` (first
-    row >= classification) and the plant's work-order events (`started_ts` / `completed_ts`).
-    Contract and approval wall-clock times are never placed on this axis. `lead_time_h` is
-    work_order_started - early_warning in plant hours when both exist.
+    Markers sit on the plant-time axis only: `early_warning` (the first of
+    `thresholds.sustained_rows` consecutive rows >= early_warning: the alarm's on-delay),
+    `critical_alarm` (the first of `thresholds.sustained_rows` consecutive rows >=
+    classification: the latch) and the plant's work-order events (`started_ts` /
+    `completed_ts`). Contract and approval wall-clock times are never placed on this axis.
+    `lead_time_h` is work_order_started - early_warning in plant hours when both exist. The
+    same rule as apps/api/alarms.py; sandbox predictions are not in `points`.
     """
     probs = [p for _, p in points]
     markers: list[RewindMarker] = []
@@ -592,14 +595,17 @@ def rewind_series(
                 ),
             )
         )
-    i_pf = next((i for i, p in enumerate(probs) if p >= thresholds.classification), None)
+    i_pf = first_sustained_index(probs, thresholds.classification, thresholds.sustained_rows)
     if i_pf is not None:
         markers.append(
             RewindMarker(
-                kind="predicted_failure",
+                kind="critical_alarm",
                 ts=points[i_pf][0],
-                label="Predicted failure",
-                detail=f"first prediction >= {thresholds.classification:g}",
+                label="Critical alarm latched",
+                detail=(
+                    f"{thresholds.sustained_rows} consecutive predictions >= "
+                    f"{thresholds.classification:g}; stays critical until a work order completes"
+                ),
             )
         )
     started: list[datetime] = []
@@ -631,7 +637,7 @@ def rewind_series(
         after = sorted(t for t in started if t >= ew_ts)
         if after:
             lead = round((after[0] - ew_ts) / timedelta(hours=1), 2)
-            basis = "early warning -> plant took the motor offline"
+            basis = "first sustained warning -> plant took the motor offline"
         else:
             active_h = (points[-1][0] - ew_ts) / timedelta(hours=1) if points else 0.0
             basis = f"no work order yet; warning active for {active_h:.1f} h"

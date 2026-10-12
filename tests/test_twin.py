@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from apps.api import db, live, plant
+from apps.api import alarms, db, live, plant
 from apps.api.routes import twin as twin_routes
 from apps.api.schemas import SENSOR_COLUMNS, Asset, DataState, DecisionState, ObservedTelemetryRow
 from tests.test_api import _decided_contract
@@ -41,8 +41,10 @@ REPO = Path(__file__).resolve().parents[1]
 @pytest.fixture(autouse=True)
 def _reset_live_bus() -> Iterator[None]:
     live.reset()
+    alarms.reset()
     yield
     live.reset()
+    alarms.reset()
 
 
 @pytest.fixture()
@@ -90,12 +92,28 @@ def _predict(engine: Any, asset_id: str, probs: list[float], start: datetime) ->
 # --------------------------------------------------------------------------------------
 
 
+def _post_predictions(client: TestClient, asset_id: str, probs: list[float], start: datetime) -> list[datetime]:
+    """Push `probs` through POST /predictions (the edge sink), one per 10 minutes, so the
+    alarm walk runs exactly as it does for the edge container."""
+    stamps = [start + timedelta(minutes=10 * i) for i in range(len(probs))]
+    body = [
+        {"asset_id": asset_id, "ts": ts.isoformat(), "model_version": "v9", "failure_probability": p}
+        for ts, p in zip(stamps, probs, strict=True)
+    ]
+    assert client.post("/predictions", json=body).status_code == 200
+    return stamps
+
+
 def test_status_precedence_and_data_state(client: TestClient) -> None:
+    """The ONE status rule (apps/api/alarms.py): offline > no_prediction > no_data > latched
+    critical > warning > healthy. Sustained rows raise; critical stays until a work order."""
     engine = db.get_engine()
     a = _twin_asset(client, "MTR-042")
-    assert a["data_state"] == "none" and a["status"] == "no_data"
+    # nothing received and nothing scored: "no prediction yet", not "no data"
+    assert a["data_state"] == "none" and a["status"] == "no_prediction"
     assert a["decision_state"] == "none" and a["failure_probability"] is None
     assert a["last_received_at"] is None and a["msgs_last_60s"] == 0
+    assert a["alarm"] is None and a["alarm_since"] is None
 
     # a message through POST /ingest makes the motor live; nothing scored it yet
     r = client.post("/ingest", json=_row("MTR-042", NOW + timedelta(minutes=10)))
@@ -105,29 +123,54 @@ def test_status_precedence_and_data_state(client: TestClient) -> None:
     assert a["msgs_last_60s"] == 1 and a["last_received_at"] is not None
     assert a["latest"]["vibration_rms"] == 1.1 and a["last_ts"].startswith("2026-09-01T12:10")
 
-    # the displayed probability is the median of the last three rows (same as /fleet)
-    _predict(engine, "MTR-042", [0.6, 0.7, 0.65], NOW)
+    # on-delay: two rows over the classification threshold are not an alarm; the third is,
+    # and the displayed probability is the median of the last three rows (same as /fleet)
+    stamps = _post_predictions(client, "MTR-042", [0.6, 0.7], NOW)
+    a = _twin_asset(client, "MTR-042")
+    assert a["status"] == "healthy" and a["alarm"] is None and a["failure_probability"] == pytest.approx(0.65)
+    stamps += _post_predictions(client, "MTR-042", [0.65], NOW + timedelta(minutes=20))
     a = _twin_asset(client, "MTR-042")
     assert a["status"] == "critical" and a["failure_probability"] == 0.65
+    assert a["alarm"] == "critical" and a["alarm_since"] == stamps[2].isoformat().replace("+00:00", "Z")
+    assert "3 consecutive predictions >= 0.5" in a["alarm_reason"]
     assert a["n_prediction_rows"] == 3 and a["health_score"] == 35.0
-    _predict(engine, "MTR-042", [0.4, 0.35, 0.45], NOW + timedelta(hours=1))
-    assert _twin_asset(client, "MTR-042")["status"] == "warning"
-    _predict(engine, "MTR-042", [0.1, 0.05, 0.2], NOW + timedelta(hours=2))
-    assert _twin_asset(client, "MTR-042")["status"] == "healthy"
+    # latched: the probability falling back changes the number, never the status
+    _post_predictions(client, "MTR-042", [0.4, 0.35, 0.45], NOW + timedelta(hours=1))
+    a = _twin_asset(client, "MTR-042")
+    assert a["status"] == "critical" and a["failure_probability"] == 0.4
+    _post_predictions(client, "MTR-042", [0.1, 0.05, 0.2, 0.0, 0.0, 0.0, 0.0], NOW + timedelta(hours=2))
+    a = _twin_asset(client, "MTR-042")
+    assert a["status"] == "critical" and a["failure_probability"] == 0.0
+
+    # a warning needs three sustained rows too, and six rows below the line to clear
+    _post_predictions(client, "MTR-002", [0.35, 0.4], NOW)
+    # scored but no message yet (the stream has not started): healthy, never "no data"
+    assert _twin_asset(client, "MTR-002")["status"] == "healthy"
+    client.post("/ingest", json=_row("MTR-002", NOW))
+    assert _twin_asset(client, "MTR-002")["status"] == "healthy"
+    _post_predictions(client, "MTR-002", [0.33], NOW + timedelta(minutes=20))
+    a = _twin_asset(client, "MTR-002")
+    assert a["status"] == "warning" and a["alarm"] == "warning"
+    _post_predictions(client, "MTR-002", [0.1] * 5, NOW + timedelta(minutes=30))
+    assert _twin_asset(client, "MTR-002")["status"] == "warning"
+    _post_predictions(client, "MTR-002", [0.1], NOW + timedelta(minutes=80))
+    a = _twin_asset(client, "MTR-002")
+    assert a["status"] == "healthy" and a["alarm"] is None
 
     # driving the bus directly: a receipt older than STALE_AFTER_S is stale -> no_data
     live.record_ingest("MTR-001", NOW, received_at=time.time() - live.STALE_AFTER_S - 60)
     assert live.bus.data_state("MTR-001") == DataState.stale
-    assert live.bus.data_state("MTR-002") == DataState.none
+    assert live.bus.data_state("MTR-003") == DataState.none
     _predict(engine, "MTR-001", [0.9, 0.9, 0.9], NOW)
     a = _twin_asset(client, "MTR-001")
     assert a["data_state"] == "stale" and a["status"] == "no_data"
     assert a["failure_probability"] == 0.9  # the number is still reported, the glyph is not
 
-    # an approved work order the plant is executing takes the motor offline, whatever the data
+    # an approved work order the plant is executing takes the motor offline, whatever the
+    # data, and its completion is what clears the latched critical
     contract_id = _decided_contract(engine, "MTR-042", "maintain_now")
     a = _twin_asset(client, "MTR-042")
-    assert a["decision_state"] == "approved" and a["status"] == "healthy"
+    assert a["decision_state"] == "approved" and a["status"] == "critical"
     assert a["work_order"]["status"] == "scheduled"
     ev = {"status": "in_progress", "plant_ts": (NOW + timedelta(hours=3)).isoformat()}
     assert client.post(f"/work-orders/{contract_id}/events", json=ev).status_code == 200
@@ -137,6 +180,14 @@ def test_status_precedence_and_data_state(client: TestClient) -> None:
     assert client.post(f"/work-orders/{contract_id}/events", json=done).status_code == 200
     a = _twin_asset(client, "MTR-042")
     assert a["status"] == "healthy" and a["decision_state"] == "work_order_completed"
+    assert a["alarm"] is None
+    events = client.get("/alarms", params={"asset_id": "MTR-042"}).json()
+    assert [e["level"] for e in events] == ["critical", "healthy"]
+    assert events[-1]["reason"] == "work_order_completed"
+    # /fleet applies the same rule and carries the same fields
+    f = {x["asset"]["asset_id"]: x for x in client.get("/fleet").json()}
+    assert f["MTR-042"]["status"] == "healthy" and f["MTR-001"]["status"] == "no_data"
+    assert f["MTR-003"]["status"] == "no_prediction" and f["MTR-002"]["alarm"] is None
 
 
 def test_decision_state_badges(client: TestClient) -> None:
@@ -337,9 +388,18 @@ def test_rewind_markers_follow_sustained_rule(client: TestClient) -> None:
     kinds = {m["kind"]: m for m in s42["markers"]}
     assert kinds["early_warning"]["ts"] == stamps[4].isoformat().replace("+00:00", "Z")
     assert kinds["early_warning"]["label"] == "Early warning fired"
-    assert kinds["predicted_failure"]["ts"] == stamps[7].isoformat().replace("+00:00", "Z")
+    # the critical marker follows the latch rule (three sustained rows), not a single row
+    assert "critical_alarm" not in kinds and "predicted_failure" not in kinds
     assert s42["lead_time_h"] is None
     assert s42["lead_time_basis"] == "no work order yet; warning active for 0.7 h"
+    assert s42["lead_time_label"] == "this run: first sustained warning -> motor taken offline"
+    assert rw["validated_lead_time_label"] == "validated on held-out motors"
+    _predict(engine, "MTR-042", [0.8, 0.9, 0.95], stamps[-1] + timedelta(minutes=10))
+    s42 = next(x for x in client.get("/twin/rewind").json()["assets"] if x["asset_id"] == "MTR-042")
+    kinds = {m["kind"]: m for m in s42["markers"]}
+    # the third sustained row >= 0.5 is the 0.8; the run started at the 0.6 (stamps[7])
+    assert kinds["critical_alarm"]["ts"] == stamps[7].isoformat().replace("+00:00", "Z")
+    assert kinds["critical_alarm"]["label"] == "Critical alarm latched"
 
     s1 = series["MTR-001"]
     assert "early_warning" not in {m["kind"] for m in s1["markers"]}  # a spike never fires
@@ -348,8 +408,8 @@ def test_rewind_markers_follow_sustained_rule(client: TestClient) -> None:
     rw = client.get("/twin/rewind", params={"max_points": 4, "asset_id": "MTR-042"}).json()
     assert [s["asset_id"] for s in rw["assets"]] == ["MTR-042"]
     pts = rw["assets"][0]["points"]
-    assert len(pts) == 4 and pts[0][0] == s42["points"][0][0] and pts[-1][0] == s42["points"][-1][0]
-    assert rw["assets"][0]["n_rows"] == len(_SERIES)
+    assert len(pts) == 4 and pts[0][0] == s42["points"][0][0]
+    assert rw["assets"][0]["n_rows"] == len(_SERIES) + 3  # the three critical rows added above
 
 
 def test_rewind_lead_time_with_work_order(client: TestClient) -> None:
@@ -361,7 +421,7 @@ def test_rewind_lead_time_with_work_order(client: TestClient) -> None:
     assert client.post(f"/work-orders/{wo_id}/events", json=ev).status_code == 200
     s = client.get("/twin/rewind", params={"asset_id": "MTR-042"}).json()["assets"][0]
     assert s["lead_time_h"] == 5.0
-    assert s["lead_time_basis"] == "early warning -> plant took the motor offline"
+    assert s["lead_time_basis"] == "first sustained warning -> plant took the motor offline"
     kinds = {m["kind"]: m for m in s["markers"]}
     assert kinds["work_order_started"]["ts"] == started.isoformat().replace("+00:00", "Z")
     assert "work_order_completed" not in kinds
