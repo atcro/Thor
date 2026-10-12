@@ -556,3 +556,24 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
   edge restarts the window so sandbox and plant rows never mix); drivers from a closed contract
   still shown in the HUD with their contract id.
 - **Next:** vitest + build, full pytest, rebuild images, final reset for the team, final report.
+
+## 2026-10-12 07:00 — final verification on the final images; Phase A.1 closed
+
+- After the audit fixes: `pytest` 252 passed (97 s), `ruff` clean, vitest 6 files / 24 tests, web
+  build ok (`/static/` assets; `/assets/MTR-042` returns 200 through nginx), `docker compose
+  build` api / replay / web and `--profile prep build prep` ok.
+- `demo_reset.ps1` on the final images: all three volumes removed (the exited prep container no
+  longer pins `models`), seeded 82,944 rows, 0 models, 24 motors without a prediction, replay held.
+- `hero_measure.py` on the final Docker stack (LLM mode): **train 56 s** (RF v86359, recall 0.919,
+  precision 0.962, lead 53.1 h, IMS 0.895, parity 1.6e-6, gate passed) → promotion 2.8 s →
+  released + 24 green at 2.9 s → MTR-042 critical at 64 s after the sign-off, "latched since
+  08-25 14:50" = the rewind's early-warning and critical markers (same instant now) → Run
+  analysis 12.7 s (LLM) → Bolt 7 / 16 / 27 s (LLM; the prompt now asks for three-decimal
+  probabilities, `13a1ce2`) → approval → offline 2 s → healthy with the work order completed
+  15.3 s; rewind this run 27.7 h vs validated 53.1 h; no other motor alarmed.
+- The stack is left RESET (seeded, no model, replay held) with the final images; the team opens
+  http://localhost:5173 and follows `docs/finals/demo-walkthrough.md`.
+- **Not done / handed over:** the plant manuals still say "regime" in quoted passages; no amber
+  phase exists with this champion (documented in the walkthrough and the talk track); the 3-D
+  overlays overlap when Overview + X-Ray + Sandbox are all on; LLM-mode answers were checked
+  with the OpenAI key from `.env` only (not Anthropic). Prompt B (Bolt Designer) remains on hold.
