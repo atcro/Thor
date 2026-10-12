@@ -43,6 +43,10 @@ def _window(play: pd.DataFrame, frac: float) -> datetime:
 
 def test_shift_pass_keeps_plant_time_moving(fleet: pd.DataFrame) -> None:
     """Pass k starts one sampling step after pass k-1 ended, with the same rows otherwise."""
+    tail = _tail(fleet, 0.8)  # the replay loops the story after the seed point, not the month
+    p1_tail = shift_pass(tail, 1)
+    assert p1_tail["ts"].min() == tail["ts"].max() + STEP  # continuous plant time
+    assert len(p1_tail) == len(tail)
     p0 = shift_pass(fleet, 0)
     assert p0 is fleet
     p1 = shift_pass(fleet, 1)

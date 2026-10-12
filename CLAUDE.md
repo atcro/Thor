@@ -165,9 +165,10 @@ a full Playwright e2e suite.
    The API seeds the first 80% of the history. **Nothing streams at start-up:** the replay
    container polls `GET /replay` and starts only once a production model exists, i.e. after a
    named approver signs off a promotion in ModelOps (pause/resume exist as a recovery tool, no
-   other controls). It then streams the rest and keeps replaying the same story with timestamps
-   shifted by one full timeline per pass, so plant time never stops moving and a repair after
-   approval is always visible (rows with an existing `(asset_id, ts)` are ignored on insert).
+   other controls). It then streams the rest (the story) and keeps replaying that same tail with timestamps
+   shifted by the tail's own length per pass, so plant time never stops moving, a repair after
+   approval is always visible, and the seeded historical failures never come back "live" (rows
+   with an existing `(asset_id, ts)` are ignored on insert).
    Only *completed* failures produce training labels — an in-progress degradation is treated as
    unknown future, never as a known outcome. **Status is one rule in the API**
    (`apps/api/alarms.py`): three consecutive predictions ≥ 0.3 raise a warning, three ≥ 0.5

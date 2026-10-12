@@ -6,8 +6,8 @@ on the laptop's load (training) are given as the range seen. Only the plant data
 training, sign-off, scoring, analysis, Bolt's answers, approval and the repair really run.
 
 The replay streams the recorded history at 900× (`REPLAY_SPEED`; one plant hour = 4 s). One pass
-of the story is about ten minutes of wall clock, after which the recorded month replays with the
-timeline shifted (the historical failures then happen "live" again; see "Later passes").
+of the story (the six days after the seed point) is about ten minutes of wall clock, after which
+the same six days play again with plant time continuing (see "Later passes").
 
 ## Before the judges arrive (pre-demo checklist, 5 minutes)
 
@@ -179,11 +179,11 @@ all the way through; they never enter training."
 
 ## Later passes
 
-After about ten minutes the recorded month replays with the timeline shifted. The historical
-failures (MTR-003/009/013/017/021/023) then degrade "live" and latch red in turn, and MTR-042's
-degradation returns at the same point of the next pass; a repaired motor stays on its healthy
-baseline. If the Q&A runs long, say "the replay loops the recorded month, so the history's
-failures come around again" or press Pause.
+After about ten minutes the six replayed days play again with plant time continuing (the
+timestamps shift by the story's own length). MTR-042 stays on its healthy baseline after the
+repair, so nothing goes red on its own in later passes; the six historical failures live in the
+seeded part and never replay. If the Q&A runs long, nothing needs doing; Pause is there if you
+want the screen still.
 
 ## Numbers to quote (and their caveats)
 

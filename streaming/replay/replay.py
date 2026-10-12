@@ -3,10 +3,11 @@
 Reads `data/simulator/out/telemetry.parquet` (generating it if missing), orders rows by time
 across all assets and publishes each one as `TelemetryRow.model_dump_json()` to
 `telemetry/{asset_id}`. Between rows it sleeps `(next_ts - ts) / speed` seconds, so
-`REPLAY_SPEED=600` replays ten minutes of plant time per second. When the sequence ends it
-plays the same story again with timestamps shifted by one full timeline (`shift_pass`), so
-plant time keeps moving and the fleet never freezes at the end of the history (unless
-`--once`).
+`REPLAY_SPEED=600` replays ten minutes of plant time per second. The story is the tail of the
+history after `--start-fraction` (the API seeds the head); when it ends the same tail plays
+again shifted by its own length (`shift_pass`), so plant time keeps moving, the fleet never
+freezes at the end of the history and the seeded historical failures never come back "live"
+(unless `--once`).
 
 While streaming, the replay also acts as the plant's CMMS for approved work orders (see
 `streaming/replay/work_orders.py`): the motor goes offline for the planned downtime and then
@@ -344,20 +345,27 @@ def main() -> None:
         sandbox = SandboxApplier(rated, SandboxClient(args.control_plane))
         log.info("sandbox overrides applied from %s (GET /sandbox)", args.control_plane)
 
+    # The story the replay tells is the tail of the recorded history (after the seed point):
+    # pass 0 streams it as recorded and every later pass streams the SAME tail shifted by its
+    # own length, so plant time stays continuous and only MTR-042's degradation ever recurs
+    # (a repaired motor keeps streaming its healthy baseline). Replaying the whole month would
+    # bring the six historical failures back "live" ten minutes into the demo.
+    story = df
+    if 0.0 < args.start_fraction < 1.0 and args.speed > 0:
+        t0, t1 = df["ts"].min(), df["ts"].max()
+        story = df.loc[df["ts"] > t0 + (t1 - t0) * args.start_fraction]
+        log.info(
+            "story = the last %.0f%% of the timeline (%s -> %s), looped with plant time continuous",
+            (1.0 - args.start_fraction) * 100,
+            story["ts"].min(),
+            story["ts"].max(),
+        )
     pass_no = 0
     while True:
-        play = shift_pass(df, pass_no)
-        if pass_no == 0 and 0.0 < args.start_fraction < 1.0 and args.speed > 0:
-            t0, t1 = df["ts"].min(), df["ts"].max()
-            play = df.loc[df["ts"] > t0 + (t1 - t0) * args.start_fraction]
+        play = shift_pass(story, pass_no)
+        if pass_no > 0:
             log.info(
-                "first pass starts at %s (%.0f%% of timeline)",
-                play["ts"].min(),
-                args.start_fraction * 100,
-            )
-        elif pass_no > 0:
-            log.info(
-                "pass %d: timeline shifted so plant time keeps moving (%s -> %s)",
+                "pass %d: story shifted so plant time keeps moving (%s -> %s)",
                 pass_no,
                 play["ts"].min(),
                 play["ts"].max(),
