@@ -2,8 +2,8 @@
 
 Rehearsed on 2026-10-11 against the Docker stack after `.\scripts\demo_reset.ps1`; the
 timings below are measured, not estimated. The replay streams the last 20 % of the history at
-1800× (one plant hour ≈ 2 s), so the whole MTR-042 story takes about five minutes of wall
-clock. Every number on screen comes from the API; nothing is staged in the UI.
+900× (`REPLAY_SPEED`, one plant hour = 4 s), so one pass of the MTR-042 story takes about ten
+minutes of wall clock. Every number on screen comes from the API; nothing is staged in the UI.
 
 ## Before the judges arrive (3 minutes)
 
@@ -12,7 +12,7 @@ clock. Every number on screen comes from the API; nothing is staged in the UI.
    model with MTR-042 held out, then scores the fleet. It ends with `SCRIPT EXIT: 0` and prints
    the production model (LightGBM, IMS 0.844) and the fleet top 3.
 2. Open http://localhost:5173. Do **not** start the story until you are ready: the replay
-   starts the moment prep finishes, and MTR-042 turns red about 75 s later. If you need to
+   starts the moment prep finishes, and MTR-042 turns red about 110 s later. If you need to
    restart the clock, run the reset again (3 minutes).
 
 What the screen shows at t = 0: 24 motors, all green at p 0.00, **except MTR-021**, which is
@@ -34,7 +34,9 @@ outage we're trying to make rare."
 
 Screen: Dashboard, then click MTR-042 when its card turns amber, then red.
 
-Measured: green until ~60 s, p 0.64 and red at ~75 s, p 1.0 by ~100 s.
+Measured (900×): green until ~100 s, then red (p 1.0) at ~110 s. The step from green to red
+is abrupt: isotonic calibration fitted on a single failing motor is a near-step curve, so the
+0.3 and 0.5 lines are crossed within a sample or two of each other.
 
 Say: "MTR-042's drive-end bearing is degrading. The edge container scores every ten-minute
 sample with the production model; this is inference, not training. The dashed lines on the
@@ -45,7 +47,7 @@ time, 0.5 is a predicted failure."
 
 Screen: Asset 360 for MTR-042. Click **Run analysis**.
 
-Measured: 17 s to the approval gate. The stepper shows `Load production model → Explaining →
+Measured: 13-17 s to the approval gate. The stepper shows `Load production model → Explaining →
 Awaiting approval`; the event log shows `load_production_model`, `explain`,
 `retrieve_manual_context`, `calculate_failure_cost`, `draft_explanation`,
 `create_decision_contract`, and no `train_candidates`.
@@ -73,7 +75,7 @@ model from this screen."
 Screen: type an approver name, click **Approve**, switch to the Dashboard.
 
 Measured: the card shows "offline · in maintenance" within ~10 s, then returns on the motor's
-own healthy baseline and is green with the work order "completed" within ~30 s.
+own healthy baseline and is green with the work order "completed" within 15-30 s.
 
 Say: "A person signed the work order. The plant takes the motor offline for the planned three
 hours and brings it back; here the simulated CMMS executes immediately so you can see it, and
