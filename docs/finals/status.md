@@ -484,3 +484,25 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
 - **Next:** `scripts/demo_prep.py --force --n-trials 4` on the native stack → `prep-report.json`,
   then `metrics.md` and `model-card.md` from it; `docker compose build` (running); Docker rehearsal
   with `.\scripts\demo_reset.ps1` + headless Chrome; fresh-context judge audit; final report.
+
+## 2026-10-12 05:20 — a real gate failure, fixed; the prep report on the re-timed data
+
+- The first `scripts/demo_prep.py --force --n-trials 4` on the native stack **failed the gate**:
+  LightGBM champion v81325 with test recall 0.327 and edge parity max |Δp| 0.888. Cause: the
+  champion's raw scores reached −1.7e6 on pure leaves (`scale_pos_weight` 91.6 on the new split),
+  sklearn's calibrator used `decision_function`, and Platt scaling collapsed to a flat line
+  (a = −3e-6) that the edge — which only has the ONNX probability — cannot reproduce. Fix
+  (`cf509bf`, `c7e008c`): `_ProbabilityOnly` hides `decision_function` so every family is
+  calibrated on `predict_proba` (sidecar `input: predict_proba`), the ONNX export unwraps it, and
+  `test_calibration_uses_the_probability_for_every_family` proves parity through
+  `check_edge_parity`. The second attempt then hit `MissingShapeCalculator` for the shim in the
+  export (fixed in the same commit); the third passed.
+- **Prep report** (`docs/finals/prep-report.json`, run on the native stack, template mode):
+  random forest v82031, split 12 / 3 / 3 / 6 (positives train 017+021, validation 009,
+  calibration 023, test 003+013), test recall 0.919, precision 0.962, F1 0.940, AUROC 0.996,
+  Brier 0.0040, lead time 53.1 h (2 events), IMS 0.882, parity 1.6e-6 on 200 vectors, sigmoid on
+  the probability; prep 183.8 s end to end (training ≈ 170 s with the Docker stack also running).
+  `metrics.md` and `model-card.md` regenerated from it (scratchpad `write_metrics_docs.py`); the
+  old 0.865 / 41.5 h / 0.844 appear only as the "previous run" column.
+- **Next:** two more 4-trial train runs to confirm the gate passes repeatedly; `docker compose
+  build` (api + `--profile prep`); Docker rehearsal; judge audit; final report.

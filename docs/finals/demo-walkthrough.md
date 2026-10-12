@@ -45,10 +45,12 @@ Thor says so: grey, 'no prediction yet'. Nothing is scored by a rule of thumb."
 Screen: **AutoML Studio** → **Train new model** (asset held out `MTR-042`, trials per family as
 set in the form; the default is the measured one below).
 
-Measured: `Train new model` → `Registered` in **90–150 s** natively while other work was running
-(2 trials ≈ 90 s, 4 trials ≈ 150 s; the Docker rehearsal number is in the status log). The run
+Measured: `Train new model` → `Registered` in **2.5–3 minutes** natively with 4 trials per
+family on a laptop that was also running the Docker stack (2 trials ≈ 90 s but a weaker model;
+validation + parity alone take ~35 s; the Docker rehearsal number is in the status log). The run
 page updates every 3 s: the asset split appears within 2 s, the operating states within 9 s,
-the three candidates at the end of the search, then the gate checklist and parity.
+the three candidates at the end of the search, then the gate checklist and parity. Talk through
+it; it is the one slow beat of the demo.
 
 Talk track (honest): "The model learns from the fleet's own history: months of healthy running
 in each operating state — startup, running, heavy load — plus the six motors that failed before.

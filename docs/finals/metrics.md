@@ -1,42 +1,50 @@
-# Thor metrics: prototype numbers vs the leak-free run
+# Thor metrics: the leak-free run on the re-timed data
 
 Every number in the right-hand column comes from one real run recorded in
-`docs/finals/prep-report.json` (training run `a7d611188ec64383`, model `v57257`, 2026-10-11,
-`scripts/demo_prep.py --n-trials 6`). The left-hand column is what the prototype reported before
-the correctness pass. **Never carry the prototype numbers forward as current.**
+`docs/finals/prep-report.json` (training run `15e68a9abab84d63`, model `v82031`, 2026-10-12,
+`scripts/demo_prep.py --n-trials 4` on the re-timed fault
+schedule: six completed failures inside the seeded 80 %, MTR-042 healthy until after the seed
+point). The middle column is the previous leak-free run on the old schedule (four completed
+failures, 2026-10-11), kept so the slides can explain why the numbers moved; the left column is
+the prototype. **Never carry the older numbers forward as current.**
 
-| Metric | Prototype (before 2026-10-11) | Leak-free run (current) |
-|---|---|---|
-| Champion | LightGBM | LightGBM `v57257` |
-| Recall | 91.5 % | **86.5 %** (test assets, P ≥ 0.5, 289 positive rows) |
-| Precision | not reported honestly | **100 %** (no false alarm on 18,653 negative test rows) |
-| F1 | – | 92.8 % |
-| AUROC | – | 0.933 |
-| Warning lead time (median) | 43.7 h | **41.5 h** (1 completed failure among test assets, alarm = 3 rows ≥ 0.3) |
-| Industrial Model Score | 0.858 | **0.844** |
-| Brier score (calibrated) | – | 0.0021 on test; 0.00095 → 0.00044 on the calibration assets |
-| Calibration | isotonic, fitted on the same rows it was scored on | Platt (sigmoid), fitted on 6 calibration motors never used for training or the final score; isotonic only with ≥ 2 failure events there |
-| Validation data | last 25 % of asset ids; same rows for selection, calibration and lead time | fixed seeded split: 12 train / 6 validation / 6 calibration / 6 test motors |
-| Operating states and baselines | fitted on all 24 motors before the split | fitted on the 12 training motors only; others assigned |
-| Thresholds | 0.3 and 0.5 mixed across stages | one meaning each: 0.5 classification, 0.3 early warning (3 sustained rows) |
-| Edge vs centre | calibration dropped at the edge, baseline format mismatch | max probability difference 0.0 on 200 held-out vectors, feature difference 1.6e-15 on 18 raw windows |
-| Training time (6 trials × 3 families) | 60–100 s | 55–70 s |
-| Displayed probability | newest sample | median of the last 3 samples (the alarm's sustained-rows rule) |
+| Metric | Prototype (before 2026-10-11) | Previous run (v57257, four failures) | Current run (v82031, six failures) |
+|---|---|---|---|
+| Champion | LightGBM | LightGBM | Random forest |
+| Recall | 91.5 % | 86.5 % | **91.9 %** (test motors, P ≥ 0.5, 578 positive rows) |
+| Precision | not reported honestly | 100 % | **96.2 %** (18,364 negative test rows) |
+| F1 | – | 92.8 % | 94.0 % |
+| AUROC | – | 0.933 | 1.000 |
+| Warning lead time (median) | 43.7 h | 41.5 h (1 event) | **53.1 h** (2 completed failures among the test motors, p10 47.7 h / p90 58.5 h, alarm = 3 rows ≥ 0.3) |
+| Industrial Model Score | 0.858 | 0.844 | **0.882** |
+| Brier score (calibrated) | – | 0.0021 | 0.0039 on test; 0.00779 → 0.00547 on the calibration motors |
+| Calibration | isotonic, same rows | Platt on log-odds, 6 shared motors | sigmoid on the probability, fitted on 3 calibration motors never used for training, selection or the final score |
+| Validation data | last 25 % of ids | 12 / 6 / 6 (shared) / 6 | fixed seeded split: 12 train / 3 validation / 3 calibration / 6 test motors, four separate groups |
+| Operating states and baselines | fitted on all 24 motors before the split | fitted on the 12 training motors only | same |
+| Thresholds | 0.3 and 0.5 mixed | one meaning each | same: 0.5 classification, 0.3 early warning (3 sustained rows) |
+| Edge vs centre | calibration dropped at the edge | max |Δp| 0.0 | max probability difference 1.6e-06 on 200 held-out vectors, feature difference 1.6e-15 on 18 raw windows |
+| Training time | 60–100 s | 55–70 s (6 trials) | 171 s for 4 trials × 3 families natively (validation + parity ≈ 35 s of it) |
+| Displayed probability | newest sample | median of the last 3 samples | same; status is the latched alarm (`apps/api/alarms.py`) |
 
 ## What changed and why
 
-The prototype's numbers were optimistic because the data preparation leaked: operating states
-and the healthy baselines were fitted on every motor before the split, the Optuna objective,
-the calibration and the lead-time measurement all used the same held-out rows, and the search
-ranked models on recall at 0.3 while the gate checked recall at 0.5. The leak-free run fixes the
-asset-level split first (seed 0, recorded with the run), fits every statistic on the training
-motors only, selects the champion on validation motors, calibrates on calibration motors and
-reports the final metrics from six test motors the pipeline had never touched. Recall drops
-from 91.5 % to 86.5 % and lead time from 43.7 h to 41.5 h; precision is 100 % and the Brier
-score is 0.002 because the synthetic fault signature is strong. These are the numbers to quote
-on stage, with their caveats: a synthetic fleet, 24 motors, only four completed failures, and a
-single failure event among the test motors, so the lead time is one measurement, not a
-distribution.
+The fault schedule was re-timed on 2026-10-12 (team-approved) so that only MTR-042 degrades
+during the replay: MTR-017 and MTR-021 now complete their failures inside the seeded history,
+which gives the model six completed failures instead of four. With five or more,
+`make_asset_split` forms four separate groups (validation and calibration no longer share
+motors) and the test group holds two failure events (003, 013), so the lead time is a
+median of two measurements rather than one. The champion is chosen on the validation motors
+(002, 009, 014, failure 009), calibrated on the calibration
+motors (008, 020, 023, failure 023) and reported on six test
+motors (001, 003, 011, 013, 018, 042) the pipeline never touched. The numbers move between runs because
+Optuna's search differs; the record is the committed report. Nothing was tuned for nicer
+numbers: the first prep run on this schedule produced a LightGBM champion whose raw scores
+reached −1.7e6 on pure leaves, which collapsed Platt scaling to a flat line (test recall 0.33)
+and failed edge parity; the fix was to calibrate every family on the bounded probability
+(`agents/validation/checks.py::_ProbabilityOnly`), not to pick a better run.
+
+Caveats to say out loud: a synthetic fleet, 24 motors, six completed failures, two failure
+events among the test motors, 10-minute aggregates (no spectra).
 
 ## Where the numbers come from
 
@@ -45,7 +53,7 @@ distribution.
 - Test metrics: `ValidationReport.test_metrics` in `agents/validation/checks.py::validate`
   (calibrated champion on `split.test` rows with a known label).
 - Lead time: `agents/metrics.py::lead_times_h` (first of three consecutive rows with
-  P ≥ 0.3 to the failure instant).
+  P ≥ 0.3 to the failure instant) — the same sustained rule the live alarm uses.
 - Parity: `agents/mlops/lifecycle.py::check_edge_parity` (ONNX + sidecar through
   `edge.inference` vs the calibrated joblib).
 
@@ -53,12 +61,12 @@ distribution.
 
 | Family | Validation IMS | Recall | Precision | Lead time | Latency (ms / 1000 rows) |
 |---|---|---|---|---|---|
-| LightGBM (champion) | 0.950 | 1.000 | 0.932 | 61.3 h | 0.98 |
-| Random forest | 0.926 | 0.969 | 0.979 | 56.0 h | 2.08 |
-| XGBoost | 0.916 | 1.000 | 0.929 | 51.7 h | 0.99 |
+| Random forest (champion) | 0.933 | 1.000 | 0.707 | 72.2 h | 8.11 |
+| XGBoost | 0.931 | 1.000 | 0.654 | 80.7 h | 3.75 |
+| LightGBM | 0.929 | 1.000 | 0.628 | 237.0 h | 2.46 |
 
 The champion is picked on these validation numbers; the headline numbers above are its
-*test* numbers, which is why they are lower.
+*test* numbers.
 
 ## AI4I 2020 benchmark
 

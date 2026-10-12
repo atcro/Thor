@@ -1,49 +1,43 @@
 {
-  "api": "http://api:8000",
+  "api": "http://127.0.0.1:8010",
   "asset_held_out": "MTR-042",
-  "started_at": "2026-10-12T00:23:03.680933+00:00",
+  "started_at": "2026-10-12T05:11:07.526726+00:00",
   "training": {
-    "run_id": "605a6d7b7a314042",
-    "version": "v64634",
-    "champion_family": "lightgbm",
+    "run_id": "15e68a9abab84d63",
+    "version": "v82031",
+    "champion_family": "random_forest",
     "split": {
       "seed": 0,
       "train": [
-        "MTR-002",
         "MTR-005",
         "MTR-006",
         "MTR-007",
         "MTR-010",
-        "MTR-013",
+        "MTR-012",
         "MTR-015",
         "MTR-016",
         "MTR-017",
+        "MTR-019",
         "MTR-021",
-        "MTR-023",
+        "MTR-022",
         "MTR-024"
       ],
       "validation": [
-        "MTR-008",
+        "MTR-002",
         "MTR-009",
-        "MTR-011",
-        "MTR-014",
-        "MTR-019",
-        "MTR-020"
+        "MTR-014"
       ],
       "calibration": [
         "MTR-008",
-        "MTR-009",
-        "MTR-011",
-        "MTR-014",
-        "MTR-019",
-        "MTR-020"
+        "MTR-020",
+        "MTR-023"
       ],
       "test": [
         "MTR-001",
         "MTR-003",
-        "MTR-012",
+        "MTR-011",
+        "MTR-013",
         "MTR-018",
-        "MTR-022",
         "MTR-042"
       ],
       "forced_test": [
@@ -51,24 +45,25 @@
       ],
       "positives": {
         "train": [
-          "MTR-013",
-          "MTR-023"
+          "MTR-017",
+          "MTR-021"
         ],
         "validation": [
           "MTR-009"
         ],
         "calibration": [
-          "MTR-009"
+          "MTR-023"
         ],
         "test": [
-          "MTR-003"
+          "MTR-003",
+          "MTR-013"
         ]
       },
       "notes": [
-        "24 assets, 4 with a completed failure: ['MTR-003', 'MTR-009', 'MTR-013', 'MTR-023']",
+        "24 assets, 6 with a completed failure: ['MTR-003', 'MTR-009', 'MTR-013', 'MTR-017', 'MTR-021', 'MTR-023']",
         "seed 0; completed failures dealt in order train, test, tune",
         "forced into test (asset under analysis, never trained on): ['MTR-042']",
-        "validation and calibration share the tune group: only 4 completed failure(s), fewer than 5 needed for four groups with a positive each"
+        "6 completed failures: validation and calibration are separate groups"
       ]
     },
     "data_quality_score": 100.0,
@@ -84,79 +79,79 @@
       {
         "regime_id": "R2",
         "label": "nominal",
-        "n_rows": 39033,
-        "rpm_mean": 1479.8298106730203,
-        "load_mean": 54.76553101222043,
-        "share": 0.4705946180555556
+        "n_rows": 39035,
+        "rpm_mean": 1479.8294251312925,
+        "load_mean": 54.766270859485076,
+        "share": 0.47061873070987653
       },
       {
         "regime_id": "R3",
         "label": "high-load",
-        "n_rows": 24835,
-        "rpm_mean": 1499.7859734246024,
-        "load_mean": 84.69238759814776,
-        "share": 0.2994188850308642
+        "n_rows": 24833,
+        "rpm_mean": 1499.7881866870698,
+        "load_mean": 84.69363488100512,
+        "share": 0.2993947723765432
       }
     ],
     "candidates": [
       {
-        "candidate_id": "random_forest-e76c4e71",
+        "candidate_id": "random_forest-97d505bc",
         "family": "random_forest",
         "validation_metrics": {
-          "recall": 0.9688581314878892,
-          "precision": 0.9790209790209791,
-          "f1": 0.9739130434782609,
-          "auroc": 0.9999426792391438,
-          "brier": 0.0011855724150436908,
-          "lead_time_h": 56.0
+          "recall": 1.0,
+          "precision": 0.706601466992665,
+          "f1": 0.828080229226361,
+          "auroc": 0.997413700191212,
+          "brier": 0.011455668270585657,
+          "lead_time_h": 72.16666666666667
         },
-        "validation_ims": 0.926516,
+        "validation_ims": 0.932889,
         "params": {
-          "n_estimators": 200,
-          "max_depth": 11,
-          "min_samples_leaf": 20,
-          "max_features": "sqrt",
+          "n_estimators": 150,
+          "max_depth": 12,
+          "min_samples_leaf": 2,
+          "max_features": null,
           "class_weight": "balanced_subsample",
           "random_state": 0
         },
-        "latency_ms": 1.5852451694391287
+        "latency_ms": 8.114137893573426
       },
       {
-        "candidate_id": "xgboost-d5aed944",
+        "candidate_id": "xgboost-911024fb",
         "family": "xgboost",
         "validation_metrics": {
           "recall": 1.0,
-          "precision": 0.9413680781758957,
-          "f1": 0.9697986577181208,
-          "auroc": 0.9999892407633344,
-          "brier": 0.0006678089767041776,
-          "lead_time_h": 51.666666666666664
+          "precision": 0.6538461538461539,
+          "f1": 0.7906976744186046,
+          "auroc": 0.9992887016043877,
+          "brier": 0.015489743020579937,
+          "lead_time_h": 80.66666666666667
         },
-        "validation_ims": 0.916574,
+        "validation_ims": 0.931292,
         "params": {
-          "n_estimators": 200,
+          "n_estimators": 150,
           "max_depth": 8,
-          "learning_rate": 0.024242359249562032,
-          "min_child_weight": 1,
-          "subsample": 0.6080873589761303,
-          "colsample_bytree": 0.9330479382191752,
+          "learning_rate": 0.27188506067054546,
+          "min_child_weight": 4,
+          "subsample": 0.9166900152330658,
+          "colsample_bytree": 0.8115579679011617,
           "scale_pos_weight": 64.5433,
           "random_state": 0
         },
-        "latency_ms": 1.8141200506816213
+        "latency_ms": 3.745486221104434
       },
       {
-        "candidate_id": "lightgbm-bc2cf743",
+        "candidate_id": "lightgbm-622db36d",
         "family": "lightgbm",
         "validation_metrics": {
           "recall": 1.0,
-          "precision": 0.932258064516129,
-          "f1": 0.9649415692821369,
-          "auroc": 0.999982748120519,
-          "brier": 0.0009461272267152338,
-          "lead_time_h": 61.333333333333336
+          "precision": 0.6282608695652174,
+          "f1": 0.7716955941255007,
+          "auroc": 0.9958441331354637,
+          "brier": 0.017349722376950545,
+          "lead_time_h": 237.0
         },
-        "validation_ims": 0.950942,
+        "validation_ims": 0.928916,
         "params": {
           "n_estimators": 50,
           "max_depth": 3,
@@ -168,33 +163,33 @@
           "scale_pos_weight": 64.5433,
           "random_state": 0
         },
-        "latency_ms": 0.6461945412310561
+        "latency_ms": 2.4568261001457725
       }
     ],
     "ranked": [
-      "lightgbm-bc2cf743",
-      "random_forest-e76c4e71",
-      "xgboost-d5aed944"
+      "random_forest-97d505bc",
+      "xgboost-911024fb",
+      "lightgbm-622db36d"
     ],
     "test_metrics": {
-      "recall": 0.8650519031141869,
-      "precision": 1.0,
-      "f1": 0.9276437847866419,
-      "brier": 0.0020613984765959843,
+      "recall": 0.9186851211072664,
+      "precision": 0.9619565217391305,
+      "f1": 0.9398230088495575,
+      "brier": 0.003946251815883544,
       "n_test": 18942.0,
-      "n_pos_test": 289.0,
+      "n_pos_test": 578.0,
       "threshold": 0.5,
-      "auroc": 0.9324466485627051,
-      "lead_time_h": 41.5,
+      "auroc": 0.99970474050704,
+      "lead_time_h": 53.083333333333336,
       "n_assets": 6.0,
-      "n_failure_events": 1.0
+      "n_failure_events": 2.0
     },
     "ims": {
-      "recall": 0.8650519031141869,
-      "precision": 1.0,
-      "lead_time_score": 0.5763888888888888,
-      "calibration_score": 0.9917544060936161,
-      "latency_score": 0.9870761091753789,
+      "recall": 0.9186851211072664,
+      "precision": 0.9619565217391305,
+      "lead_time_score": 0.7372685185185186,
+      "calibration_score": 0.9842149927364658,
+      "latency_score": 0.8377172421285315,
       "weights": {
         "recall": 0.35,
         "lead_time_score": 0.25,
@@ -202,20 +197,20 @@
         "calibration_score": 0.15,
         "latency_score": 0.1
       },
-      "total": 0.844336
+      "total": 0.881554
     },
     "lead_time": {
-      "median_h": 41.5,
-      "p90_h": 41.5,
-      "p10_h": 41.5,
-      "n_events": 1,
+      "median_h": 53.083333333333336,
+      "p90_h": 58.483333333333334,
+      "p10_h": 47.68333333333334,
+      "n_events": 2,
       "threshold": 0.3,
       "sustained_rows": 3
     },
     "calibration": {
       "method": "sigmoid",
-      "brier_before": 0.0009461272267152338,
-      "brier_after": 0.00043994492134823436
+      "brier_before": 0.007785318002300761,
+      "brier_after": 0.005472129538945517
     },
     "thresholds": {
       "classification": 0.5,
@@ -233,80 +228,82 @@
       {
         "name": "test_failure_events",
         "passed": true,
-        "value": 1.0,
+        "value": 2.0,
         "threshold": 1.0,
-        "detail": "1 completed failure(s) among test assets ['MTR-001', 'MTR-003', 'MTR-012', 'MTR-018', 'MTR-022', 'MTR-042']"
+        "detail": "2 completed failure(s) among test assets ['MTR-001', 'MTR-003', 'MTR-011', 'MTR-013', 'MTR-018', 'MTR-042']"
       },
       {
         "name": "recall",
         "passed": true,
-        "value": 0.8650519031141869,
+        "value": 0.9186851211072664,
         "threshold": 0.6,
         "detail": "test recall at P>=0.5"
       },
       {
         "name": "lead_time",
         "passed": true,
-        "value": 41.5,
+        "value": 53.083333333333336,
         "threshold": 12.0,
         "detail": "median warning lead time at P>=0.3 sustained 3 rows, over test failures"
       },
       {
         "name": "edge_parity",
         "passed": true,
-        "value": 3.383408241453001e-05,
+        "value": 1.5673167085283879e-06,
         "threshold": 0.001,
-        "detail": "200 held-out vectors: edge vs centre max |dp| = 3.38e-05 (calibration sigmoid); 18 raw windows: edge vs centre max relative |df| = 1.55e-15"
+        "detail": "200 held-out vectors: edge vs centre max |dp| = 1.57e-06 (calibration sigmoid); 18 raw windows: edge vs centre max relative |df| = 1.55e-15"
       }
     ],
     "parity": {
       "passed": true,
       "n_rows": 200,
-      "max_abs_diff_probability": 3.383408241453001e-05,
+      "max_abs_diff_probability": 1.5673167085283879e-06,
       "tolerance_probability": 0.001,
       "n_windows": 18,
       "max_abs_diff_features": 1.5543122344752192e-15,
       "tolerance_features": 1e-06,
       "calibration_method": "sigmoid",
       "notes": [
-        "200 held-out vectors: edge vs centre max |dp| = 3.38e-05 (calibration sigmoid)",
+        "200 held-out vectors: edge vs centre max |dp| = 1.57e-06 (calibration sigmoid)",
         "18 raw windows: edge vs centre max relative |df| = 1.55e-15"
       ]
     },
     "passed": true,
     "notes": [
-      "champion_artifact=/models/artifacts/605a6d7b7a314042/lightgbm-bc2cf743_calibrated.joblib",
-      "calibration (sigmoid) fitted on 18942 rows of ['MTR-008', 'MTR-009', 'MTR-011', 'MTR-014', 'MTR-019', 'MTR-020'] with 1 failing asset(s)",
-      "final metrics on test assets ['MTR-001', 'MTR-003', 'MTR-012', 'MTR-018', 'MTR-022', 'MTR-042'] (never used before this step)",
-      "ranking (validation IMS): lightgbm-bc2cf743=0.951, random_forest-e76c4e71=0.927, xgboost-d5aed944=0.917"
+      "champion_artifact=C:\\Users\\Kang\\AppData\\Local\\Temp\\thor-hero\\models\\artifacts\\15e68a9abab84d63\\random_forest-97d505bc_calibrated.joblib",
+      "calibration (sigmoid) fitted on 9471 rows of ['MTR-008', 'MTR-020', 'MTR-023'] with 1 failing asset(s)",
+      "final metrics on test assets ['MTR-001', 'MTR-003', 'MTR-011', 'MTR-013', 'MTR-018', 'MTR-042'] (never used before this step)",
+      "ranking (validation IMS): random_forest-97d505bc=0.933, xgboost-911024fb=0.931, lightgbm-622db36d=0.929"
     ],
-    "seconds": 71.5
+    "seconds": 170.7
   },
   "promotion": {
-    "approval_id": "55a2df2e9e3d406c9796f9520bfec68c",
+    "approval_id": "c8ef6b9249864755a4630db7fea91f34",
     "contract_id": null,
-    "promotion_id": "pr_v64634_production_0d6b74e4",
+    "promotion_id": "pr_v82031_production_3f1da246",
     "decision": "approved",
     "approver": "demo-prep@thor",
     "note": "demo preparation: validated champion promoted before the live demo",
-    "decided_at": "2026-10-12T00:23:56.142728Z",
+    "decided_at": "2026-10-12T05:13:56.471461Z",
     "detail": {
       "promoted": {
         "name": "thor-bearing-classifier",
-        "version": "v64634",
+        "version": "v82031",
         "stage": "production"
       },
       "edge": {
-        "onnx_path": "/models/thor-bearing-classifier_v64634.onnx",
-        "deployed_at": "2026-10-12T00:23:56.166256Z"
-      }
+        "onnx_path": "C:\\Users\\Kang\\AppData\\Local\\Temp\\thor-hero\\models\\thor-bearing-classifier_v82031.onnx",
+        "deployed_at": "2026-10-12T05:13:56.529940Z"
+      },
+      "edge_refresh": true,
+      "fleet_scored": 24
     }
   },
   "fleet_scoring": {
-    "model_version": "v64634",
+    "model_version": "v82031",
     "n_scored": 24,
     "skipped": {}
   },
-  "finished_at": "2026-10-12T00:23:56.645031+00:00",
-  "seconds_total": 72.1
+  "finished_at": "2026-10-12T05:14:09.492965+00:00",
+  "seconds_total": 183.8
 }
