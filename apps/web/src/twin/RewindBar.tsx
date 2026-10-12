@@ -246,7 +246,7 @@ export function RewindBar({
           early warning
         </button>
         <button type="button" className="xray-btn" disabled={!failure} onClick={() => jump(failure)} title={failure?.detail}>
-          first ≥ 0.5
+          first ≥ {fmtNum(rewind.thresholds.classification, 1)}
         </button>
         <button type="button" className="xray-btn" disabled={!workOrder} onClick={() => jump(workOrder)} title={workOrder?.detail}>
           work order

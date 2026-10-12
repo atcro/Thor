@@ -97,7 +97,7 @@ function CountersBadge({
       <div className="kv">
         <span className="k">messages</span>
         <span className="v">{live ? `${fmtNum(live.msgs_per_s, 1)} /s` : "—"}</span>
-        <span className="k">predictions</span>
+        <span className="k">predictions (edge + control plane)</span>
         <span className="v">{live ? `${fmtNum(live.preds_per_s, 1)} /s` : "—"}</span>
         <span className="k">edge inference p50 / p95</span>
         <span className="v">
@@ -105,7 +105,7 @@ function CountersBadge({
             ? `${fmtNum(live.edge_inference_ms_p50, 1)} / ${fmtNum(live.edge_inference_ms_p95, 1)} ms`
             : "no samples yet"}
         </span>
-        <span className="k">motor → edge → control plane</span>
+        <span className="k">motor → edge → control plane (edge-scored)</span>
         <span className="v">
           {live && live.path_latency_ms_p50 !== null
             ? `${fmtNum(live.path_latency_ms_p50, 0)} / ${fmtNum(live.path_latency_ms_p95, 0)} ms`

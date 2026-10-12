@@ -106,9 +106,11 @@
   padding: 2px 7px;
   border-radius: 999px;
 }
+/* Governance badges never use the primary yellow: on a projector it could read as "warning". */
 .tw-badge-contract_pending {
-  color: var(--tw-primary, #e8ff47);
-  border-color: var(--tw-primary, #e8ff47);
+  color: var(--tw-ink, #eef5ff);
+  border-color: var(--tw-accent, #3d9bff);
+  border-style: dashed;
   background: transparent;
 }
 .tw-badge-approved,

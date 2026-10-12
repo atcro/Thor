@@ -173,6 +173,8 @@ def score_assets(
         from apps.api.live import record_prediction
 
         for r in rows:
-            record_prediction(r["asset_id"], r["ts"], float(r["failure_probability"]))
+            record_prediction(
+                r["asset_id"], r["ts"], float(r["failure_probability"]), source="control_plane"
+            )
     log.info("scored %d assets with %s (%d skipped)", len(scored), ref.version, len(skipped))
     return ScoreResult(model_version=ref.version, scored=scored, skipped=skipped)

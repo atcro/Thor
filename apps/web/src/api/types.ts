@@ -864,6 +864,8 @@ export interface TwinEvent {
   ts: ISODate;
   received_at: ISODate;
   count: number;
+  /** Predictions only: scored at the edge (edge path, inference_ms) or centrally. */
+  source: "edge" | "control_plane" | null;
   failure_probability: number | null;
   inference_ms: number | null;
   path_latency_ms: number | null;

@@ -24,17 +24,17 @@ const PACKAGING_ROLES = ["infeed conveyor", "filler", "capper/labeler", "case pa
 
 /** line number -> [infeed, filler, capper/labeler, case packer] (data/simulator/layout.py). */
 const PACKAGING: Record<number, [string, string, string, string]> = {
-  1: ["MTR-007", "MTR-001", "MTR-022", "MTR-014"],
-  2: ["MTR-024", "MTR-011", "MTR-005", "MTR-006"],
+  1: ["MTR-022", "MTR-001", "MTR-005", "MTR-019"],
+  2: ["MTR-024", "MTR-011", "MTR-006", "MTR-010"],
   3: ["MTR-013", "MTR-042", "MTR-021", "MTR-009"],
   4: ["MTR-018", "MTR-003", "MTR-017", "MTR-023"],
-  5: ["MTR-016", "MTR-020", "MTR-008", "MTR-015"],
+  5: ["MTR-016", "MTR-015", "MTR-007", "MTR-008"],
 };
 const COMPRESSORS: [string, string][] = [
   ["MTR-012", "K-1"],
-  ["MTR-010", "K-2"],
-  ["MTR-019", "K-3"],
-  ["MTR-002", "K-4"],
+  ["MTR-002", "K-2"],
+  ["MTR-014", "K-3"],
+  ["MTR-020", "K-4"],
 ];
 
 const RATED_KW: Record<string, number> = {

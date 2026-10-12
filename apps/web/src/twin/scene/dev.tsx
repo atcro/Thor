@@ -34,9 +34,9 @@ function Harness() {
     const id = window.setInterval(() => {
       const now = performance.now();
       const asset = live[Math.floor(Math.random() * live.length)];
-      queue.current.push({ seq: seq++, kind: "ingest", asset_id: asset, count: 1, at: now });
+      queue.current.push({ seq: seq++, kind: "ingest", source: null, asset_id: asset, count: 1, at: now });
       if (Math.random() < 0.9) {
-        queue.current.push({ seq: seq++, kind: "prediction", asset_id: asset, count: 1, at: now });
+        queue.current.push({ seq: seq++, kind: "prediction", source: "edge", asset_id: asset, count: 1, at: now });
       }
     }, 1000 / 15); // 15 ticks/s × ~1.9 events = ~28 events/s
     return () => window.clearInterval(id);

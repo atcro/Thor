@@ -11,6 +11,8 @@ import type { TwinPalette } from "./palette";
 export interface PulseEvent {
   seq: number;
   kind: "ingest" | "prediction";
+  /** Predictions: where it was scored. Only edge predictions travel edge -> control plane. */
+  source: "edge" | "control_plane" | null;
   asset_id: string;
   /** Aggregated arrivals this event stands for (>= 1). */
   count: number;

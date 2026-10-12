@@ -163,19 +163,24 @@ class LiveBus:
         failure_probability: float | None = None,
         inference_ms: float | None = None,
         received_at: float | None = None,
+        source: str = "edge",
     ) -> TwinEvent:
         """Record one prediction arrival for `asset_id` scored at plant time `ts`.
 
         Inputs: asset id, the scored row's ts, the published probability, the edge-reported
-        inference time in ms (optional) and an optional receipt time. Output: the TwinEvent,
-        with `path_latency_ms` filled when the matching ingest receipt is still known.
+        inference time in ms (optional), an optional receipt time and the `source` ("edge" or
+        "control_plane"). Output: the TwinEvent, with `path_latency_ms` filled when the
+        prediction came from the edge and the matching ingest receipt is still known. A
+        control-plane score never contributes a path-latency sample: it did not travel
+        motor -> edge -> control plane.
         """
         now = time.time() if received_at is None else float(received_at)
         key_ts = as_utc(ts)
+        src = "control_plane" if source == "control_plane" else "edge"
         with self._lock:
             self._seq += 1
             latency_ms: float | None = None
-            ingest_at = self._receipts.get((asset_id, key_ts))
+            ingest_at = self._receipts.get((asset_id, key_ts)) if src == "edge" else None
             if ingest_at is not None:
                 latency_ms = max(0.0, (now - ingest_at) * 1000.0)
                 self._latency.append((now, latency_ms))
@@ -187,6 +192,7 @@ class LiveBus:
                 asset_id=asset_id,
                 ts=key_ts,
                 received_at=datetime.fromtimestamp(now, UTC),
+                source=src,
                 failure_probability=failure_probability,
                 inference_ms=inference_ms,
                 path_latency_ms=round(latency_ms, 3) if latency_ms is not None else None,
@@ -340,10 +346,13 @@ def record_prediction(
     failure_probability: float | None = None,
     inference_ms: float | None = None,
     received_at: float | None = None,
+    source: str = "edge",
 ) -> TwinEvent:
     """Module-level shortcut for `bus.record_prediction` (never raises; logs a bad ts)."""
     try:
-        return bus.record_prediction(asset_id, ts, failure_probability, inference_ms, received_at)
+        return bus.record_prediction(
+            asset_id, ts, failure_probability, inference_ms, received_at, source
+        )
     except Exception as exc:  # noqa: BLE001
         log.debug("record_prediction(%s) skipped: %s", asset_id, exc)
         return TwinEvent(

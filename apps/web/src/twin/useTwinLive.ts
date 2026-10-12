@@ -57,7 +57,7 @@ export function useTwinLive(enabled: boolean = true): TwinLive {
       const at = performance.now();
       const q = pulseQueue.current;
       for (const e of batch.events) {
-        q.push({ seq: e.seq, kind: e.kind, asset_id: e.asset_id, count: e.count, at });
+        q.push({ seq: e.seq, kind: e.kind, source: e.source ?? null, asset_id: e.asset_id, count: e.count, at });
         seenRef.current += e.count;
       }
       if (q.length > QUEUE_CAP) q.splice(0, q.length - QUEUE_CAP);

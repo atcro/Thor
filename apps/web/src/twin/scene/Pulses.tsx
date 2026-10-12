@@ -100,6 +100,9 @@ export function Pulses({ layout, queue, palette, cap }: PulsesProps) {
       for (const ev of batch) {
         const ai = paths.index.get(ev.asset_id);
         if (ai === undefined) continue;
+        // A control-plane score (Run analysis, /pipeline/score) never travelled the edge
+        // path, so it draws no edge -> control plane pulse. Only edge predictions do.
+        if (ev.kind === "prediction" && ev.source === "control_plane") continue;
         const slot = pool.head;
         pool.head = (pool.head + 1) % pool.cap;
         pool.n = Math.min(pool.cap, pool.n + 1);

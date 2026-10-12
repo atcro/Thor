@@ -20,7 +20,14 @@ from data.simulator.generate import (
     generate_fleet,
     write_outputs,
 )
-from data.simulator.layout import LINES, PACKAGING_ROLES, PLANT_LAYOUT, duty_profile, line_members
+from data.simulator.layout import (
+    LINES,
+    PACKAGING_ROLES,
+    PLANT_LAYOUT,
+    derive_groups,
+    duty_profile,
+    line_members,
+)
 
 DAYS = 3
 STEP = 10
@@ -79,6 +86,21 @@ def test_plant_layout_groups_and_roles() -> None:
     # ratings are keyed by asset id (the generator's current draw depends on them)
     assert assets["MTR-042"].rated_kw == 160.0 and assets["MTR-016"].rated_kw == 11.0
     assert assets["MTR-003"].criticality == "high" and assets["MTR-007"].criticality == "low"
+
+
+def test_committed_layout_equals_the_derived_groups() -> None:
+    """The layout rule in `derive_groups` reproduces `PLANT_LAYOUT` on the default fleet
+    (30 days, seed 42): the line assignment follows the measurement, not the other way round."""
+    df, assets = generate_fleet()
+    groups = derive_groups(df, {a.asset_id: a.rated_kw for a in assets})
+    by_line = {
+        "lines_1_2": {a for a, s in PLANT_LAYOUT.items() if s.line in ("Packaging Line 1", "Packaging Line 2")},
+        "lines_3_4": {a for a, s in PLANT_LAYOUT.items() if s.line in ("Packaging Line 3", "Packaging Line 4")},
+        "line_5": {a for a, s in PLANT_LAYOUT.items() if s.line == "Packaging Line 5"},
+        "compressor_hall": {a for a, s in PLANT_LAYOUT.items() if s.line == "Compressor Hall"},
+    }
+    assert groups == by_line
+    assert "MTR-018" in groups["lines_3_4"] and set(FAULTY_ASSETS) < groups["lines_3_4"]
 
 
 def test_lines_3_4_measure_harder_duty_than_lines_1_2(fleet: tuple[pd.DataFrame, list[Asset]]) -> None:

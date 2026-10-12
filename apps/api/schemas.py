@@ -1047,6 +1047,9 @@ class TwinEvent(BaseModel):
     ts: datetime
     received_at: datetime
     count: int = 1
+    #: Predictions only: "edge" (scored at the edge; carries inference_ms and a path latency)
+    #: or "control_plane" (scored centrally by /pipeline/score or Run analysis; no edge path).
+    source: Literal["edge", "control_plane"] | None = None
     failure_probability: float | None = None
     inference_ms: float | None = None
     path_latency_ms: float | None = None
