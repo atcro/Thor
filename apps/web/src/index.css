@@ -929,6 +929,7 @@ table.tbl {
   font-size: 12px;
   color: var(--ink);
   font-weight: 600;
+  white-space: nowrap; /* the "latched since" pill must not break the id onto two lines */
 }
 .asset-card .name {
   font-size: 12px;
