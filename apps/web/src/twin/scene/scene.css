@@ -1,0 +1,137 @@
+/* Html labels inside the 3-D Digital Twin. Colours come from the `--tw-*` variables the
+   parent `.twin-theme` wrapper sets from src/twin/palette.ts; nothing is hard-coded here
+   except layout. Status colours use the shared --tw-ok/--tw-warn/--tw-crit tokens. */
+
+.tw-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.tw-label {
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+  font-family: ui-monospace, "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.25;
+  letter-spacing: 0.02em;
+  color: var(--tw-ink, #eef5ff);
+  background: var(--tw-panel, rgba(7, 12, 22, 0.86));
+  border: 1px solid var(--tw-line, rgba(61, 155, 255, 0.45));
+  border-radius: 3px;
+  padding: 3px 7px;
+  transform: translateY(0);
+  transition: transform 120ms ease-out, box-shadow 120ms ease-out;
+}
+
+/* Line titles at the head of each row */
+.tw-title {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-left: 3px solid var(--tw-primary, #e8ff47);
+}
+.tw-title-kind {
+  display: inline-block;
+  margin-right: 8px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  color: var(--tw-ink-2, #9fb3cc);
+}
+
+/* Edge node / control plane */
+.tw-node {
+  text-align: center;
+  border-color: var(--tw-accent, #3d9bff);
+  padding: 5px 10px;
+}
+.tw-node-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tw-accent, #3d9bff);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.tw-node-sub {
+  font-size: 10px;
+  color: var(--tw-ink-2, #9fb3cc);
+  margin-top: 1px;
+}
+
+/* Status word under the glyph (xray / hovered / selected) */
+.tw-word {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 11px;
+}
+.tw-word-id {
+  color: var(--tw-ink, #eef5ff);
+  font-weight: 600;
+}
+.tw-word-text {
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 10px;
+}
+.tw-word-p {
+  color: var(--tw-ink-2, #9fb3cc);
+}
+.tw-word-healthy .tw-word-text { color: var(--tw-ok, #2ee07a); }
+.tw-word-warning .tw-word-text { color: var(--tw-warn, #ff9f1c); }
+.tw-word-critical .tw-word-text { color: var(--tw-crit, #ff4d4d); }
+.tw-word-no_prediction .tw-word-text { color: var(--tw-none, #8a97a8); }
+.tw-word-offline .tw-word-text { color: var(--tw-offline, #5fb8ff); }
+.tw-word-no_data .tw-word-text { color: var(--tw-nodata, #55606d); }
+
+.tw-word.is-hovered {
+  transform: translateY(-4px);
+}
+.tw-word.is-selected {
+  border-color: var(--tw-primary, #e8ff47);
+  box-shadow: 0 0 0 1px var(--tw-primary, #e8ff47), 0 0 14px calc(var(--tw-glow, 0.6) * 10px) rgba(0, 0, 0, 0);
+  color: var(--tw-ink, #eef5ff);
+}
+.tw-word.is-selected .tw-word-id {
+  color: var(--tw-primary, #e8ff47);
+}
+
+/* Decision badge above the machine */
+.tw-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+.tw-badge-contract_pending {
+  color: var(--tw-primary, #e8ff47);
+  border-color: var(--tw-primary, #e8ff47);
+  background: transparent;
+}
+.tw-badge-approved,
+.tw-badge-work_order_in_progress {
+  color: #06101a;
+  background: var(--tw-accent, #3d9bff);
+  border-color: var(--tw-accent, #3d9bff);
+}
+.tw-badge-work_order_completed {
+  color: #06101a;
+  background: var(--tw-ok, #2ee07a);
+  border-color: var(--tw-ok, #2ee07a);
+}
+.tw-badge-rejected {
+  color: var(--tw-ink-2, #9fb3cc);
+  border-color: var(--tw-ink-2, #9fb3cc);
+  text-decoration: line-through;
+}
+
+/* Work-order tag on the machine */
+.tw-wo {
+  font-size: 10px;
+  color: var(--tw-offline, #5fb8ff);
+  border-color: var(--tw-offline, #5fb8ff);
+  border-style: dashed;
+}
