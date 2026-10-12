@@ -491,8 +491,8 @@
 
 /* Sandbox scenario: the warning amber (never the brand / primary yellow). */
 .xray-chip.sandbox {
-  color: var(--tw-warn);
-  border-color: var(--tw-warn);
+  color: var(--tw-sandbox, #c77dff);
+  border-color: var(--tw-sandbox, #c77dff);
   font-size: 10.5px;
   padding: 0 6px;
   letter-spacing: 0.06em;
@@ -637,6 +637,10 @@
 
 .xray-warn {
   color: var(--tw-warn);
+}
+
+.xray-sandbox {
+  color: var(--tw-sandbox, #c77dff);
 }
 
 .xray-dim {

@@ -523,3 +523,36 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
 - Fixed the asset id wrapping beside the "latched since" pill (`380fe8d`); reset script counts the
   fleet correctly (`b96c039`).
 - **Next:** fresh-context judge audit on the running stack; fix flags; final report.
+
+## 2026-10-12 06:45 — fresh-context judge audit: 20 findings, the ones that matter fixed
+
+- Audit (sub-agent, read-only, Docker stack, LLM mode): reset 63 s; train 56 s (replay held) /
+  90 s + gate FAIL when trained again after sign-off; sign-off 2.7 s, 24 green at 2.8 s; red at
+  63 s, no amber; analysis 43 s (LLM); Bolt 13 / 27 / 21 s; approve -> offline 0.4 s -> green
+  12.7 s; Troubleshoot -> red 11-14 s; reset clears in 0.5 s; sandbox isolation checks all passed;
+  0 false latches on never-failing motors. Verdict: steps 1-8 repeatable; two conditions to remove.
+- **Fixed (code):** (1) the hero healed itself when the recording looped (`UnrepairedFault` in
+  `streaming/replay/work_orders.py`: a motor the data never repairs keeps its full-severity rows
+  across passes until a work order; plus the replay now loops the story tail, not the month, so
+  the six historical failures never return "live", `e6fd43c`); (3) "Train new model" after the
+  sign-off failed the gate because replayed rows carry no outcome and trained as negatives
+  (`orchestrator._telemetry` keeps rows with stored ground truth only); (4) Shake tagged a real
+  alarm as sandbox and Reset cleared it (shake now skips motors with a plant-raised alarm);
+  (5) "latched since" now dates the FIRST row of the sustained run, the same instant as the
+  lead-time rule and the rewind marker; (7) a browser refresh on Asset 360 returned nginx 404
+  (Vite `build.assetsDir: "static"`, nginx `location /static/`); (8) near-zero SHAP drivers read
+  "little effect" instead of "lowers risk" in the contract prose and the HUD; Bolt's LLM prompt
+  quotes tool numbers exactly; (9) "operating regimes detected" -> states; (10) HUD "planned
+  window" with its basis; (11) button "Awaiting approval"; (12) contract panel "validated lead
+  time (held-out motors)" in hours; (14) reset scripts remove the exited prep container that
+  pinned the models volume; (15) "high criticality"; (17) sandbox hue is violet, amber means
+  warning only; (18) the hover tooltip hides during a rewind.
+- **Accepted, documented, not changed:** no amber phase (the calibrated probability steps within
+  one sample); 81.2 % is the calibration ceiling (one failing calibration motor); IMS varies with
+  machine speed (slides quote recall/precision/lead time, "IMS about 0.88-0.89"); the plant
+  manuals quoted by Bolt and the contract say "regime" (the plant's own documents; rebuilding the
+  Chroma index before the freeze is not worth the risk); overlapping 3-D labels when every
+  overlay is on at once; prediction gaps of one window when an override starts or stops (the
+  edge restarts the window so sandbox and plant rows never mix); drivers from a closed contract
+  still shown in the HUD with their contract id.
+- **Next:** vitest + build, full pytest, rebuild images, final reset for the team, final report.

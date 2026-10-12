@@ -218,13 +218,19 @@ def random_fault(engine: Engine | None = None, seed: int | None = None) -> Sandb
 def shake(engine: Engine | None = None, seed: int | None = None) -> SandboxEvent:
     """Shake up operations: a random operating state (rpm, load) per motor within the normal
     ranges; temperature follows load through the simulator's healthy relation on the replay
-    side. Motors offline for a work order are left alone."""
+    side. Motors offline for a work order, and motors with an alarm raised on plant readings,
+    are left alone: a shake must never tag a real alarm as a sandbox one."""
     engine = engine or db.get_engine()
     offline = {aid for aid, wo in db.work_order_by_asset(engine).items() if wo.status == "in_progress"}
+    alarmed = {
+        aid
+        for aid, ev in alarms.latest_alarms(engine).items()
+        if ev.level != alarms.AlarmLevel.healthy and not ev.sandbox
+    }
     rng = random.Random(seed)
     assets: dict[str, dict[str, float]] = {}
     for a in db.list_assets(engine):
-        if a.asset_id in offline:
+        if a.asset_id in offline or a.asset_id in alarmed:
             continue
         rpm_c, rpm_sd, load_c, load_sd = rng.choice(OPERATING_STATES)
         assets[a.asset_id] = {

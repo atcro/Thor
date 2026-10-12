@@ -168,7 +168,7 @@ export function DecisionContractPanel({
               ["model version", contract.model_version],
               ["mlflow run", contract.champion_mlflow_run_id ?? "—"],
               ["created", fmtDateTime(contract.created_at)],
-              ["lead time", fmtHours(contract.lead_time_h)],
+              ["validated lead time (held-out motors)", `${fmtNum(contract.lead_time_h, 1)} h`],
               ["calibration brier", fmtNum(contract.calibration_brier, 3)],
               ["data quality", fmtNum(contract.data_quality_score, 0)],
             ]}

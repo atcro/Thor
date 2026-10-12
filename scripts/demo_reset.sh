@@ -36,7 +36,8 @@ PROJECT="$(docker compose config --format json | sed -n 's/.*"name": *"\([^"]*\)
 echo "==> compose project: $PROJECT"
 
 echo "==> stopping stack"
-docker compose down --remove-orphans
+docker compose --profile prep down --remove-orphans
+docker rm -f "${PROJECT}-prep-1" >/dev/null 2>&1 || true   # an exited prep container pins the models volume
 VOLS=("${PROJECT}_timescale-data")
 [[ $KEEP_MODELS -eq 0 ]] && VOLS+=("${PROJECT}_models" "${PROJECT}_mlflow-data")
 EXISTING="$(docker volume ls -q)"

@@ -131,7 +131,8 @@ def test_status_precedence_and_data_state(client: TestClient) -> None:
     stamps += _post_predictions(client, "MTR-042", [0.65], NOW + timedelta(minutes=20))
     a = _twin_asset(client, "MTR-042")
     assert a["status"] == "critical" and a["failure_probability"] == 0.65
-    assert a["alarm"] == "critical" and a["alarm_since"] == stamps[2].isoformat().replace("+00:00", "Z")
+    # "since" is the first row of the sustained run: the lead-time rule's instant
+    assert a["alarm"] == "critical" and a["alarm_since"] == stamps[0].isoformat().replace("+00:00", "Z")
     assert "3 consecutive predictions >= 0.5" in a["alarm_reason"]
     assert a["n_prediction_rows"] == 3 and a["health_score"] == 35.0
     # latched: the probability falling back changes the number, never the status

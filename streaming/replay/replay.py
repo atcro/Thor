@@ -40,9 +40,15 @@ import numpy as np
 import pandas as pd
 from paho.mqtt import client as mqtt
 
-from data.simulator.generate import TelemetryRow, generate_fleet, write_outputs
+from data.simulator.generate import (
+    FAULT_RAMP_H,
+    FAULTY_ASSETS,
+    TelemetryRow,
+    generate_fleet,
+    write_outputs,
+)
 from streaming.replay.sandbox import ReplayGate, SandboxApplier, SandboxClient
-from streaming.replay.work_orders import RepairSimulator, WorkOrderClient
+from streaming.replay.work_orders import RepairSimulator, UnrepairedFault, WorkOrderClient
 
 log = logging.getLogger("thor.replay")
 
@@ -335,6 +341,10 @@ def main() -> None:
             df, WorkOrderClient(args.control_plane), execute_at=args.work_order_execute
         )
         log.info("simulated CMMS on: executing approved work orders from %s", args.control_plane)
+    # Motors the data never repairs (the demo fault: held at full severity to the end of the
+    # timeline) stay broken across later passes until a work order repairs them.
+    unrepaired = [a for a, (_onset, fail) in FAULTY_ASSETS.items() if fail >= 1.0 and a in FAULT_RAMP_H]
+    broken = UnrepairedFault(df, unrepaired) if unrepaired and args.speed > 0 else None
     gate: ReplayGate | None = None
     if not args.no_gate and args.speed > 0:
         gate = ReplayGate(args.control_plane)
@@ -374,6 +384,8 @@ def main() -> None:
         if gate is not None and pass_no == 1:
             gate.wait()  # the human sign-off releases the recorded history
         rows: Iterator[TelemetryRow] = iter_rows(play)
+        if broken is not None and pass_no > 1:
+            rows = broken.apply(rows)  # a looped recording does not heal a bearing
         if gate is not None:
             rows = gate.apply(rows)  # pause / resume
         if sandbox is not None:

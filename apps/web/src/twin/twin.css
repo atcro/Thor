@@ -280,8 +280,8 @@
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: #1a1200;
-  background: var(--tw-warn);
+  color: #14061f;
+  background: var(--tw-sandbox, #c77dff);
   border-bottom: 1px solid rgba(0, 0, 0, 0.3);
   pointer-events: none;
 }

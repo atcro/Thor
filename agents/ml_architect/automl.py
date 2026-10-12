@@ -108,7 +108,7 @@ def infer_task(dq: DataQualityContract, df: pd.DataFrame, horizon_h: float = 48.
         f"{n_fail_assets} asset(s) with a completed, recorded failure; {pos_rate:.1%} of rows fall within "
         f"the {horizon_h:g} h horizon; data quality {dq.quality_score:.0f}/100 "
         f"({'trainable' if dq.trainable else 'NOT trainable'}); {len(dq.regimes.regimes)} operating "
-        "regimes detected. Framing as horizon classification: sparse failure events make a "
+        "states detected. Framing as horizon classification: sparse failure events make a "
         "calibrated probability with measured lead time more reliable than direct RUL regression."
     )
     if n_fail_assets == 0:

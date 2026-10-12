@@ -296,7 +296,8 @@ LENGTH
 A reply is a handover note, not a report: at most about 150 words. One-sentence conclusion, then \
 at most six short evidence lines (probability, action, window, top drivers), then the single \
 most relevant manual sentence in quotes with its citation, then the precedent as the medians \
-plus one case. Round numbers to three significant figures. Do not repeat the question, restate \
+plus one case. Quote costs, hours and probabilities exactly as the tools returned them (no \
+"~" rounding); shorten only by leaving things out. Do not repeat the question, restate \
 raw telemetry the user did not ask about, add headings, or list unknowns unless a tool returned \
 nothing. For step-by-step or 'tell me more' requests give numbered steps of one line each. Offer \
 detail on request instead of including it.
@@ -1130,11 +1131,19 @@ ANALYZE_RECENT_H = 72.0
 
 
 def _telemetry(h: RunHandle, engine: Engine | None) -> pd.DataFrame:
-    """The whole fleet's stored telemetry for a TRAIN run, without sandbox readings: a
-    sandbox scenario is never training data, a validation metric or a drift baseline."""
+    """The fleet's stored telemetry for a TRAIN run: the recorded history only.
+
+    Sandbox readings are excluded (a sandbox scenario is never training data, a validation
+    metric or a drift baseline), and so are rows that carry no outcome -- the live replay
+    publishes observable sensors only, so a replayed degradation has no label and would train
+    as a negative. Training therefore uses the rows whose simulator ground truth is stored
+    (the seeded history with its completed failures), whatever the replay has streamed since.
+    """
     df = h.cache.get("df")
     if df is None:
         df = db.read_telemetry(engine=engine, include_sandbox=False)
+        if "health" in df.columns and df["health"].notna().any():
+            df = df[df["health"].notna()].reset_index(drop=True)
         h.cache["df"] = df
     return df
 

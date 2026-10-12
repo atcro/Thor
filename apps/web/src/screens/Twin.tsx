@@ -160,7 +160,7 @@ function Legend({ palette }: { palette: ReturnType<typeof twinPalette> }) {
         <span className="row" style={{ color: palette.regime.R3 }}>
           <span className="twin-ring" /> <span style={{ color: "var(--tw-ink)" }}>ring: state {stateWord("R3")}</span>
         </span>
-        <span className="row" style={{ color: "var(--tw-warn)" }}>
+        <span className="row" style={{ color: "var(--tw-sandbox)" }}>
           ■ <span style={{ color: "var(--tw-ink)" }}>tag: sandbox scenario (simulated readings)</span>
         </span>
         <span className="row" style={{ color: palette.pulseIngest }}>
@@ -333,7 +333,7 @@ function TwinView() {
           />
         )}
 
-        {xray.enabled && hoveredAsset && (
+        {xray.enabled && hoveredAsset && !rewind && (
           <div className="twin-hover" data-testid="twin-hover">
             <XRayTooltip asset={hoveredAsset} />
           </div>

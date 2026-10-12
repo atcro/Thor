@@ -96,6 +96,9 @@ export function twinPalette(theme: TwinTheme = TWIN_THEME): TwinPalette {
  * Status colours (shared by the scene glyphs, the HUD and the Fleet X-Ray). Keyed by the
  * API's TwinStatus. Deliberately outside the theme: they mean the same thing everywhere.
  */
+/** Sandbox readings get their own hue (violet): amber means "warning" and nothing else. */
+export const SANDBOX_COLOR = "#c77dff";
+
 export const STATUS_COLOR = {
   healthy: "#2ee07a",
   warning: "#ff9f1c",
@@ -121,6 +124,7 @@ export function paletteCssVars(p: TwinPalette): Record<string, string> {
     "--tw-none": STATUS_COLOR.no_prediction,
     "--tw-offline": STATUS_COLOR.offline,
     "--tw-nodata": STATUS_COLOR.no_data,
+    "--tw-sandbox": SANDBOX_COLOR,
     "--tw-r1": p.regime.R1,
     "--tw-r2": p.regime.R2,
     "--tw-r3": p.regime.R3,

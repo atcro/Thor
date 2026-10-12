@@ -121,7 +121,7 @@ def test_latch_clears_only_on_work_order_completion(client: TestClient) -> None:
     stamps = _post(client, "MTR-042", [0.7, 0.8, 0.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], NOW)
     f = _fleet(client)["MTR-042"]
     assert f["status"] == "critical" and f["alarm"] == "critical" and f["failure_probability"] == 0.0
-    assert f["alarm_since"] == stamps[2].isoformat().replace("+00:00", "Z")
+    assert f["alarm_since"] == stamps[0].isoformat().replace("+00:00", "Z")  # first row of the run
     # a rejected contract or a pending one changes nothing
     dc = make_contract(make_bundle("MTR-042"), run_id="r1", text="t", source="template")
     db.insert_decision_contract(dc, engine=engine)

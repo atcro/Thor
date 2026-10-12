@@ -46,8 +46,9 @@ Screen: **AutoML Studio** → **Train new model** (asset held out `MTR-042`, tri
 set in the form; the default is the measured one below).
 
 Measured on the Docker stack (the demo configuration, replay held, nothing else running):
-`Train new model` → `Registered` in **72 s** with 4 trials per family (random forest champion,
-gate and parity passed). Natively, with the Docker stack also running, the same run took
+`Train new model` → `Registered` in **56–72 s** with 4 trials per family (random forest champion,
+gate and parity passed; two Docker runs). The run is deterministic for a given split: the two
+Docker runs and the native prep run gave the same recall, precision and lead time. Natively, with the Docker stack also running, the same run took
 2.5–3 minutes, so do not train with anything else open. The run page updates every 3 s: the
 asset split appears within 2 s, the operating states within 9 s, the three candidates at the end
 of the search, then the gate checklist and parity. Talk through it; it is the slow beat.
@@ -77,22 +78,26 @@ a calibrated probability below the early-warning threshold."
 
 Screen: **Fleet**. Watch MTR-042 (Line 3 filler).
 
-Measured (four runs, Docker: 64 s): green for **35–72 s** after the sign-off, then **red
-(critical, latched)**.
-The calibrated probability steps from below 0.01 to 0.81 within three samples, so the amber
-phase between the warning and the critical alarm lasts a few seconds at most and is sometimes
-skipped (both alarms fire on the same sample). The card then reads `critical · latched since
-<plant time>` and stays red: the status is latched until a completed work order clears it.
+Measured (five runs, Docker: 63–64 s): green for **35–72 s** after the sign-off, then **red
+(critical, latched)**. There is **no amber phase to promise**: the calibrated probability steps
+from below 0.001 to 0.81 within one sample, so the warning and the critical alarm fire on the
+same sample. The card then reads `critical · latched since <plant time>` (the first of the three
+sustained samples, the same instant the rewind marks) and stays red: the status is latched until
+a completed work order clears it. The 81 % is the calibration's ceiling for this model (Platt
+scaling fitted on three calibration motors with one failure), not a precise measurement; every
+failing motor reads the same 81 %, say so if asked.
 
-Say: "Here it is. Three consecutive samples over the line raised the alarm, and it stays red
-until the plant acts — a motor does not talk its way out of an alarm."
+Say: "Here it is. Three consecutive samples over the line raised the alarm — this signature
+saturates within one sample — and it stays red until the plant acts; a motor does not talk its
+way out of an alarm."
 
 ### 5. Run analysis (t ≈ 4:00)
 
 Screen: click the MTR-042 card → **Asset 360** → **Run analysis**.
 
-Measured: **4–5 s** to `Awaiting approval` in template mode, **30 s** in LLM mode (the provider
-drafts the explanation paragraph; everything else is the same deterministic code). Model loaded,
+Measured: **4–5 s** to `Awaiting approval` in template mode, **30–45 s** in LLM mode (the
+provider drafts the explanation paragraph; everything else is the same deterministic code). The
+button reads `Awaiting approval` once the contract is up. Model loaded,
 SHAP drivers, manual passages, cost comparison, Decision Contract. The stepper shows `Load production model → Explaining →
 Awaiting approval`; the probability on the contract is the card's.
 
@@ -107,8 +112,8 @@ Screen: **Copilot · Bolt**, asset context `MTR-042`. Ask, in this order:
 - "Give me the details."
 - "What are the possible fixes?"
 
-Measured: template mode answers in **< 1 s** each; LLM mode (gpt-5 on the venue Wi-Fi) **15–30 s**
-each, so ask the first one as soon as the analysis starts. Before the contract
+Measured: template mode answers in **< 1 s** each; LLM mode (gpt-5 on the venue Wi-Fi) **13–30 s**
+each, so ask the first one as soon as the analysis starts. Bolt quotes the tool numbers exactly. Before the contract
 exists the answers draw on the live readings, the latched status and the trend; after it, on the
 contract's drivers, costs, manual passages and field-history precedent. The last answer points to
 the approval on Asset 360; Bolt never approves.
@@ -162,6 +167,11 @@ and approved like MTR-042 and comes back green; the contract and the work order 
 Say: "Sandbox readings take the real path — replay, MQTT, edge, control plane — and are tagged
 all the way through; they never enter training."
 
+**Timing budget:** nothing in the data heals MTR-042 (its degradation is held across replay
+passes until the work order), so the approval can wait as long as the Q&A needs. The one clock
+that matters is the six-minute slot: in LLM mode the analysis plus three Bolt answers take about
+1.5 minutes.
+
 ## Recovery moves
 
 - **Training fails or takes too long:** `.\scripts\demo_reset.ps1 -Prep` (or `docker compose run
@@ -173,6 +183,10 @@ all the way through; they never enter training."
   While paused the twin shows motors as "no data" after 30 s — say so.
 - **Nothing red after 2 minutes:** check the top bar says `streaming`; if it says `held`, the
   promotion was not approved (ModelOps); if `paused`, press Resume.
+- **Do not press "Train new model" again after the sign-off** unless you mean it: it trains on
+  the recorded history only (replayed rows carry no outcome), takes a minute, and ends with a
+  second promotion request that you would then have to approve or reject in ModelOps.
+- **Browser refresh** anywhere (including Asset 360) reloads the same screen.
 - **"Run analysis" returns 409:** no production model — approve the promotion in ModelOps.
 - **Wi-Fi drops:** everything works in template mode; say so, it demonstrates the LLM is not
   load-bearing.
@@ -188,7 +202,9 @@ want the screen still.
 ## Numbers to quote (and their caveats)
 
 From `docs/finals/metrics.md` (the 2026-10-12 run on the re-timed data; `docs/finals/prep-report.json`):
-see that file for recall, precision, lead time and IMS. Caveats: synthetic fleet, six completed
-failures, two failure events among the test motors, 10-minute aggregates (no spectra). Never state
-a dollar saving as fact; the costs are configurable assumptions. Never quote the pre-2026-10-12
-numbers (0.865 / 41.5 h / 0.844).
+recall 91.9 %, precision 96.2 %, warning lead time 53.1 h (median of two test failures), edge
+parity 1.6e-6. Quote the IMS as "about 0.88–0.89": its latency term depends on the machine, so
+the screen shows 0.882–0.894 for the same model. Caveats: synthetic fleet, six completed
+failures, two failure events among the test motors, 10-minute aggregates (no spectra); the
+calibrated probability saturates at 0.81. Never state a dollar saving as fact; the costs are
+configurable assumptions. Never quote the pre-2026-10-12 numbers (0.865 / 41.5 h / 0.844).

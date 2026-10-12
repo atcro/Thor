@@ -370,7 +370,7 @@ export function Asset360() {
         <div className="row">
           {run.state && <StageChip stage={run.state.stage} />}
           <button className="btn primary" onClick={() => void launch()} disabled={launching || runActive}>
-            {launching ? "Starting…" : runActive ? "Analysis running" : "Run analysis"}
+            {launching ? "Starting…" : runActive ? (run.state?.stage === "awaiting_approval" ? "Awaiting approval" : "Analysis running") : "Run analysis"}
           </button>
         </div>
       </div>

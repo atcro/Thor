@@ -174,6 +174,47 @@ class HealthyBaseline:
         return None
 
 
+class UnrepairedFault:
+    """Keep a motor that was never repaired in the data on its damaged bearing across replay
+    passes.
+
+    The replay loops the story (the tail after the seed point). The demo motor's rows at the
+    start of that tail are healthy (its onset lies a little after the seed point), so a later
+    pass would make a still-latched motor read healthy for a minute and then degrade again. A
+    bearing does not heal because the recording looped: for the motors in `asset_ids` every row
+    of a later pass whose recorded health is above `damaged_max` is replaced by one of the
+    motor's own full-severity rows (same operating state and hour of day, walked in order), so
+    the signal stays at full severity until the plant's work order repairs it (the
+    RepairSimulator runs after this and wins). Ground truth is read only to choose the donor
+    row inside the replay container; it is never published.
+    """
+
+    def __init__(self, df: pd.DataFrame, asset_ids: Iterable[str], damaged_max: float = 0.0):
+        self.asset_ids = set(asset_ids)
+        self._pools: dict[str, HealthyBaseline] = {}
+        for aid in self.asset_ids:
+            sub = df[df["asset_id"] == aid]
+            if "health" in sub.columns:
+                health = pd.to_numeric(sub["health"], errors="coerce")
+                sub = sub[health <= damaged_max]
+            self._pools[aid] = HealthyBaseline(sub.assign(health=1.0)) if len(sub) else HealthyBaseline(sub)
+
+    def transform(self, row: TelemetryRow) -> TelemetryRow:
+        if row.asset_id not in self.asset_ids:
+            return row
+        if row.health is not None and row.health <= 0.0:
+            return row  # already a full-severity row
+        pool = self._pools.get(row.asset_id)
+        donor = pool.next_row(row.regime, row.ts) if pool is not None and len(pool) else None
+        if donor is None:
+            return row
+        return row.model_copy(update={**donor, "health": 0.0, "failure_within_h": 0.0})
+
+    def apply(self, rows: Iterable[TelemetryRow]) -> Iterator[TelemetryRow]:
+        for row in rows:
+            yield self.transform(row)
+
+
 @dataclass
 class RepairSimulator:
     """Applies approved work orders to the replayed row stream (see module docstring).

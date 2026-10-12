@@ -132,9 +132,9 @@
 
 /* Sandbox tag next to the decision badge: the warning amber, never the brand yellow. */
 .tw-badge-sandbox {
-  color: #1a1200;
-  background: var(--tw-warn, #ff9f1c);
-  border-color: var(--tw-warn, #ff9f1c);
+  color: #14061f;
+  background: var(--tw-sandbox, #c77dff);
+  border-color: var(--tw-sandbox, #c77dff);
 }
 
 /* Work-order tag on the machine */

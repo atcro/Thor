@@ -33,8 +33,10 @@ if (-not $project) { throw "could not read the compose project name; is Docker r
 Write-Host "==> compose project: $project"
 
 Write-Host "==> stopping stack"
-docker compose down --remove-orphans
+docker compose --profile prep down --remove-orphans
 Assert-Ok "docker compose down"
+# an exited fallback-prep container keeps the models volume "in use"; remove it explicitly
+docker rm -f "${project}-prep-1" 2>$null | Out-Null
 $vols = @("${project}_timescale-data")
 if (-not $KeepModels) { $vols += @("${project}_models", "${project}_mlflow-data") }
 $existing = @(docker volume ls -q)

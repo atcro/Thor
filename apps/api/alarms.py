@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -79,6 +80,9 @@ class _Cursor:
     level: AlarmLevel = AlarmLevel.healthy
     last_id: int = 0
     runs: _Runs = field(default_factory=_Runs)
+    #: plant timestamps of the last ALARM_RAISE_ROWS rows walked (the run's first row is the
+    #: alarm's "since": the same instant the lead-time rule and the rewind marker use).
+    recent_ts: deque[datetime] = field(default_factory=lambda: deque(maxlen=ALARM_RAISE_ROWS))
 
 
 #: asset_id -> in-memory cursor (rebuilt from the database on first use after a restart).
@@ -284,14 +288,17 @@ def update_alarms(engine: Engine | None = None, asset_ids: list[str] | None = No
             for row_id, ts, prob, version, sandbox in rows:
                 new = step(cur.level, cur.runs, float(prob))
                 cur.last_id = max(cur.last_id, int(row_id))
+                cur.recent_ts.append(db._as_utc(ts))
                 if new != cur.level:
+                    # a raise is dated at the FIRST row of its sustained run; a clear at this row
+                    since = cur.recent_ts[0] if new != AlarmLevel.healthy else db._as_utc(ts)
                     reason = {
                         AlarmLevel.warning: f"{ALARM_RAISE_ROWS} consecutive predictions >= {EARLY_WARNING_THRESHOLD:g}",
                         AlarmLevel.critical: f"{ALARM_RAISE_ROWS} consecutive predictions >= {CLASSIFICATION_THRESHOLD:g} (latched)",
                         AlarmLevel.healthy: f"{WARNING_CLEAR_ROWS} consecutive predictions < {EARLY_WARNING_THRESHOLD:g}",
                     }[new]
                     ev = _new_event(
-                        asset_id, new, reason, db._as_utc(ts), float(prob), str(version), bool(sandbox)
+                        asset_id, new, reason, since, float(prob), str(version), bool(sandbox)
                     )
                     _insert(ev, engine)
                     inserted.append(ev)

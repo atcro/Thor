@@ -98,7 +98,7 @@ function AssetCard({ item, style, xray }: { item: FleetAsset; style: SpriteStyle
       <div className="name">{asset.name}</div>
       <div className="loc">
         {asset.site} · {asset.line}
-        {asset.criticality === "high" && <span className="dim"> · critical</span>}
+        {asset.criticality === "high" && <span className="dim" title="Asset criticality (plant metadata), not its status"> · high criticality</span>}
       </div>
       <div className="row wrap" style={{ gap: 6 }}>
         <StateBadge regime={item.regime} />

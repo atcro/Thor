@@ -265,3 +265,24 @@ Prompt B (Bolt Designer) build on this. Keep these true.
 - **This run's lead time** on the rewind depends on how long the motor sat red before the
   approval (24-39 h in the rehearsals); the validated figure (53.1 h) is the registry's.
 - **False latches:** none over a full replay pass without the sandbox (only MTR-042 alarmed).
+
+## After the judge audit (2026-10-12, late)
+
+- `streaming/replay/work_orders.py::UnrepairedFault`: in replay passes after the first, a motor
+  the data never repairs (MTR-042: `FAULTY_ASSETS` failure at 1.0 and a `FAULT_RAMP_H` entry)
+  keeps its own full-severity rows instead of the healthy rows at the start of the looped story,
+  until the plant's work order (the RepairSimulator runs after it and wins). The replay loops the
+  story tail, not the month, so the historical failures never replay. Net: nothing in the data
+  ever heals the hero; the approval can wait as long as the Q&A needs.
+- `orchestrator._telemetry` (train runs) keeps only rows with stored ground truth: replayed rows
+  carry no outcome and used to train as negatives (a second "Train new model" after the sign-off
+  failed the recall gate). Training is always "the recorded history", whatever has streamed.
+- `AlarmEvent.plant_ts` of a raise is the FIRST row of the sustained run (= the lead-time rule and
+  the rewind marker); a clear is dated at its own row.
+- `sandbox.shake` skips motors with a plant-raised alarm so Reset can never clear a real alarm.
+- Web: built files live under `/static/` (`vite build.assetsDir`), so the SPA route `/assets/:id`
+  survives a refresh behind nginx; the sandbox colour is violet (`--tw-sandbox`), amber is only
+  ever "warning"; `|SHAP| < 0.01` drivers read "little effect".
+- Known and accepted: the plant manuals (`data/manuals/*.md`) say "regime" and are quoted
+  verbatim; the 3-D overlays overlap when Overview + X-Ray + Sandbox are all on; one window of
+  predictions is skipped when an override starts or stops.

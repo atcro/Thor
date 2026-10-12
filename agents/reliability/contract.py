@@ -127,6 +127,10 @@ def _trend(v: float) -> str:
     return "up" if v >= 0 else "down"
 
 
+#: |SHAP| below this is noise, not evidence: the prose says so instead of "lowering risk".
+NEGLIGIBLE_SHAP: float = 0.01
+
+
 def _above_below(v: float) -> str:
     return "above" if v >= 0 else "below"
 
@@ -163,6 +167,8 @@ def describe_feature(f: ShapFeature) -> str:
         phrase = f"vibration RMS is {abs(v):.2f} mm/s {_above_below(v)} the state-expected value"
     else:
         phrase = f"{name.replace('_', ' ')} is {v:.3g}"
+    if abs(float(f.shap_value)) < NEGLIGIBLE_SHAP:
+        return f"{phrase} (little effect either way)"
     tag = "raising risk" if f.direction == "raises_risk" else "lowering risk"
     return f"{phrase} ({tag})"
 

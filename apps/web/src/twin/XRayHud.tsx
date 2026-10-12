@@ -40,7 +40,7 @@ function Module({ title, children, testId }: { title: string; children: ReactNod
 
 /**
  * Tiny stored-prediction sparkline (raw per-sample rows, nothing hidden) with the two threshold
- * lines. Samples scored from sandbox readings are drawn as amber dots. Only scaling happens here.
+ * lines. Samples scored from sandbox readings are drawn as violet dots. Only scaling happens here.
  */
 function Sparkline({ points, thresholds }: { points: PredictionPoint[]; thresholds: Thresholds }) {
   const W = 200;
@@ -57,9 +57,9 @@ function Sparkline({ points, thresholds }: { points: PredictionPoint[]; threshol
       <line x1={0} x2={W} y1={y(thresholds.early_warning)} y2={y(thresholds.early_warning)} stroke="var(--tw-warn)" strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
       {n > 1 && <polyline points={path} fill="none" stroke="var(--tw-accent)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
       {points.map((pt, i) =>
-        pt.sandbox ? <circle key={pt.ts} cx={x(i)} cy={y(pt.failure_probability)} r={2} fill="var(--tw-warn)" data-sandbox="1" /> : null,
+        pt.sandbox ? <circle key={pt.ts} cx={x(i)} cy={y(pt.failure_probability)} r={2} fill="var(--tw-sandbox)" data-sandbox="1" /> : null,
       )}
-      {last && <circle cx={x(n - 1)} cy={y(last.failure_probability)} r={2.5} fill={last.sandbox ? "var(--tw-warn)" : "var(--tw-primary)"} />}
+      {last && <circle cx={x(n - 1)} cy={y(last.failure_probability)} r={2.5} fill={last.sandbox ? "var(--tw-sandbox)" : "var(--tw-primary)"} />}
     </svg>
   );
 }
@@ -113,7 +113,7 @@ function Drivers({ drivers }: { drivers: ShapFeature[] }) {
             <div className="lbl">
               <span>{humanise(d.feature)}</span>
               <span className="dir">
-                {raises ? "raises risk" : "lowers risk"} · value {fmtNum(d.feature_value, 2)}
+                {Math.abs(d.shap_value) < 0.01 ? "little effect" : raises ? "raises risk" : "lowers risk"} · value {fmtNum(d.feature_value, 2)}
               </span>
             </div>
             <div className="val">{(d.shap_value >= 0 ? "+" : "") + fmtNum(d.shap_value, 3)}</div>
@@ -171,7 +171,7 @@ function HudBody({ hud, assetId }: { hud: TwinHud; assetId: string }) {
           {nSandbox > 0 && (
             <>
               {" "}
-              (<span className="xray-warn">{nSandbox} from sandbox readings</span>)
+              (<span className="xray-sandbox">{nSandbox} from sandbox readings</span>)
             </>
           )}{" "}
           · lines: early warning <span className="xray-warn xray-num">{fmtPct(hud.thresholds.early_warning, 0)}</span> · classification{" "}
@@ -224,7 +224,7 @@ function HudBody({ hud, assetId }: { hud: TwinHud; assetId: string }) {
           {a.latest?.sandbox && (
             <>
               {" "}
-              · <span className="xray-warn">sandbox readings</span>
+              · <span className="xray-sandbox">sandbox readings</span>
             </>
           )}
         </div>
@@ -267,8 +267,8 @@ function HudBody({ hud, assetId }: { hud: TwinHud; assetId: string }) {
             <dd>{c.contract_id}</dd>
             <dt>recommendation</dt>
             <dd>{OPTION_LABEL[c.recommendation]}</dd>
-            <dt>window</dt>
-            <dd>
+            <dt>planned window</dt>
+            <dd title="Computed at analysis time in plant time; the demo CMMS executes at the approval and records this window in its note">
               {c.window_start ? `${fmtShort(c.window_start)} → ${fmtShort(c.window_end)}` : "—"}
             </dd>
             <dt>contract status</dt>

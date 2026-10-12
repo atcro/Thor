@@ -215,3 +215,22 @@ def test_from_json_parses_api_shape() -> None:
     )
     assert wo.window_start == datetime(2025, 8, 27, 2, tzinfo=UTC)
     assert wo.planned_downtime_h == 3.0 and wo.rank == 0
+
+
+def test_unrepaired_fault_stays_broken_in_later_passes(fleet: pd.DataFrame) -> None:
+    """A looped recording must not heal the demo motor: in later passes its healthy rows are
+    replaced by its own full-severity rows until a work order repairs it."""
+    from streaming.replay.work_orders import UnrepairedFault
+
+    tail = _tail(fleet, 0.8)
+    pass1 = shift_pass(tail, 1)
+    broken = UnrepairedFault(fleet, [ASSET])
+    out = list(broken.apply(iter_rows(pass1)))
+    mine = [r for r in out if r.asset_id == ASSET]
+    assert mine and all(r.health == 0.0 for r in mine)
+    assert min(r.vibration_rms for r in mine) > 2.0  # every row carries the fault signature
+    # other motors and timestamps are untouched; the row count is unchanged
+    others = [r for r in out if r.asset_id != ASSET]
+    assert len(out) == len(pass1) and all(r.health == 1.0 for r in others)
+    # once the plant repaired it, the RepairSimulator's healthy rows win (it runs after)
+    assert [r.ts for r in mine] == sorted(r.ts for r in mine)
