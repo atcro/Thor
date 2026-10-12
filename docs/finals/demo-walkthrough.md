@@ -68,6 +68,75 @@ is behind a compose profile and only runs when asked), the `replay` container ho
 promotion is approved, and the `edge` and `replay` no longer wait for `prep`. Everything else
 (ports 5173 / 8000 / 8001 / 5000, bound to 127.0.0.1) is as before.
 
+## Docker rehearsal (the stage setup, end to end)
+
+Everything the judges see runs on the Docker stack from `C:\Thor-main`. A rehearsal starts
+from a clean slate and leaves the stack dirty (a model, a contract, a work order, a finding),
+so it always ends with another reset.
+
+### 1. Clean slate
+
+1. **Nothing native may be running.** Any API on 8010, edge on 8011, broker on 1884 or Vite on
+   5175 from a native check must be stopped first (`netstat -ano | findstr ":8010 :8011 :1884
+   :5175"` prints nothing); the Mosquitto Windows service stays stopped (it clashes with the
+   compose broker on 1883). Scratch scripts from earlier sessions write only to their own
+   temp directory and to `rehearsal.json`; they never touch the Docker volumes.
+2. **After a code change, rebuild**, because the images carry the code:
+   ```
+   docker compose build api web replay
+   docker compose --profile prep build prep
+   ```
+   `docker compose build` only builds images; the running containers keep the old ones until
+   the reset below recreates them (symptom of a stale container: `GET /llm/key` returns 404).
+3. **Reset:** `.\scripts\demo_reset.ps1` (about 2 minutes). It stops the stack, drops the data
+   and model volumes, starts the new images, seeds the first 80 % of the history and holds
+   the replay. It ends with `production model: none`, `released=False`, `24 motors, 24 without
+   a prediction yet`.
+4. **Check the slate** (30 seconds): http://localhost:5173 opens on Fleet with 24 grey cards;
+   the header shows **API Key Down**; `curl http://localhost:8000/llm/key` →
+   `{"key":"down","provider":"openai"|"none"}`; `curl http://localhost:8000/findings/trust` →
+   all zeros; the Fleet summary line reads `Alarm trust · Alarms acted on: 0 …`.
+
+### 2. The story, and why each beat is there
+
+The spoken headline: **"Thor catches it. Bolt explains it. You sign it. And every repair
+makes it smarter."** Bridge from last round: "Last round, Thor stopped at the decision. Now it
+finds out what the technician found, and learns from it." Scenario 1 runs with the key
+**Down** from the first click to the finding; Scenario 2 flips it.
+
+| Beat | What the judges see | Why it is in the story |
+|---|---|---|
+| 1 Fleet, all grey | "no prediction yet", `held: no production model yet` | No model, no claims: Thor never scores by a rule of thumb. |
+| 2 Train new model | split, states, three families, gate, parity; `Registered` in 1–3 min | Trains live, on the fleet's own history, with an asset-level split and a gate a judge can read. |
+| 3 Approve promotion (named) | top bar `streaming`, 24 green within seconds | A person releases the model and, with it, the plant history. Governance is a click, not a slide. |
+| 4 MTR-042 turns red | `critical · latched since …` about a minute later | One status rule in the API, latched until the plant acts. No amber to promise. |
+| 5 Run analysis | contract in ~4 s, chip **template** | Reuses the signed-off model; SHAP, manuals, costs. The template chip says no language model touched it. |
+| 6 Bolt ×3 | status, details, fixes, each < 1 s, marked **template** | Same evidence, read-only tools, no write path; still answers with the key Down. |
+| 7 Approve the contract | panel locks, approval row, **Alarm → signed decision: Xm Ys** | Thor stops here. The timer is the one number a plant manager asks for. |
+| 8 Offline → green | `in maintenance`, then green with the work order completed | The plant acts, not Thor. The registry did not change. |
+| 9 3-D Digital Twin | lines, live path, HUD, rewind | Every pixel traces to the API. |
+| 11 What did the technician find? | Confirmed: bearing damage, note, name → stored row; `Alarm trust · acted on 1 · confirmed 1` | **The loop closes.** A person's statement, insert-only, like a contract. This is the new capability. |
+| 12 Bolt: "Have we seen this before?" | this plant's finding first (work order id, name), then public cases labelled "not this plant" | Bolt now has meat: plant memory, sourced, never invented. |
+| 13 AutoML Studio label ledger | six simulator failures + `MTR-042 · queued` | The next training run learns from the finding; the gate decides if it is better. Honest: not retrained on stage. |
+| 14 API Key Up → Bolt → Down → Bolt | LLM prose in ~10 s vs template in < 1 s, **same probability and status**; "Approve the repair" refused in both | The governance claim, proven live: the LLM phrases, deterministic code decides, and it still cannot approve. |
+
+If a judge asks for the retrain: **Train new model** once more; the split notes say MTR-042
+moved from test to train and the ledger marks it `in this run`. Reject that promotion in
+ModelOps afterwards unless you mean to replace the signed-off model.
+
+### 3. Drive it automatically (optional, same clicks over HTTP)
+
+```
+.\.venv\Scripts\python.exe -m scripts.rehearse_a3 --api http://localhost:8000 --out rehearsal.json
+.\.venv\Scripts\python.exe -m scripts.rehearse_a3 --skip-retrain --skip-llm   # short, offline
+```
+
+It prints every step with its measured seconds (train, sign-off → green, → red, analysis,
+Bolt, approval → offline → green, finding, recall, ledger, retrain + gate, Up/Down numbers,
+refusal) and writes the timeline. Expect 8–12 minutes with the retrain. **Reset again
+afterwards** (`.\scripts\demo_reset.ps1`): the run leaves a model, a contract, a work order
+and a finding behind, and the real demo must start from grey.
+
 ## Before the judges arrive (pre-demo checklist, 5 minutes)
 
 1. **Reset:** `.\scripts\demo_reset.ps1` from `C:\Thor-main`. It wipes the data, restarts the
