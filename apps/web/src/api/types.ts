@@ -40,6 +40,8 @@ export interface Asset {
   asset_type: string;
   rated_kw: number;
   criticality: Criticality;
+  /** Machine this motor drives (plant layout): infeed conveyor | filler | capper/labeler | case packer | air compressor. */
+  role?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -657,4 +659,221 @@ export interface WhatIfRequest {
 
 export interface DriftCheckRequest {
   asset_id: string;
+}
+
+// ---------------------------------------------------------------------------
+// 3-D Digital Twin + X-Ray (apps/api/schemas.py "Twin" section, routes/twin.py).
+// Every value here is produced by deterministic Python; the browser only renders it.
+// ---------------------------------------------------------------------------
+
+/** Status glyph. Precedence: offline > no_data > critical > warning > healthy > no_prediction. */
+export type TwinStatus = "healthy" | "warning" | "critical" | "no_prediction" | "offline" | "no_data";
+
+/** Wall-clock freshness of a motor's telemetry at the control plane. */
+export type DataState = "live" | "stale" | "none";
+
+export type DecisionState =
+  | "none"
+  | "contract_pending"
+  | "approved"
+  | "work_order_in_progress"
+  | "work_order_completed"
+  | "rejected";
+
+export interface TwinAsset {
+  asset: Asset;
+  status: TwinStatus;
+  data_state: DataState;
+  decision_state: DecisionState;
+  /** Median of the last three predictions (same as /fleet); null = no prediction yet. */
+  failure_probability: number | null;
+  health_score: number | null;
+  prediction_ts: ISODate | null;
+  model_version: string | null;
+  n_prediction_rows: number | null;
+  /** Inferred from rpm/load with the production baseline; null without a production model. */
+  regime: string | null;
+  /** Latest observed sample; machine motion follows `latest.rpm`. */
+  latest: ObservedTelemetryRow | null;
+  last_ts: ISODate | null;
+  /** Wall clock when the control plane last received a message for this motor. */
+  last_received_at: ISODate | null;
+  /** Messages received for this motor in the last 60 s (measured). */
+  msgs_last_60s: number;
+  open_contract_id: string | null;
+  work_order: WorkOrder | null;
+}
+
+/** Simulated MES feed: context only, feeds no model, score or decision. */
+export interface MesContext {
+  line: string;
+  sku: string;
+  container: string;
+  quantity_produced: number;
+  uom: string;
+  shift: string;
+  plant_ts: ISODate;
+  source: "simulated MES feed";
+  basis: string;
+}
+
+export interface TwinLine {
+  line: string;
+  kind: "packaging" | "compressor";
+  index: number;
+  /** asset ids in machine order (infeed conveyor → filler → capper/labeler → case packer). */
+  assets: string[];
+  mes: MesContext | null;
+}
+
+export interface SiteTab {
+  name: string;
+  available: boolean;
+  note: string;
+}
+
+export interface ModelProvenance {
+  name: string;
+  version: string;
+  family: string;
+  stage: ModelStage;
+  ims_total: number;
+  registered_at: ISODate;
+  approver: string | null;
+  approved_at: ISODate | null;
+  promotion_id: string | null;
+  validation_passed: boolean | null;
+  parity_passed: boolean | null;
+  parity_max_abs_diff: number | null;
+  lead_time_median_h: number | null;
+  calibration_method: string | null;
+  onnx_path: string | null;
+}
+
+/** Measured at the control plane (apps/api/live.py). */
+export interface LiveCounters {
+  server_time: ISODate;
+  window_s: number;
+  msgs_per_s: number;
+  preds_per_s: number;
+  messages_total: number;
+  predictions_total: number;
+  edge_inference_ms_p50: number | null;
+  edge_inference_ms_p95: number | null;
+  path_latency_ms_p50: number | null;
+  path_latency_ms_p95: number | null;
+  n_latency_samples: number;
+  stale_after_s: number;
+  mqtt_connected: boolean;
+  edge_up: boolean;
+}
+
+/** GET /twin */
+export interface TwinSnapshot {
+  site: string;
+  sites: SiteTab[];
+  plant_time: ISODate | null;
+  thresholds: Thresholds;
+  lines: TwinLine[];
+  assets: TwinAsset[];
+  model: ModelProvenance | null;
+  live: LiveCounters;
+}
+
+export interface PlcTag {
+  tag: string;
+  value: number | boolean | string | null;
+  unit: string;
+  /** Telemetry field this tag is mapped from (one-to-one); null when simulated. */
+  source: string | null;
+  simulated: boolean;
+  basis: string;
+}
+
+export interface PredictionPoint {
+  ts: ISODate;
+  failure_probability: number;
+  model_version: string;
+  source: string;
+}
+
+export interface DriverSource {
+  contract_id: string;
+  run_id: string;
+  created_at: ISODate;
+  model_version: string;
+}
+
+/** GET /twin/hud/:asset_id */
+export interface TwinHud {
+  asset: TwinAsset;
+  line: TwinLine | null;
+  thresholds: Thresholds;
+  /** Newest-last per-sample predictions. */
+  prediction_trend: PredictionPoint[];
+  trend: "rising" | "falling" | "flat" | null;
+  plc_tags: PlcTag[];
+  drivers: ShapFeature[];
+  drivers_source: DriverSource | null;
+  contract: DecisionContract | null;
+  contract_status: string | null;
+  model: ModelProvenance | null;
+  mes: MesContext | null;
+}
+
+export type RewindMarkerKind =
+  | "early_warning"
+  | "predicted_failure"
+  | "contract_created"
+  | "approved"
+  | "rejected"
+  | "work_order_started"
+  | "work_order_completed";
+
+export interface RewindMarker {
+  kind: RewindMarkerKind;
+  ts: ISODate;
+  label: string;
+  detail: string;
+}
+
+export interface RewindSeries {
+  asset_id: string;
+  /** [ts, failure_probability] oldest first, downsampled. */
+  points: [ISODate, number][];
+  n_rows: number;
+  markers: RewindMarker[];
+  lead_time_h: number | null;
+  lead_time_basis: string;
+}
+
+/** GET /twin/rewind — stored predictions only. */
+export interface TwinRewind {
+  start: ISODate | null;
+  end: ISODate | null;
+  thresholds: Thresholds;
+  assets: RewindSeries[];
+  validated_lead_time_h: number | null;
+  validated_lead_time_basis: string;
+}
+
+export interface TwinEvent {
+  seq: number;
+  kind: "ingest" | "prediction";
+  asset_id: string;
+  ts: ISODate;
+  received_at: ISODate;
+  count: number;
+  failure_probability: number | null;
+  inference_ms: number | null;
+  path_latency_ms: number | null;
+}
+
+/** GET /twin/events?since=N and every /ws/twin frame. */
+export interface TwinEventBatch {
+  since: number;
+  next: number;
+  events: TwinEvent[];
+  dropped: number;
+  live: LiveCounters;
 }

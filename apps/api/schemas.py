@@ -141,6 +141,9 @@ class Asset(BaseModel):
     asset_type: str = "induction_motor"
     rated_kw: float = 75.0
     criticality: Literal["low", "medium", "high"] = "medium"
+    #: The machine this motor drives on its line (plant layout, data/simulator/layout.py):
+    #: "infeed conveyor" | "filler" | "capper/labeler" | "case packer" | "air compressor".
+    role: str = ""
 
 
 # --------------------------------------------------------------------------------------
@@ -797,3 +800,263 @@ class CopilotResponse(BaseModel):
     source: Literal["llm", "template"]
     # LLM mode only: {"input_tokens", "output_tokens", "llm_calls"} summed over the turn.
     usage: dict[str, int] | None = None
+
+
+# --------------------------------------------------------------------------------------
+# 3-D Digital Twin + X-Ray (Phase A, CLAUDE.md section 15). Read-only views over the same
+# stores as /fleet: nothing here is computed by an LLM or in the browser. Status keys off the
+# displayed (median) failure probability against `Thresholds`; the simulator's ground truth
+# never appears (tests/test_ground_truth_isolation.py covers these routes too).
+# --------------------------------------------------------------------------------------
+
+
+class TwinStatus(StrEnum):
+    """Status glyph of one motor. Precedence: offline > no_data > critical > warning >
+    healthy > no_prediction. Encoded as green circle / amber triangle / red stop-octagon."""
+
+    healthy = "healthy"  # p < early_warning
+    warning = "warning"  # early_warning <= p < classification
+    critical = "critical"  # p >= classification
+    no_prediction = "no_prediction"  # no approved-model prediction yet
+    offline = "offline"  # the plant has it offline for an approved work order
+    no_data = "no_data"  # its messages stopped (see LiveCounters.stale_after_s)
+
+
+class DataState(StrEnum):
+    """Wall-clock freshness of a motor's telemetry at the control plane."""
+
+    live = "live"  # a message arrived within stale_after_s
+    stale = "stale"  # messages arrived earlier, none within stale_after_s
+    none = "none"  # nothing received since the control plane started
+
+
+class DecisionState(StrEnum):
+    """Governance badge: where this motor stands at the Human Approval Gate."""
+
+    none = "none"
+    contract_pending = "contract_pending"
+    approved = "approved"  # approved, the plant has not started the work order yet
+    work_order_in_progress = "work_order_in_progress"
+    work_order_completed = "work_order_completed"
+    rejected = "rejected"
+
+
+class TwinAsset(BaseModel):
+    """One motor in the twin: FleetAsset facts plus live sensor values and the glyph state."""
+
+    asset: Asset
+    status: TwinStatus
+    data_state: DataState
+    decision_state: DecisionState
+    #: Median of the last DISPLAY_MEDIAN_ROWS predictions (same as /fleet); None = none yet.
+    failure_probability: float | None = None
+    health_score: float | None = None
+    prediction_ts: datetime | None = None
+    model_version: str | None = None
+    n_prediction_rows: int | None = None
+    #: Inferred from the latest rpm/load with the production baseline; None without a model.
+    regime: str | None = None
+    #: Latest observed sample (eight sensors). Machine motion follows `latest.rpm`.
+    latest: ObservedTelemetryRow | None = None
+    last_ts: datetime | None = None
+    #: Wall clock at which the control plane last received a message for this motor.
+    last_received_at: datetime | None = None
+    #: Messages received for this motor in the last 60 s of wall clock (measured).
+    msgs_last_60s: int = 0
+    open_contract_id: str | None = None
+    work_order: WorkOrder | None = None
+
+
+class MesContext(BaseModel):
+    """Line-level MES context. A deterministic *simulated MES feed* (apps/api/plant.py):
+    context for the HUD only. It feeds no model, score, recommendation or decision
+    (tests/test_twin.py asserts that)."""
+
+    line: str
+    sku: str
+    container: str
+    quantity_produced: int
+    uom: str
+    shift: str
+    plant_ts: datetime
+    source: Literal["simulated MES feed"] = "simulated MES feed"
+    basis: str
+
+
+class TwinLine(BaseModel):
+    line: str
+    kind: Literal["packaging", "compressor"]
+    index: int
+    #: asset ids in machine order (infeed conveyor -> filler -> capper/labeler -> case packer).
+    assets: list[str]
+    mes: MesContext | None = None
+
+
+class SiteTab(BaseModel):
+    name: str
+    available: bool
+    note: str = ""
+
+
+class ModelProvenance(BaseModel):
+    """The production model as the registry and the promotion approval record it."""
+
+    name: str
+    version: str
+    family: str
+    stage: ModelStage
+    ims_total: float
+    registered_at: datetime
+    approver: str | None = None
+    approved_at: datetime | None = None
+    promotion_id: str | None = None
+    validation_passed: bool | None = None
+    parity_passed: bool | None = None
+    parity_max_abs_diff: float | None = None
+    lead_time_median_h: float | None = None
+    calibration_method: str | None = None
+    onnx_path: str | None = None
+
+
+class LiveCounters(BaseModel):
+    """Measured at the control plane (apps/api/live.py): message and prediction arrival
+    rates over the last `window_s` of wall clock, edge inference time as reported by the
+    edge per prediction, and the motor -> edge -> control plane path latency (prediction
+    receipt minus telemetry receipt for the same (asset, ts), one clock)."""
+
+    server_time: datetime
+    window_s: int
+    msgs_per_s: float
+    preds_per_s: float
+    messages_total: int
+    predictions_total: int
+    edge_inference_ms_p50: float | None = None
+    edge_inference_ms_p95: float | None = None
+    path_latency_ms_p50: float | None = None
+    path_latency_ms_p95: float | None = None
+    n_latency_samples: int = 0
+    stale_after_s: float
+    mqtt_connected: bool
+    edge_up: bool
+
+
+class TwinSnapshot(BaseModel):
+    """GET /twin: everything the 3-D view needs in one call."""
+
+    site: str
+    sites: list[SiteTab]
+    plant_time: datetime | None
+    thresholds: Thresholds
+    lines: list[TwinLine]
+    assets: list[TwinAsset]
+    model: ModelProvenance | None
+    live: LiveCounters
+
+
+class PlcTag(BaseModel):
+    """One PLC tag of the X-Ray integration panel. `source` names the telemetry field it is
+    mapped from (one-to-one); `simulated` tags have no telemetry source and `basis` says how
+    they were derived."""
+
+    tag: str
+    value: float | int | bool | str | None
+    unit: str = ""
+    source: str | None = None
+    simulated: bool = False
+    basis: str = ""
+
+
+class PredictionPoint(BaseModel):
+    ts: datetime
+    failure_probability: float
+    model_version: str
+    source: str
+
+
+class DriverSource(BaseModel):
+    contract_id: str
+    run_id: str
+    created_at: datetime
+    model_version: str
+
+
+class TwinHud(BaseModel):
+    """GET /twin/hud/{asset_id}: the X-Ray HUD panel for one motor."""
+
+    asset: TwinAsset
+    line: TwinLine | None
+    thresholds: Thresholds
+    #: Newest-last stored predictions (per-sample rows, not the median).
+    prediction_trend: list[PredictionPoint]
+    trend: Literal["rising", "falling", "flat"] | None
+    plc_tags: list[PlcTag]
+    #: Top SHAP drivers from the newest Decision Contract (empty when no analysis exists).
+    drivers: list[ShapFeature]
+    drivers_source: DriverSource | None = None
+    contract: DecisionContract | None = None
+    contract_status: str | None = None
+    model: ModelProvenance | None
+    mes: MesContext | None = None
+
+
+class RewindMarker(BaseModel):
+    kind: Literal[
+        "early_warning",
+        "predicted_failure",
+        "contract_created",
+        "approved",
+        "rejected",
+        "work_order_started",
+        "work_order_completed",
+    ]
+    ts: datetime
+    label: str
+    detail: str = ""
+
+
+class RewindSeries(BaseModel):
+    asset_id: str
+    #: [ts, failure_probability] pairs, oldest first, downsampled to <= max_points.
+    points: list[tuple[datetime, float]]
+    n_rows: int
+    markers: list[RewindMarker]
+    #: Plant hours from the first sustained early warning to the plant acting (work order
+    #: started, else the approval); None when either end is missing.
+    lead_time_h: float | None = None
+    lead_time_basis: str = ""
+
+
+class TwinRewind(BaseModel):
+    """GET /twin/rewind: stored predictions only, for the time scrubber."""
+
+    start: datetime | None
+    end: datetime | None
+    thresholds: Thresholds
+    assets: list[RewindSeries]
+    validated_lead_time_h: float | None = None
+    validated_lead_time_basis: str = ""
+
+
+class TwinEvent(BaseModel):
+    """One ingest or prediction arrival at the control plane (the pulse source). Events for
+    the same motor inside one batch interval may be aggregated: `count` > 1."""
+
+    seq: int
+    kind: Literal["ingest", "prediction"]
+    asset_id: str
+    ts: datetime
+    received_at: datetime
+    count: int = 1
+    failure_probability: float | None = None
+    inference_ms: float | None = None
+    path_latency_ms: float | None = None
+
+
+class TwinEventBatch(BaseModel):
+    """GET /twin/events?since=N and every /ws/twin frame."""
+
+    since: int
+    next: int
+    events: list[TwinEvent]
+    dropped: int = 0
+    live: LiveCounters

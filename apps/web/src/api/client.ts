@@ -23,6 +23,10 @@ import type {
   RunSummary,
   SystemHealth,
   TelemetryRow,
+  TwinEventBatch,
+  TwinHud,
+  TwinRewind,
+  TwinSnapshot,
   WhatIfRequest,
   WhatIfResult,
 } from "./types";
@@ -128,3 +132,15 @@ export const checkDrift = (req: DriftCheckRequest) => post<DriftReport>("/models
 // --- routes/copilot.py ------------------------------------------------------
 
 export const copilotChat = (req: CopilotRequest) => post<CopilotResponse>("/copilot/chat", req);
+
+// --- routes/twin.py (3-D Digital Twin + X-Ray) --------------------------------
+
+export const getTwin = () => apiFetch<TwinSnapshot>("/twin");
+export const getTwinHud = (assetId: string) =>
+  apiFetch<TwinHud>(`/twin/hud/${encodeURIComponent(assetId)}`);
+export const getTwinRewind = (maxPoints = 400) =>
+  apiFetch<TwinRewind>(`/twin/rewind${qs({ max_points: maxPoints })}`);
+/** Short-poll fallback for the live event stream (same frame shape as /ws/twin). */
+export const getTwinEvents = (since: number) =>
+  apiFetch<TwinEventBatch>(`/twin/events${qs({ since })}`);
+export const twinWsUrl = () => `${WS_BASE_URL}/ws/twin`;

@@ -34,8 +34,10 @@ from sqlalchemy import (
     create_engine,
     func,
     insert,
+    inspect,
     select,
     text,
+    update,
 )
 from sqlalchemy.engine import Engine
 
@@ -65,6 +67,7 @@ assets = Table(
     Column("asset_type", String(64), nullable=False, default="induction_motor"),
     Column("rated_kw", Float, nullable=False, default=75.0),
     Column("criticality", String(16), nullable=False, default="medium"),
+    Column("role", String(64), nullable=False, default="", server_default=""),
 )
 
 telemetry = Table(
@@ -252,6 +255,7 @@ def init_db(engine: Engine | None = None) -> Engine:
     engine = engine or get_engine()
     metadata.create_all(engine)
     _ensure_predictions_key(engine)
+    _ensure_assets_role(engine)
     if is_postgres(engine):
         with engine.begin() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS timescaledb"))
@@ -291,6 +295,24 @@ def _ensure_predictions_key(engine: Engine) -> None:
     log.info("deduplicated predictions: %d -> %d rows; ux_predictions_key created", before, after)
 
 
+def _ensure_assets_role(engine: Engine) -> None:
+    """Add `assets.role` to databases created before the plant layout existed (Phase A).
+
+    create_all never alters an existing table; both SQLite and Postgres accept this ADD
+    COLUMN. Idempotent: a column that already exists makes the statement fail harmlessly.
+    """
+    with engine.connect() as conn:
+        cols = {c["name"] for c in inspect(conn).get_columns("assets")}
+    if "role" in cols:
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE assets ADD COLUMN role VARCHAR(64) NOT NULL DEFAULT ''"))
+        log.info("added assets.role column")
+    except Exception as exc:  # noqa: BLE001 - a concurrent worker may have added it first
+        log.warning("could not add assets.role (%s); continuing", exc)
+
+
 def now_utc() -> datetime:
     return datetime.now(UTC)
 
@@ -306,16 +328,22 @@ def dump_model(model: Any) -> dict[str, Any]:
 
 
 def upsert_assets(rows: Iterable[Asset], engine: Engine | None = None) -> int:
+    """Insert new assets and update the metadata (name, site, line, role, ...) of existing
+    ones, so a catalogue change (the plant layout) reaches a database seeded earlier.
+    Output: number of rows inserted (updates are not counted)."""
     engine = engine or get_engine()
     n = 0
     with engine.begin() as conn:
         for a in rows:
-            existing = conn.execute(
-                select(assets.c.asset_id).where(assets.c.asset_id == a.asset_id)
-            ).first()
+            existing = conn.execute(select(assets).where(assets.c.asset_id == a.asset_id)).first()
+            values = a.model_dump()
             if existing is None:
-                conn.execute(insert(assets).values(**a.model_dump()))
+                conn.execute(insert(assets).values(**values))
                 n += 1
+            elif any(existing._mapping.get(k) != v for k, v in values.items()):
+                conn.execute(
+                    update(assets).where(assets.c.asset_id == a.asset_id).values(**values)
+                )
     return n
 
 
