@@ -154,6 +154,26 @@ def make_synthetic_fleet(
 _FLEET_CACHE: dict[str, pd.DataFrame] = {}
 
 
+@pytest.fixture(autouse=True)
+def _reset_key_switch():
+    """Every test starts with the API Key switch uninitialised (= Down on first use), so an
+    Up from one test never leaks into the next. Tests that need an LLM path either patch
+    `orchestrator._api_key` or set the env and call `orchestrator.key_up()`."""
+    try:
+        from apps.api import orchestrator
+
+        orchestrator._KEY_UP = None
+    except Exception:  # pragma: no cover - partial checkout
+        pass
+    yield
+    try:
+        from apps.api import orchestrator
+
+        orchestrator._KEY_UP = None
+    except Exception:  # pragma: no cover
+        pass
+
+
 @pytest.fixture
 def synthetic_fleet() -> pd.DataFrame:
     """Default fleet (8 assets, 6 days, 10-min step). Returns a fresh copy per test."""

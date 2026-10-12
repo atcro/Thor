@@ -4,8 +4,8 @@ Runs on SQLite (default, for local dev and tests) and PostgreSQL + TimescaleDB (
 On Postgres, `telemetry` is converted to a hypertable at init. All JSON columns hold serialized
 Pydantic models from `apps/api/schemas.py`.
 
-`decision_contracts`, `approvals` and `work_order_events` are insert-only. There is deliberately
-no update helper for them -- see CLAUDE.md section 7.
+`decision_contracts`, `approvals`, `work_order_events` and `repair_findings` are insert-only.
+There is deliberately no update helper for them -- see CLAUDE.md section 7.
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ from apps.api.schemas import (
     Approval,
     Asset,
     DecisionContract,
+    RepairFinding,
     TelemetryRow,
     WorkOrder,
     WorkOrderEvent,
@@ -177,6 +178,31 @@ work_order_events = Table(
     Column("recorded_at", DateTime(timezone=True), nullable=False),
     Column("source", String(32), nullable=False, default="cmms-sim"),
     Column("note", Text, nullable=False, default=""),
+)
+
+# "What did the technician find?" (apps/api/findings.py). Insert-only, like contracts and
+# approvals: a correction is a new row whose `supersedes` names the one it replaces; both
+# stay visible. Entered by a person on a completed work order, never derived from simulator
+# ground truth.
+repair_findings = Table(
+    "repair_findings",
+    metadata,
+    Column("finding_id", String(64), primary_key=True),
+    Column(
+        "contract_id",
+        String(64),
+        ForeignKey("decision_contracts.contract_id"),
+        nullable=False,
+        index=True,
+    ),
+    Column("asset_id", String(32), nullable=False, index=True),
+    Column("finding", String(32), nullable=False),
+    Column("note", Text, nullable=False, default=""),
+    Column("recorded_by", String(128), nullable=False),
+    Column("recorded_at", DateTime(timezone=True), nullable=False),
+    Column("plant_ts", DateTime(timezone=True), nullable=False),
+    Column("sandbox", Boolean, nullable=False, default=False),
+    Column("supersedes", String(64)),
 )
 
 # Alarm transitions (apps/api/alarms.py). Insert-only: the current level of a motor is its
@@ -798,6 +824,7 @@ def list_work_orders(asset_id: str | None = None, engine: Engine | None = None) 
     events_by_contract: dict[str, list[WorkOrderEvent]] = {}
     for ev in list_work_order_events(engine=engine):
         events_by_contract.setdefault(ev.contract_id, []).append(ev)
+    findings = effective_findings(engine=engine)
     out: list[WorkOrder] = []
     for contract_id, approver, decided_at, payload in rows:
         dc = DecisionContract.model_validate(payload)
@@ -828,6 +855,7 @@ def list_work_orders(asset_id: str | None = None, engine: Engine | None = None) 
                 status=status,  # type: ignore[arg-type]
                 started_ts=started,
                 completed_ts=completed,
+                finding=findings.get(contract_id),
             )
         )
     return out
@@ -838,6 +866,54 @@ def work_order_by_asset(engine: Engine | None = None) -> dict[str, WorkOrder]:
     out: dict[str, WorkOrder] = {}
     for wo in list_work_orders(engine=engine):
         out.setdefault(wo.asset_id, wo)
+    return out
+
+
+# --------------------------------------------------------------------------------------
+# Repair findings ("What did the technician find?"): insert-only
+# --------------------------------------------------------------------------------------
+
+
+def insert_repair_finding(f: RepairFinding, engine: Engine | None = None) -> None:
+    """Insert one finding row. There is no update or delete; a correction is a new row."""
+    engine = engine or get_engine()
+    with engine.begin() as conn:
+        conn.execute(insert(repair_findings).values(**f.model_dump()))
+
+
+def list_repair_findings(
+    asset_id: str | None = None,
+    contract_id: str | None = None,
+    engine: Engine | None = None,
+) -> list[RepairFinding]:
+    """Every finding row, oldest first (superseded rows included), optionally filtered."""
+    engine = engine or get_engine()
+    q = select(repair_findings).order_by(repair_findings.c.recorded_at, repair_findings.c.finding_id)
+    if asset_id:
+        q = q.where(repair_findings.c.asset_id == asset_id)
+    if contract_id:
+        q = q.where(repair_findings.c.contract_id == contract_id)
+    with engine.connect() as conn:
+        rows = conn.execute(q).mappings().all()
+    out: list[RepairFinding] = []
+    for r in rows:
+        d = dict(r)
+        d["recorded_at"] = _as_utc(d["recorded_at"])
+        d["plant_ts"] = _as_utc(d["plant_ts"])
+        out.append(RepairFinding(**d))
+    return out
+
+
+def effective_findings(
+    engine: Engine | None = None, include_sandbox: bool = False
+) -> dict[str, RepairFinding]:
+    """contract_id -> the finding that currently stands: the newest row per contract, since
+    every later row supersedes the earlier ones. Sandbox rows are left out unless asked for."""
+    out: dict[str, RepairFinding] = {}
+    for f in list_repair_findings(engine=engine):
+        if f.sandbox and not include_sandbox:
+            continue
+        out[f.contract_id] = f  # oldest first, so the newest wins
     return out
 
 

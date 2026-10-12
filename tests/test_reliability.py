@@ -377,9 +377,11 @@ def test_field_history_index_and_retrieval(tmp_path: Path) -> None:
     assert orchestrator.copilot_search_field_history("", chroma_path=chroma) == {
         "error": "empty query"
     }
-    assert orchestrator._result_summary(res).startswith("3 field-history cases; median")
+    assert orchestrator._result_summary(res).startswith("3 public field-history cases; median")
     text = orchestrator._template_history_text(res)
-    assert text.startswith("Field history for") and "precedent, not from this plant" in text
+    # this plant's findings come first (none here), then the public cases, each sourced
+    assert text.startswith("This plant: no confirmed finding yet")
+    assert "Field history for" in text and "precedent, not from this plant" in text
     assert "[Circulation Pump, Hot Water, 2019]" in text and "Median across these cases" in text
 
     stats = orchestrator.copilot_field_history_stats("motor bearing", n=10, chroma_path=chroma)

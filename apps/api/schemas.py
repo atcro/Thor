@@ -582,6 +582,141 @@ class WorkOrder(BaseModel):
     status: WorkOrderStatus
     started_ts: datetime | None = None
     completed_ts: datetime | None = None
+    #: What the technician found (the effective, non-superseded repair finding), or None.
+    finding: RepairFinding | None = None
+
+
+# --------------------------------------------------------------------------------------
+# Repair findings: "What did the technician find?" (Phase A.3, CLAUDE.md section 9).
+# Entered by a person on a completed work order, never derived from simulator ground truth.
+# Insert-only; a correction is a new row whose `supersedes` names the row it replaces.
+# --------------------------------------------------------------------------------------
+
+FindingKind = Literal["confirmed_bearing_damage", "no_fault_found", "other"]
+
+FINDING_LABEL: dict[str, str] = {
+    "confirmed_bearing_damage": "Confirmed: bearing damage",
+    "no_fault_found": "No fault found",
+    "other": "Other",
+}
+
+
+class RepairFinding(BaseModel):
+    """One insert-only repair finding on a completed work order.
+
+    `plant_ts` is the plant time the work order completed (the replayed telemetry clock);
+    `recorded_at` is wall clock. `sandbox` rows never count for alarm trust or training.
+    `supersedes` is the finding this row corrects (both rows stay visible).
+    """
+
+    finding_id: str
+    contract_id: str
+    asset_id: str
+    finding: FindingKind
+    note: str = ""
+    recorded_by: str
+    recorded_at: datetime
+    plant_ts: datetime
+    sandbox: bool = False
+    supersedes: str | None = None
+
+
+class RepairFindingRequest(BaseModel):
+    """POST /findings body. `recorded_by` is required: a finding is a person's statement."""
+
+    contract_id: str
+    finding: FindingKind
+    note: str = ""
+    recorded_by: str = Field(min_length=1)
+    #: Optional: the finding this one corrects. Filled in by the API when omitted and a
+    #: finding already exists for the contract.
+    supersedes: str | None = None
+    sandbox: bool = False
+
+    @model_validator(mode="after")
+    def _name_not_blank(self) -> RepairFindingRequest:
+        if not self.recorded_by.strip():
+            raise ValueError("recorded_by must name the person recording the finding")
+        self.recorded_by = self.recorded_by.strip()
+        return self
+
+
+class AlarmTrust(BaseModel):
+    """Deterministic counts over approved maintenance contracts and their findings.
+
+    `acted_on` = approved maintenance contracts (work orders); `confirmed` / `no_fault_found`
+    / `other` count their effective findings; `awaiting_finding` = acted on without a
+    finding yet. Sandbox findings are excluded. No percentage is shown below
+    `MIN_FOR_RATE` acted-on alarms.
+    """
+
+    acted_on: int
+    confirmed: int
+    no_fault_found: int
+    other: int
+    awaiting_finding: int
+    #: Alarms whose work order is completed but has no finding yet (a subset of awaiting).
+    completed_without_finding: int = 0
+    min_for_rate: int = 5
+
+
+class FieldFailureEvent(BaseModel):
+    """A confirmed finding turned into a training event (apps/api/findings.py).
+
+    `event_ts` is the intervention time: when the motor went offline for the repair (the work
+    order's `in_progress` plant time, else its completion). `labelled_from` is the motor's
+    previous completed repair (None = the start of its history). Rows strictly inside that
+    window get `failure_within_h = hours until event_ts`; rows after it are not labelled by
+    this finding.
+    """
+
+    asset_id: str
+    contract_id: str
+    finding_id: str
+    recorded_by: str
+    event_ts: datetime
+    labelled_from: datetime | None = None
+    note: str = ""
+
+
+class LabelSource(BaseModel):
+    """Where one completed failure a training run learns from comes from.
+
+    `simulator_history`: the simulator's completed failure in the seeded history (stands in
+    for imported CMMS records). `work_order_finding`: a person's "Confirmed: bearing damage"
+    on a completed work order; `event_ts` is the intervention time (when the motor went
+    offline), `labelled_from` the start of the labelled window (the previous repair or the
+    start of history) and `n_rows` the telemetry rows the finding labels.
+    """
+
+    asset_id: str
+    source: Literal["simulator_history", "work_order_finding"]
+    group: str
+    contract_id: str | None = None
+    finding_id: str | None = None
+    recorded_by: str | None = None
+    event_ts: datetime | None = None
+    labelled_from: datetime | None = None
+    n_rows: int | None = None
+
+
+class LabelLedgerEntry(BaseModel):
+    """A confirmed finding queued for the next training run, as AutoML Studio lists it."""
+
+    finding_id: str
+    asset_id: str
+    contract_id: str
+    recorded_by: str
+    recorded_at: datetime
+    event_ts: datetime | None
+    note: str = ""
+
+
+class LabelLedger(BaseModel):
+    """GET /findings/ledger: confirmed findings that the NEXT `mode=train` run will label."""
+
+    queued: list[LabelLedgerEntry]
+    rule: str
 
 
 # --------------------------------------------------------------------------------------
@@ -706,6 +841,9 @@ class GraphState(BaseModel):
     data_quality: DataQualityContract | None = None
     #: Fixed before profiling; every later stage fits only on `split.train`.
     split: AssetSplit | None = None
+    #: Train runs: every completed failure this run learns from and where its label came
+    #: from (simulator history, or a person's confirmed finding on a work order).
+    label_sources: list[LabelSource] = Field(default_factory=list)
     candidates: CandidateSet | None = None
     validation: ValidationReport | None = None
     evidence: EvidenceBundle | None = None
@@ -816,6 +954,13 @@ class ReplayState(BaseModel):
     #: Rows seeded at start-up (the recorded history the replay continues from).
     seeded_until: datetime | None = None
     paused_at: datetime | None = None
+
+
+class LlmKeyState(BaseModel):
+    """GET /llm/key: whether the provider key is held in memory. Never carries the key."""
+
+    key: Literal["up", "down"]
+    provider: Literal["anthropic", "openai", "none"]
 
 
 COPILOT_MAX_MESSAGE_CHARS = 2000

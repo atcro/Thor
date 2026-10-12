@@ -22,7 +22,9 @@ from apps.api import db, seed
 from apps.api.routes import (
     approvals,
     copilot,
+    findings,
     fleet,
+    llm,
     models,
     pipeline,
     replay,
@@ -148,3 +150,5 @@ app.include_router(copilot.router)
 app.include_router(work_orders.router)
 app.include_router(twin.router)
 app.include_router(replay.router)
+app.include_router(llm.router)
+app.include_router(findings.router)

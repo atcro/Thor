@@ -39,10 +39,13 @@ def test_env_example_has_blank_key() -> None:
 
 
 def _set_key(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    from apps.api import orchestrator
+
     monkeypatch.setenv("ANTHROPIC_API_KEY", value)
     monkeypatch.setenv("OPENAI_API_KEY", "")  # a real key in .env must never reach a test
     monkeypatch.setenv("LLM_PROVIDER", "auto")
     get_settings.cache_clear()
+    orchestrator.key_up()  # the switch starts Down; Up re-reads the (fake) key from the env
 
 
 def test_llm_status_template_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -74,6 +77,9 @@ def _set_openai(monkeypatch: pytest.MonkeyPatch, key: str = "sk-proj-not-a-real-
     monkeypatch.setenv("OPENAI_API_KEY", key)
     monkeypatch.setenv("OPENAI_MODEL", "gpt-5")
     get_settings.cache_clear()
+    from apps.api import orchestrator
+
+    orchestrator.key_up()
 
 
 def test_llm_status_openai_provider(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -94,10 +100,12 @@ def test_llm_status_openai_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     # explicit provider pin wins over auto-detection
     monkeypatch.setenv("LLM_PROVIDER", "anthropic")
     get_settings.cache_clear()
+    orchestrator.key_up()
     assert orchestrator.llm_status()["provider"] == "none"
     assert orchestrator._llm_enabled() is False
     monkeypatch.delenv("LLM_PROVIDER")
     get_settings.cache_clear()
+    orchestrator.key_up()
 
 
 class _FakeOpenAI:
@@ -168,10 +176,12 @@ def test_openai_kwargs_skip_reasoning_effort_for_non_reasoning_models(
     _set_openai(monkeypatch)
     monkeypatch.setenv("OPENAI_MODEL", "gpt-4.1-mini")
     get_settings.cache_clear()
+    orchestrator.key_up()
     kw = orchestrator._openai_kwargs(1024)
     assert kw == {"max_completion_tokens": 4096}
     monkeypatch.setenv("OPENAI_MODEL", "gpt-5-mini")
     get_settings.cache_clear()
+    orchestrator.key_up()
     assert orchestrator._openai_kwargs(2000) == {
         "max_completion_tokens": 8000,
         "reasoning_effort": "low",

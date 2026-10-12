@@ -345,6 +345,7 @@ def system_health() -> dict[str, Any]:
             "mode": status["mode"],
             "provider": status["provider"],
             "model": status["model"],
+            "key": status["key"],
             "warning": status["warning"],
         },
         "n_telemetry_rows": n_rows,

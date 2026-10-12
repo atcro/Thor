@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 from collections.abc import Callable
@@ -58,6 +59,7 @@ from apps.api.schemas import (
     EvidenceBundle,
     Explanation,
     FeatureSpec,
+    FieldFailureEvent,
     GateCheck,
     GraphState,
     LeadTimeReport,
@@ -275,9 +277,10 @@ did not return. Whenever you discuss a contract, name its contract_id (dc_...) s
 auditable. Say plainly what is unknown or what returned nothing instead of filling the gap.
 
 GOVERNANCE
-You cannot approve, reject, schedule, promote or train anything. When a decision contract or \
-promotion is pending and the user asks you to act, tell them to approve or reject it in the Thor \
-UI. Do not mention this on turns where the user did not ask you to act.
+You cannot approve, reject, schedule, promote or train anything. When the user asks you to act \
+-- whether or not a decision contract or promotion is pending -- say that you cannot and that \
+decisions are recorded in the Thor UI (Asset 360 for a contract, ModelOps for a promotion). Do \
+not mention this on turns where the user did not ask you to act.
 
 VOICE
 A calm senior reliability engineer writing a shift-handover note, not an assistant. Lead with \
@@ -320,13 +323,81 @@ CHOOSE_NEXT_NODE_TOOL: dict[str, Any] = {
 # --------------------------------------------------------------------------------------
 
 
+# API Key Up / Down: one switch for every LLM path (route, draft, Bolt, ping). None = not yet
+# initialised; the first check applies LLM_KEY_ON_START (default "down": a person turns the AI
+# on). Down blanks the key fields on the cached Settings object, so nothing in Thor's runtime
+# holds the key; Up re-reads it from its source (process environment / .env) by rebuilding
+# Settings. Clients are built per call and never cached, so there is no client to drop. The
+# process environment and the .env file are never modified.
+_KEY_UP: bool | None = None
+_KEY_LOCK = threading.Lock()
+
+
+def _blank_key_fields() -> None:
+    """Blank both key fields on the cached Settings object (the only in-memory copy)."""
+    s = get_settings()
+    s.anthropic_api_key = ""
+    s.openai_api_key = ""
+
+
+def key_down() -> dict[str, str]:
+    """API Key Down: drop the provider keys from memory; every LLM path falls back to templates.
+
+    Output: key_state() after the change. Never touches os.environ or .env.
+    """
+    global _KEY_UP
+    with _KEY_LOCK:
+        _KEY_UP = False
+        _blank_key_fields()
+    log.info("llm key down")
+    return key_state()
+
+
+def key_up() -> dict[str, str]:
+    """API Key Up: re-read the provider keys from their source into memory.
+
+    Rebuilds the cached Settings (process environment, then .env), the same source Settings
+    uses at startup, so Up after Down restores the key natively and in Docker. Output:
+    key_state() after the change; provider "none" when no key is configured at the source.
+    """
+    global _KEY_UP
+    with _KEY_LOCK:
+        get_settings.cache_clear()
+        get_settings()
+        _KEY_UP = True
+    log.info("llm key up")
+    return key_state()
+
+
+def _key_is_up() -> bool:
+    """True while the switch is Up. Initialises from LLM_KEY_ON_START on first use."""
+    if _KEY_UP is None:
+        if os.environ.get("LLM_KEY_ON_START", "down").strip().lower() == "up":
+            key_up()
+        else:
+            key_down()
+    return bool(_KEY_UP)
+
+
+def key_state() -> dict[str, str]:
+    """{"key": "up" | "down", "provider": "anthropic" | "openai" | "none"}. Never the key."""
+    return {"key": "up" if _key_is_up() else "down", "provider": _provider()}
+
+
 def _openai_key() -> str:
-    """Return the configured OpenAI API key ('' when absent). Read nowhere else."""
+    """Return the configured OpenAI API key ('' when absent or Down). Read nowhere else."""
+    if not _key_is_up():
+        return ""
     return (get_settings().openai_api_key or "").strip()
 
 
 def _provider() -> Literal["anthropic", "openai", "none"]:
-    """Resolve the active LLM provider from settings.llm_provider and which keys are set."""
+    """Resolve the active LLM provider from settings.llm_provider and which keys are set.
+
+    "none" whenever the key switch is Down.
+    """
+    if not _key_is_up():
+        return "none"
     s = get_settings()
     anthropic_key = (s.anthropic_api_key or "").strip()
     openai_key = _openai_key()
@@ -479,7 +550,8 @@ def llm_status() -> dict[str, Any]:
     """Report whether the LLM paths are active, without exposing the key.
 
     Returns {"mode": "llm" | "template", "provider": "anthropic" | "openai" | "none",
-    "model": <configured model id>, "key_configured": bool, "warning": str | None}. `warning`
+    "model": <configured model id>, "key_configured": bool, "key": "up" | "down" (the API Key
+    switch), "warning": str | None}. `warning`
     flags a key with an unexpected prefix (paste error) or a provider whose client is not
     implemented yet. Safe to log and to return from /system/health.
     """
@@ -505,6 +577,7 @@ def llm_status() -> dict[str, Any]:
         "provider": provider,
         "model": model,
         "key_configured": bool(key),
+        "key": "up" if _key_is_up() else "down",
         "warning": warning,
     }
 
@@ -562,6 +635,37 @@ def tool_make_split(df: pd.DataFrame, seed: int, forced_test: list[str]) -> Asse
     from agents.ml_architect.split import make_asset_split
 
     return make_asset_split(df, seed=seed, forced_test=forced_test)
+
+
+def tool_field_failure_events(engine: Engine | None) -> list[FieldFailureEvent]:
+    """Confirmed repair findings as training events (apps/api/findings.py). Empty = unchanged
+    training. Never reads simulator ground truth."""
+    from apps.api.findings import field_failure_events
+
+    return field_failure_events(engine)
+
+
+def tool_apply_field_labels(
+    history: pd.DataFrame, events: list[FieldFailureEvent], engine: Engine | None
+) -> tuple[pd.DataFrame, list[FieldFailureEvent]]:
+    """Merge the findings' labels into the training frame (agents/ml_architect/labels.py).
+    With no events the history frame is returned as the same object."""
+    if not events:
+        return history, []
+    from agents.ml_architect.labels import apply_field_labels
+    from apps.api.findings import training_rows
+
+    rows = {ev.asset_id: training_rows(ev, engine) for ev in events}
+    return apply_field_labels(history, events, rows)
+
+
+def tool_adopt_into_train(split: AssetSplit, events: list[FieldFailureEvent]) -> AssetSplit:
+    """Move field-confirmed motors into the train group (same object when nothing moves)."""
+    if not events:
+        return split
+    from agents.ml_architect.labels import adopt_into_train
+
+    return adopt_into_train(split, events)
 
 
 def tool_profile_dataset(
@@ -1116,18 +1220,28 @@ ANALYZE_RECENT_H = 72.0
 
 
 def _telemetry(h: RunHandle, engine: Engine | None) -> pd.DataFrame:
-    """The fleet's stored telemetry for a TRAIN run: the recorded history only.
+    """The fleet's stored telemetry for a TRAIN run: the recorded history, plus what the
+    technician confirmed.
 
-    Rows that carry no outcome are excluded -- the live replay
-    publishes observable sensors only, so a replayed degradation has no label and would train
-    as a negative. Training therefore uses the rows whose simulator ground truth is stored
-    (the seeded history with its completed failures), whatever the replay has streamed since.
+    Rows that carry no outcome are excluded -- the live replay publishes observable sensors
+    only, so a replayed degradation has no label and would train as a negative. Training
+    therefore uses the rows whose simulator ground truth is stored (the seeded history with
+    its completed failures), whatever the replay has streamed since -- with one addition: a
+    person's "Confirmed: bearing damage" finding on a completed work order brings in that
+    motor's rows up to the intervention, labelled with the hours until it
+    (`tool_apply_field_labels`). With no findings the frame is exactly the recorded history.
+    The history alone is kept in `h.cache["df_history"]` (the split is computed on it) and the
+    applied events in `h.cache["field_events"]`.
     """
     df = h.cache.get("df")
     if df is None:
-        df = db.read_telemetry(engine=engine)
-        if "health" in df.columns and df["health"].notna().any():
-            df = df[df["health"].notna()].reset_index(drop=True)
+        hist = db.read_telemetry(engine=engine)
+        if "health" in hist.columns and hist["health"].notna().any():
+            hist = hist[hist["health"].notna()].reset_index(drop=True)
+        events = tool_field_failure_events(engine)
+        df, applied = tool_apply_field_labels(hist, events, engine)
+        h.cache["df_history"] = hist
+        h.cache["field_events"] = applied
         h.cache["df"] = df
     return df
 
@@ -1227,15 +1341,33 @@ def _profile(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
     if df.empty:
         raise RuntimeError("no telemetry rows in the database")
     # The asset-level split is fixed FIRST, so regimes, baselines and scales below are fitted
-    # on the training motors only; the asset under analysis is held out of training.
-    split = tool_make_split(df, 0, [gs.asset_id])
+    # on the training motors only; the asset under analysis is held out of training. It is
+    # computed on the recorded history alone (same seed, same simulator-history positives);
+    # a motor with a field-confirmed failure is then moved into TRAIN with a note, so the test
+    # motors behind the validated metrics stay the same otherwise.
+    history = h.cache.get("df_history", df)
+    events: list[FieldFailureEvent] = list(h.cache.get("field_events") or [])
+    split = tool_make_split(history, 0, [gs.asset_id])
+    split = tool_adopt_into_train(split, events)
     gs.split = split
+    from agents.ml_architect.labels import label_sources_for
+
+    n_rows = {
+        ev.asset_id: int((df["asset_id"].astype(str) == ev.asset_id).sum()) for ev in events
+    }
+    gs.label_sources = label_sources_for(split, events, n_rows)
     append_event(
         gs,
         gs.stage,
         f"asset split (seed {split.seed}): train {len(split.train)}, validation "
         f"{len(split.validation)}, calibration {len(split.calibration)}, test {len(split.test)}; "
-        f"completed failures per group {split.positives}",
+        f"completed failures per group {split.positives}"
+        + (
+            f"; {len(events)} field-confirmed failure(s) join train: "
+            + ", ".join(f"{ev.asset_id} (work order {ev.contract_id})" for ev in events)
+            if events
+            else ""
+        ),
         tool="make_asset_split",
         payload={
             "train": split.train,
@@ -1244,6 +1376,7 @@ def _profile(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
             "test": split.test,
             "forced_test": split.forced_test,
             "notes": split.notes,
+            "label_sources": [s.model_dump(mode="json") for s in gs.label_sources],
         },
     )
     dq = tool_profile_dataset(df, gs.asset_id, fit_assets=split.train)
@@ -2166,16 +2299,33 @@ def _median(values: list[float]) -> float | None:
     return float(vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2)
 
 
-def copilot_search_field_history(
-    query: str, k: int = 5, engine: Engine | None = None, chroma_path: Path | None = None
-) -> dict[str, Any]:
-    """Tool: real unplanned work orders similar to a symptom, from the FMUCD field-history slice.
+PUBLIC_CASES_SOURCE = (
+    "public work orders, not this plant: FMUCD (12 North American universities, 2002-2021, "
+    "CC BY-NC)"
+)
+THIS_PLANT_SOURCE = "this plant's repair findings, recorded by a person on completed work orders"
 
-    Wraps `agents.reliability.rag.retrieve_field_history` (Chroma similarity, no LLM).
-    Returns {"query", "source", "cases": [{case_id, component, description, university,
-    start_date, labor_hours, total_cost, score}], "n_cases", "median_labor_hours",
-    "median_total_cost"}. The medians are computed here so Bolt never has to. Empty cases
-    when the collection is missing -- never raises.
+
+def copilot_search_field_history(
+    query: str,
+    k: int = 5,
+    engine: Engine | None = None,
+    chroma_path: Path | None = None,
+    asset_id: str | None = None,
+) -> dict[str, Any]:
+    """Tool: "have we seen this before?" from two separate, clearly labelled sources.
+
+    `this_plant`: this plant's own repair findings (`apps.api.findings.plant_precedent`),
+    joined with their contract -- asset, dates, finding, note, who recorded it, the contract's
+    risk-raising drivers and recommendation. Matched deterministically by failure mode and
+    asset family (same asset first), never by an embedding. `cases`: real unplanned work
+    orders similar to the symptom from the public FMUCD slice
+    (`agents.reliability.rag.retrieve_field_history`, Chroma similarity, no LLM), labelled
+    "public work orders, not this plant". Returns {"query", "asset_id", "this_plant": [...],
+    "n_this_plant", "this_plant_source", "source", "cases": [{case_id, component,
+    description, university, start_date, labor_hours, total_cost, score}], "n_cases",
+    "median_labor_hours", "median_total_cost"}. The medians are computed here so Bolt never
+    has to. Empty lists when nothing matches or a collection is missing -- never raises.
     """
     query = (query or "").strip()
     if not query:
@@ -2189,9 +2339,20 @@ def copilot_search_field_history(
     except Exception as e:  # noqa: BLE001 - precedent enriches an answer, never blocks it
         log.warning("copilot search_field_history failed: %s", e)
         cases = []
+    this_plant: list[dict[str, Any]] = []
+    try:
+        from apps.api.findings import plant_precedent
+
+        this_plant = plant_precedent(query, engine, asset_id=asset_id, k=k)
+    except Exception as e:  # noqa: BLE001 - same rule: never blocks an answer
+        log.warning("copilot search_field_history: plant findings unavailable: %s", e)
     return {
         "query": query,
-        "source": "FMUCD (12 North American universities, 2002-2021, CC BY-NC)",
+        "asset_id": (asset_id or "").upper() or None,
+        "this_plant": this_plant,
+        "n_this_plant": len(this_plant),
+        "this_plant_source": THIS_PLANT_SOURCE,
+        "source": PUBLIC_CASES_SOURCE,
         "cases": [
             {
                 "case_id": c.case_id,
@@ -2347,16 +2508,26 @@ COPILOT_TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_field_history",
         "description": (
-            "Find real unplanned work orders similar to a symptom (e.g. 'noisy fan motor "
-            "bearing', 'pump seized') from a public dataset of university facilities. Returns "
-            "cases with component, description, labor hours, cost, and medians. Precedent, "
-            "not guidance; not from this plant."
+            "'Have we seen this before?' -- two sources, kept separate. `this_plant`: this "
+            "plant's own repair findings, recorded by a named person on completed work orders "
+            "(asset, date, finding such as 'Confirmed: bearing damage' / 'No fault found', "
+            "note, recorded_by, the contract's top drivers and recommendation); quote them "
+            "with their source and name, and when the list is empty say 'no confirmed "
+            "finding yet' -- never invent one. `cases`: real unplanned work orders similar to "
+            "the symptom from a public dataset of university facilities (labelled 'public "
+            "work orders, not this plant'), with component, description, labor hours, cost "
+            "and medians. Precedent, not guidance. Pass asset_id when an asset is in context "
+            "so the plant findings are matched to its failure mode and family."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "The symptom, in plain words."},
                 "k": {"type": "integer", "description": "Cases to return (1-10, default 5)."},
+                "asset_id": {
+                    "type": "string",
+                    "description": "The asset in context (e.g. MTR-042), if any.",
+                },
             },
             "required": ["query"],
             "additionalProperties": False,
@@ -2398,7 +2569,10 @@ def _run_copilot_tool(name: str, args: dict[str, Any], engine: Engine | None) ->
         return copilot_search_manuals(str(args.get("query", "")), int(args.get("k", 3)), engine)
     if name == "search_field_history":
         return copilot_search_field_history(
-            str(args.get("query", "")), int(args.get("k", 5)), engine
+            str(args.get("query", "")),
+            int(args.get("k", 5)),
+            engine,
+            asset_id=(str(args["asset_id"]) if args.get("asset_id") else None),
         )
     if name == "field_history_stats":
         return copilot_field_history_stats(
@@ -2417,7 +2591,9 @@ def _result_summary(result: dict[str, Any]) -> str:
     if "cases" in result:
         med = result.get("median_labor_hours")
         tail = f"; median {med:g} labor h" if med is not None else ""
-        return f"{result['n_cases']} field-history cases{tail}"
+        plant = result.get("n_this_plant", 0)
+        head = f"{plant} plant finding(s), " if plant else ""
+        return f"{head}{result['n_cases']} public field-history cases{tail}"
     if "labor_hours" in result and "components" in result:
         lh = result["labor_hours"]
         tail = f"; labor p25/p50/p75 {lh['p25']:g}/{lh['p50']:g}/{lh['p75']:g} h" if lh else ""
@@ -2633,6 +2809,11 @@ def _contract_line(dc: dict[str, Any]) -> str:
 
 RUN_ANALYSIS_LINE = "Run analysis in Asset 360 to get a Decision Contract."
 APPROVAL_LINE = "The contract is approved or rejected on Asset 360; I cannot approve it."
+REFUSAL_LINE = (
+    "I cannot approve, reject, promote, schedule or train anything -- decisions are recorded in "
+    "the Thor UI (Asset 360 for a Decision Contract, ModelOps for a promotion)."
+)
+ACT_VERBS = ("approv", "reject", "promot", "deploy", "schedule", "sign off", "sign-off")
 
 
 def _template_status_text(res: dict[str, Any]) -> str:
@@ -2666,11 +2847,20 @@ def _best_sentence(text: str, keywords: list[str]) -> str:
 
 
 def _template_precedent_brief(res: dict[str, Any]) -> str:
-    """Field history as medians plus one case (the 'details' format)."""
+    """Field history as medians plus one case (the 'details' format), after this plant's
+    own findings when there are any."""
     if "error" in res:
         return str(res["error"])
+    plant = res.get("this_plant") or []
+    head = ""
+    if plant:
+        head = (
+            f"This plant: {len(plant)} finding(s) on completed work orders -- "
+            + _plant_finding_line(plant[0])[2:]
+            + " "
+        )
     if not res["cases"]:
-        return f"No field-history cases matched '{res['query']}'."
+        return head + f"No field-history cases matched '{res['query']}' (public work orders)."
     parts = []
     if res["median_labor_hours"] is not None:
         parts.append(f"median labor {res['median_labor_hours']:g} h")
@@ -2684,7 +2874,7 @@ def _template_precedent_brief(res: dict[str, Any]) -> str:
     if c["total_cost"] is not None:
         bits.append(f"cost {c['total_cost']:,.0f}")
     tail = f" ({', '.join(bits)})" if bits else ""
-    return (
+    return head + (
         f"Field history: {res['n_cases']} similar unplanned work orders from {res['source']}, "
         f"precedent, not from this plant -- {', '.join(parts) or 'no cost data'}. "
         f"For example [{c['component']}, {year}] {c['description']}{tail}."
@@ -2816,15 +3006,54 @@ def _template_manuals_text(res: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+NO_PLANT_FINDING_LINE = (
+    "This plant: no confirmed finding yet -- no technician has recorded what was found on a "
+    "completed work order for this symptom."
+)
+
+
+def _plant_finding_line(f: dict[str, Any]) -> str:
+    """One finding as Bolt quotes it: asset, plant date, finding, work order, who recorded it,
+    the note verbatim and the contract's drivers -- every value from the tool result."""
+    date = _plant_ts(f.get("event_ts") or f.get("plant_ts"))[:16]
+    drivers = ", ".join(f.get("top_drivers") or [])
+    bits = [
+        f"{f['asset_id']}, {date}: {f['finding_label']} (work order {f['contract_id']}, "
+        f"recorded by {f['recorded_by']})"
+    ]
+    if f.get("note"):
+        bits.append(f'note: "{f["note"]}"')
+    if drivers:
+        bits.append(f"the contract's drivers were {drivers}")
+    if f.get("recommendation"):
+        bits.append(f"recommendation {_rec_phrase(f['recommendation'])}")
+    return "- " + "; ".join(bits) + "."
+
+
+def _template_plant_findings(res: dict[str, Any]) -> list[str]:
+    """Lines for the `this_plant` list of a search_field_history result."""
+    plant = res.get("this_plant") or []
+    if not plant:
+        return [NO_PLANT_FINDING_LINE]
+    lines = [
+        f"This plant -- {len(plant)} finding(s) recorded by a person on completed work orders "
+        f"({res.get('this_plant_source', 'this plant')}):"
+    ]
+    lines.extend(_plant_finding_line(f) for f in plant)
+    return lines
+
+
 def _template_history_text(res: dict[str, Any]) -> str:
     if "error" in res:
         return str(res["error"])
+    lines = _template_plant_findings(res)
     if not res["cases"]:
-        return f"No field-history cases matched '{res['query']}'."
-    lines = [
+        lines.append(f"No field-history cases matched '{res['query']}' (public work orders).")
+        return "\n".join(lines)
+    lines.append(
         f"Field history for '{res['query']}' -- {res['n_cases']} similar unplanned work orders "
         f"from {res['source']}; precedent, not from this plant:"
-    ]
+    )
     for c in res["cases"]:
         year = c["start_date"][:4] if c["start_date"] else "n/a"
         bits = []
@@ -2950,6 +3179,15 @@ STATS_WORDS = (
 HISTORY_WORDS = (
     "seen before",
     "seen this",
+    "seen it",
+    "we seen",
+    "seen a ",
+    "seen any",
+    "happened before",
+    "happened",
+    "occurred",
+    "come up before",
+    "recurr",
     "history",
     "similar",
     "past",
@@ -3037,15 +3275,21 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
             hero = "status"
     context_asset = _asset_in_context(req, last) if hero else None
 
-    def precedent_for(dc: dict[str, Any]) -> str:
+    def precedent_for(dc: dict[str, Any], aid: str | None = None) -> str:
         query = _history_query_for_contract(dc)
-        return _template_history_text(call("search_field_history", {"query": query, "k": 3}))
+        args: dict[str, Any] = {"query": query, "k": 3}
+        if aid:
+            args["asset_id"] = aid
+        return _template_history_text(call("search_field_history", args))
 
     wants_action = any(k in text for k in ACTION_WORDS)
     if wants_action:
         # Checked before the contract-id branch on purpose: "approve dc_..." must be refused,
-        # never answered as a lookup. The template can only list what is pending.
+        # never answered as a lookup. The template can only list what is pending -- and when
+        # the user asked it to act, it says it cannot even if nothing is pending.
         reply = _template_pending_text(call("list_pending_approvals", {}))
+        if any(v in text for v in ACT_VERBS) and "cannot" not in reply:
+            reply += "\n" + REFUSAL_LINE
     elif hero and context_asset and not m_contract:
         # "What's happening with MTR-042?", "Give me the details.", "What are the possible
         # fixes?" -- get_asset carries the status, alarm, trend, readings and the newest
@@ -3058,7 +3302,9 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
             precedent = None
             if dc:
                 query = _history_query_for_contract(dc)
-                precedent = call("search_field_history", {"query": query, "k": 3})
+                precedent = call(
+                    "search_field_history", {"query": query, "k": 3, "asset_id": context_asset}
+                )
             reply = _template_details_text(asset_res, precedent)
         else:
             manuals: dict[str, Any] = {"query": FIX_PROCEDURE_QUERY, "passages": []}
@@ -3075,7 +3321,7 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
                 f"failure probability {res['failure_probability']:.2f}, expected cost "
                 f"{res['expected_cost']:.0f}, status {res['status']}. {res['explanation_text']}"
             )
-            reply += "\n\n" + precedent_for(res)
+            reply += "\n\n" + precedent_for(res, res.get("asset_id"))
     elif m_asset or (req.asset_id and ("asset" in text or "motor" in text or "this" in text)):
         aid = m_asset.group(0).upper() if m_asset else str(req.asset_id)
         asset_res = call("get_asset", {"asset_id": aid})
@@ -3087,17 +3333,28 @@ def _copilot_template(req: CopilotRequest, engine: Engine | None) -> CopilotResp
             # without the user having to ask for each.
             dc = call("get_contract", {"contract_id": contracts[0]["contract_id"]})
             if "error" not in dc:
-                reply += "\n\n" + _template_contract_evidence(dc) + "\n\n" + precedent_for(dc)
+                reply += "\n\n" + _template_contract_evidence(dc) + "\n\n" + precedent_for(dc, aid)
         elif wants_stats:
             reply += "\n\n" + _template_stats_text(call("field_history_stats", {"query": query}))
         elif wants_history:
-            reply += "\n\n" + _template_history_text(call("search_field_history", {"query": query}))
+            # "Have we seen this before?" about the asset in view: the symptom is the newest
+            # contract's risk-raising drivers when one exists (a generic question carries no
+            # symptom words), and the asset id lets this plant's findings be matched by
+            # failure mode and family, same asset first.
+            newest = asset_res.get("contract") if "error" not in asset_res else None
+            symptom = _history_query_for_contract(newest) if newest else query
+            reply += "\n\n" + _template_history_text(
+                call("search_field_history", {"query": symptom, "asset_id": aid})
+            )
         elif wants_manual:
             reply += "\n\n" + _template_manuals_text(call("search_manuals", {"query": query}))
     elif wants_stats:
         reply = _template_stats_text(call("field_history_stats", {"query": last}))
     elif wants_history:
-        reply = _template_history_text(call("search_field_history", {"query": last}))
+        args = {"query": last}
+        if req.asset_id:
+            args["asset_id"] = str(req.asset_id).upper()
+        reply = _template_history_text(call("search_field_history", args))
     elif any(k in text for k in fleet_words):
         reply = _template_fleet_text(call("get_fleet", {}))
     elif wants_manual:
