@@ -112,12 +112,14 @@ def _line_sort_key(line: str) -> tuple[int, int, str]:
     return (1 if plant.is_compressor_line(line) else 0, n if n is not None else 10**6, line)
 
 
-def _asset_order_key(a: Asset) -> tuple[int, str]:
+def _asset_order_key(a: Asset) -> tuple[int, str, str]:
+    """Packaging role order first; motors sharing a role (the compressor hall's K-1..K-4)
+    follow their display name, then asset id."""
     role = a.role.strip().lower()
     idx = PACKAGING_ROLE_ORDER.index(role) if role in PACKAGING_ROLE_ORDER else len(
         PACKAGING_ROLE_ORDER
     )
-    return (idx, a.asset_id)
+    return (idx, a.name if role and role not in PACKAGING_ROLE_ORDER else "", a.asset_id)
 
 
 def group_lines(assets: list[Asset]) -> list[TwinLine]:

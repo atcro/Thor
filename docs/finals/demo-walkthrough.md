@@ -21,7 +21,18 @@ ever acted on it; it fails unplanned about a minute in and gets replaced. It is 
 
 ## Step 1 (0:00 – 1:00): "The fleet is healthy and the model is already in production"
 
-Screen: Dashboard.
+Screen: 3-D Digital Twin (the landing view), then the Dashboard.
+
+Open on the twin: press **Overview** (or `O`) for the opening camera move. Point at: the five
+packaging lines and the compressor hall; the blue pulses leaving every motor for the edge node
+and the yellow ones from the edge to the control plane, each one a real message or prediction
+(counters bottom-left are measured at the control plane: messages/s, predictions/s, edge
+inference p50, motor→edge→control-plane latency); the regime rings changing colour as shifts
+change load without any alarm; the production-model badge top-right (version, approver, parity).
+Turn on **X-Ray** and hover a motor for the glyph and three facts; click it for the HUD, with
+the PLC tags mapped from the telemetry and the simulated MES feed labelled as such. Then switch
+to the Dashboard for the card view. Everything on the twin comes from the API; every number is a
+measurement or a stored prediction.
 
 Say: "Twenty-four motors on replayed plant history, scored live by a model that was trained
 on the fleet's past failures, validated on motors it never saw, and promoted by a named
