@@ -20,7 +20,13 @@ Run from `C:\Thor-main` in PowerShell. Docker Desktop must be running.
 
 ```
 .\scripts\demo_reset.ps1        # 1-2 min: wipes data, restarts the stack, seeds, holds the replay
+# if PowerShell refuses ("running scripts is disabled on this system"):
+powershell -ExecutionPolicy Bypass -File .\scripts\demo_reset.ps1
 ```
+
+The script does the stopping itself (`docker compose down`, volumes dropped, `up`, seed, hold);
+nothing has to be killed by hand. Docker Desktop must be running and no native Thor stack may
+be up on the laptop.
 
 It ends with `production model: none`, `replay: released=False`, `fleet: 24 motors, 24 without a
 prediction yet`. Open http://localhost:5173 (Chrome). Then, in this order:
