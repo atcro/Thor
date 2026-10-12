@@ -9,6 +9,55 @@ The replay streams the recorded history at 900× (`REPLAY_SPEED`; one plant hour
 of the story (the six days after the seed point) is about ten minutes of wall clock, after which
 the same six days play again with plant time continuing (see "Later passes").
 
+## Dry run, as built (the hero path in 12 clicks)
+
+Run from `C:\Thor-main` in PowerShell. Docker Desktop must be running.
+
+```
+.\scripts\demo_reset.ps1        # 1-2 min: wipes data, restarts the stack, seeds, holds the replay
+```
+
+It ends with `production model: none`, `replay: released=False`, `fleet: 24 motors, 24 without a
+prediction yet`. Open http://localhost:5173 (Chrome). Then, in this order:
+
+| # | Click | What you should see | Say |
+|---|---|---|---|
+| 1 | Nothing; the app opens on **Fleet** | 24 grey cards, "no prediction yet"; top bar `held: no production model yet` | "No model exists yet, so Thor says so." |
+| 2 | **AutoML Studio** → **Train new model** (asset `MTR-042`, trials `4`) | A run appears; split within 2 s, states within 9 s, candidates, gate, parity; stage `Registered` in **60–75 s** | "Learns from the fleet's own history: months of healthy running in each state plus the six motors that failed before. It learned what normal looks like and what 'about to fail' looks like." |
+| 3 | **ModelOps** → type your name → **Approve promotion** | Request turns `approved`; top bar flips to `streaming` | "A named person signs it off; that releases the plant history." |
+| 4 | **Fleet** | 24 green within 3 s ("within healthy baseline"); **~60–70 s later MTR-042 turns red**, `latched since …`. No amber: the probability steps up within one sample. | "Green means within its healthy baseline. Here it is — three consecutive samples over the line, and it stays red until the plant acts." |
+| 5 | Click the **MTR-042** card → **Run analysis** | Stepper to `Awaiting approval` in 4–5 s (template) / 15–45 s (LLM); contract panel below with drivers, costs, window, citations | "Reuses the model you just signed off; SHAP, manuals, cost comparison." |
+| 6 | **Copilot · Bolt**, asset context `MTR-042`, ask: "What's happening with MTR-042?" then "Give me the details." then "What are the possible fixes?" | < 1 s each (template) / 7–30 s each (LLM); the last answer points to the approval on Asset 360 | "Reads the same evidence, adds precedent from real work orders, no write tools." |
+| 7 | **Fleet** → MTR-042 card → scroll to the Decision Contract → name → **Approve** | Panel locks; approval row appears | "The engineer signs after asking Bolt and reading the evidence. Thor stops here." |
+| 8 | **Fleet** | `offline · in maintenance` within 3 s, green with the work order completed within ~15 s | "The plant took it offline and brought it back on its healthy baseline. The registry did not change." |
+| 9 | **3-D Digital Twin** (last menu item) → **Overview** → **X-Ray** → **Line 3** → click MTR-042's label → **Open in Asset 360** or close | Lines in physical space, live counters bottom-left, the HUD with status line, sensors, drivers, decision, provenance, PLC tags, MES feed | "Point at any pixel and we can trace it to its source." |
+| 10 | (optional, the team may drop it) **Rewind** → **Load stored predictions** → **critical alarm** / **work order** | Two figures side by side: this run's lead time and the validated 53.1 h | |
+| 11 | (optional, the team may drop it) **Sandbox** → **Troubleshoot MTR-042** or **Random fault** → wait ~12 s → red; **Reset sandbox** | Violet `SANDBOX — simulated readings` banner; a sandbox motor can be analysed and approved like MTR-042 | |
+| 12 | Done. To run it again: `.\scripts\demo_reset.ps1` | | |
+
+Recovery: training fails or stalls → `.\scripts\demo_reset.ps1 -Prep` (trains and promotes as
+`demo-prep@thor`, then continue at step 4); a step stalls → **Pause** / **Resume** in the top
+bar; WebGL fails → stay on Fleet (X-Ray works there too); Wi-Fi drops → everything runs in
+template mode, say so. Do not press **Train new model** a second time after the sign-off.
+
+### Docker commands (changed in Phase A.1)
+
+```
+docker compose up --build -d              # first start or after code changes: seeds, NO model, replay held
+docker compose up -d                      # start without rebuilding
+docker compose down                       # stop (keeps the data)
+.\scripts\demo_reset.ps1                  # the reset: down, drop data + model volumes, up, wait for seeding
+.\scripts\demo_reset.ps1 -Prep            # same, then the fallback training job (no training on stage)
+docker compose run --rm prep              # the fallback training job alone, on a running stack
+docker compose ps                         # api, web, edge, replay, mqtt, timescale, mlflow should be Up
+docker compose logs -f api                # if something looks stuck
+```
+
+What changed from before: a plain `up` no longer trains or promotes anything (the `prep` service
+is behind a compose profile and only runs when asked), the `replay` container holds until a
+promotion is approved, and the `edge` and `replay` no longer wait for `prep`. Everything else
+(ports 5173 / 8000 / 8001 / 5000, bound to 127.0.0.1) is as before.
+
 ## Before the judges arrive (pre-demo checklist, 5 minutes)
 
 1. **Reset:** `.\scripts\demo_reset.ps1` from `C:\Thor-main`. It wipes the data, restarts the
