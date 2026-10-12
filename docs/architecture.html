@@ -316,7 +316,7 @@
 
   <div class="intro">
     <p>Thor reads top to bottom because the system runs top to bottom: sensor data enters at the bottom of the stack and a governed decision surfaces at the top, on a screen an engineer is actually looking at. Historical or live telemetry is replayed through MQTT into a single Control Plane, which hands each request to one LangGraph orchestrator holding five deterministic toolboxes — Data, ML Architect, Validation, Reliability, and MLOps. There is exactly one agent in this system, in the AI-reasoning sense: the Orchestrator. Everything it calls is plain code with no model inside it.</p>
-    <p>Data gets profiled and regime-checked before anything trains on it; the ML Architect picks a task and searches three tree-based model families; Validation attacks the result for leakage, calibration, and warning lead time before anointing a champion; Reliability assembles evidence — SHAP values plus cited manual passages — that the Orchestrator turns into an explanation and a cost comparison; MLOps watches the whole thing for drift long after the demo ends. Every toolbox can <em>propose</em> an action, but none can execute one. That's the Human Approval Gate: the one place a plan becomes a person's decision. Thor doesn't replace the MES a plant already runs — the Decision Contract that comes out of the gate is the handoff artifact, built to feed one, not become one.</p>
+    <p>Data gets profiled and its operating states found before anything trains on it; the ML Architect picks a task and searches three tree-based model families; Validation attacks the result for leakage, calibration, and warning lead time before anointing a champion; Reliability assembles evidence — SHAP values plus cited manual passages — that the Orchestrator turns into an explanation and a cost comparison; MLOps watches the whole thing for drift long after the demo ends. Every toolbox can <em>propose</em> an action, but none can execute one. That's the Human Approval Gate: the one place a plan becomes a person's decision. Thor doesn't replace the MES a plant already runs — the Decision Contract that comes out of the gate is the handoff artifact, built to feed one, not become one.</p>
   </div>
 
   <h2 class="section-title">Thor and Bolt, at a glance</h2>
@@ -550,7 +550,7 @@
     <li><b>02</b> FastAPI's MQTT subscriber (<code>apps/api/routes/telemetry.py</code>) writes the row into the <code>telemetry</code> hypertable in TimescaleDB.</li>
     <li>The Fleet screen (<b>01</b>) polls <code>GET /fleet</code>; MTR-042's health score drops 94 → 81. The engineer opens Asset 360, which calls <code>POST /pipeline/run</code> for that asset.</li>
     <li><b>03</b> Orchestrator starts a typed <code>GraphState</code> (<code>run_id=r_9f21</code>) and makes its first Claude call: <em>"given this state, call <code>04.profile_dataset</code>."</em></li>
-    <li><b>04</b> reads the last several hours of telemetry for MTR-042, returns a Data Quality Contract — quality 96.4/100, regime <code>R3</code> (high load).</li>
+    <li><b>04</b> reads the last several hours of telemetry for MTR-042, returns a Data Quality Contract — quality 96.4/100, state <code>R3</code> (heavy load).</li>
     <li><b>05</b> infers the task (classification), engineers vibration + process features, and runs Optuna over Random Forest / XGBoost / LightGBM — three runs logged to MLflow under experiment <code>mtr-042-bearing</code>.</li>
     <li><b>06</b> backtests all three on held-out machines, computes calibration and warning lead time, and picks XGBoost (<code>mlflow run 8a1c…</code>) as champion, <code>model_version=v17</code>.</li>
     <li><b>07</b> assembles evidence: <code>explain()</code> returns the top SHAP features; <code>retrieve_manual_context()</code> does a Chroma similarity search and returns the two closest passages from <code>data/manuals/motor-maintenance.md</code> §4.2; <code>calculate_failure_cost()</code> compares maintain-tonight ($8,400) vs. Friday ($5,900) vs. run-to-failure ($46,700).</li>
@@ -653,7 +653,7 @@
         <p class="role">Decides what kind of model this data supports, engineers signal-appropriate features, and runs the search.</p>
         <ul class="fnlist">
           <li><code>infer_task()</code><span>Classification vs. remaining-useful-life regression.</span></li>
-          <li><code>build_feature_pipeline()</code><span>RMS, kurtosis, crest factor, temperature slopes and deltas for vibration; rolling stats for process telemetry — regime-normalized.</span></li>
+          <li><code>build_feature_pipeline()</code><span>RMS, kurtosis, crest factor, temperature slopes and deltas for vibration; rolling stats for process telemetry — state-normalized (against the window's operating state).</span></li>
           <li><code>launch_trial()</code><span>Optuna search over Random Forest / XGBoost / LightGBM.</span></li>
           <li><code>compare_models()</code><span>Ranks candidates by the Industrial Model Score (recall + lead-time + precision + calibration + latency), not raw accuracy.</span></li>
         </ul>

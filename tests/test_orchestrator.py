@@ -1040,7 +1040,9 @@ def test_copilot_template_hero_questions(engine: Any) -> None:
     options and the Asset 360 approval pointer -- and never the word 'regime'."""
     import json
 
-    from apps.api import alarms, orchestrator
+    from apps.api import alarms, live, orchestrator
+
+    live.reset()  # a stale receipt from another test module would read as "no data"
     from apps.api.schemas import DecisionContract
 
     def ask(text: str, asset_id: str | None = None, history: list[CopilotMessage] | None = None):

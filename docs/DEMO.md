@@ -48,8 +48,8 @@ not single values, unless you are reading them off the screen.
 |---|---|
 | training data | 24 motors, 30 days, ~83 k rows seeded (80 %), 4 completed failures as labels |
 | data quality score | 100 / 100 |
-| operating regimes | 3 (idle/startup, nominal, high-load) |
-| features | 13, regime-normalized |
+| operating states | 3 (startup/idle, running, heavy load) |
+| features | 13, state-normalized |
 | champion | LightGBM (IMS 0.88, held-out recall 0.89) or XGBoost (recall 0.76) depending on trials |
 | warning lead time (held-out failures) | 38 h to 101 h median |
 | calibrated P(failure within 48 h) at the gate | 0.07 early in the window, about 0.5 inside it |

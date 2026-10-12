@@ -46,7 +46,7 @@ and use its language verbatim whenever drafting submission text; don't invent ne
 | Storage | PostgreSQL + TimescaleDB extension | Telemetry hypertable, assets, decision contracts, registry metadata |
 | MLOps | MLflow | Experiment tracking + registry, artifacts on a mounted Docker volume — **not MinIO** |
 | Drift detection | Hand-rolled PSI | ~30 lines, not the Evidently library — one fewer dependency |
-| Edge | ONNX Runtime in a second lightweight FastAPI container | Subscribes to MQTT directly, independent of the control plane. Infers the regime from rpm/load with the sidecar baseline and applies the sidecar calibration transform, so it emits the same calibrated probability as the centre |
+| Edge | ONNX Runtime in a second lightweight FastAPI container | Subscribes to MQTT directly, independent of the control plane. Infers the operating state from rpm/load with the sidecar baseline and applies the sidecar calibration transform, so it emits the same calibrated probability as the centre |
 | Packaging | Docker Compose | **Not Kubernetes** — one command (`docker compose up`) must always work |
 | CI | GitHub Actions | Lint + unit tests on push |
 | Tests | pytest (logic) + 1-2 Playwright smoke tests | Not a full e2e suite |
@@ -78,7 +78,7 @@ flowchart TD
 **Thor vs. Bolt, in one breath.** *Thor* is the whole system above: seven Compose services (plus the optional one-shot `prep` fallback job) and
 one governed pipeline — MQTT telemetry into a FastAPI control plane and TimescaleDB, a
 LangGraph orchestrator (the only Claude caller, and only to route and to phrase) driving five
-deterministic toolboxes (regime-aware profiling, Optuna over RF/XGBoost/LightGBM ranked by the
+deterministic toolboxes (state-aware profiling, Optuna over RF/XGBoost/LightGBM ranked by the
 Industrial Model Score and tracked in MLflow, asset-level validation with calibration and lead
 time, SHAP + cost comparison, an MLOps lifecycle that promotes the champion to ONNX Runtime at
 the edge), producing an immutable Decision Contract that stops at the Human Approval Gate.
@@ -224,7 +224,7 @@ production model and takes seconds; `mode=train` is the explicit AutoML run (Aut
   makes the LangGraph state typed and debuggable), `ruff` for lint/format.
 - **TypeScript:** function components, no class components; colocate a screen's API calls with
   its component.
-- **Commits:** imperative mood, one logical change per commit (`add regime detection`, not
+- **Commits:** imperative mood, one logical change per commit (`add state detection`, not
   `updates`).
 - **Every deterministic tool function gets a docstring stating its inputs/outputs** — the
   orchestrator's tool-calling reliability depends on these being accurate, not decorative.
@@ -426,7 +426,7 @@ Facts that save exploration. Re-verify anything that looks wrong rather than tru
   | Shared metrics, lead time, IMS | `agents/metrics.py` |
   | Production-model scoring | `apps/api/scoring.py` |
   | Demo prep | `scripts/demo_prep.py`, compose service `prep` |
-  | Regimes | `agents/data_agent/profiling.py` |
+  | Operating states (called regimes in the code) | `agents/data_agent/profiling.py` |
   | Features and baselines | `agents/ml_architect/features.py` |
   | Search and asset split | `agents/ml_architect/automl.py` |
   | Splits, calibration, lead time, gate | `agents/validation/checks.py` |

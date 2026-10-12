@@ -1259,7 +1259,7 @@ def _profile(gs: GraphState, h: RunHandle, engine: Engine | None) -> None:
         gs,
         gs.stage,
         f"data quality {dq.quality_score:.1f}/100, {dq.n_rows} rows, {dq.n_assets} assets, "
-        f"{len(dq.regimes.regimes)} regimes, trainable={dq.trainable}",
+        f"{len(dq.regimes.regimes)} operating states, trainable={dq.trainable}",
         tool="profile_dataset",
         payload={"quality_score": dq.quality_score, "trainable": dq.trainable},
     )

@@ -425,8 +425,8 @@ def build_feature_pipeline(
         description=(
             f"Rolling {window_rows}-row window per asset (mean, OLS slope) over the raw sensors; "
             f"vib_rms_z / bearing_temp_z / vib_rms_resid are normalised against the healthy "
-            f"baseline of the window's operating regime (first {int(BASELINE_FRACTION * 100)}% "
-            f"of each asset's history, {len(_regime_ids(baseline))} regimes, {fitted_on}). "
+            f"baseline of the window's operating state (first {int(BASELINE_FRACTION * 100)}% "
+            f"of each asset's history, {len(_regime_ids(baseline))} states, {fitted_on}). "
             f"label = failure_within_h <= {horizon_h:g} h; the last {horizon_h:g} h of an asset "
             "with no failure ahead is right-censored (label unknown)."
         ),

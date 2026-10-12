@@ -17,7 +17,7 @@ the correctness pass. **Never carry the prototype numbers forward as current.**
 | Brier score (calibrated) | – | 0.0021 on test; 0.00095 → 0.00044 on the calibration assets |
 | Calibration | isotonic, fitted on the same rows it was scored on | Platt (sigmoid), fitted on 6 calibration motors never used for training or the final score; isotonic only with ≥ 2 failure events there |
 | Validation data | last 25 % of asset ids; same rows for selection, calibration and lead time | fixed seeded split: 12 train / 6 validation / 6 calibration / 6 test motors |
-| Regimes and baselines | fitted on all 24 motors before the split | fitted on the 12 training motors only; others assigned |
+| Operating states and baselines | fitted on all 24 motors before the split | fitted on the 12 training motors only; others assigned |
 | Thresholds | 0.3 and 0.5 mixed across stages | one meaning each: 0.5 classification, 0.3 early warning (3 sustained rows) |
 | Edge vs centre | calibration dropped at the edge, baseline format mismatch | max probability difference 0.0 on 200 held-out vectors, feature difference 1.6e-15 on 18 raw windows |
 | Training time (6 trials × 3 families) | 60–100 s | 55–70 s |
@@ -25,7 +25,7 @@ the correctness pass. **Never carry the prototype numbers forward as current.**
 
 ## What changed and why
 
-The prototype's numbers were optimistic because the data preparation leaked: operating regimes
+The prototype's numbers were optimistic because the data preparation leaked: operating states
 and the healthy baselines were fitted on every motor before the split, the Optuna objective,
 the calibration and the lead-time measurement all used the same held-out rows, and the search
 ranked models on recall at 0.3 while the gate checked recall at 0.5. The leak-free run fixes the

@@ -49,9 +49,10 @@ FAULTY_ASSETS: dict[str, float]              # {"MTR-042": <onset fraction>, ...
                                              # demo asset id matches the architecture doc)
 def generate_fleet(days: int = 30, seed: int = 42, step_min: int = 10) -> tuple[pd.DataFrame, list[Asset]]
     """Returns (telemetry DataFrame in the Telemetry shape, asset list).
-    Regimes: R1 idle/startup (rpm~600, load~10), R2 nominal (rpm~1480, load~55),
-    R3 high-load (rpm~1500, load~85). Each asset cycles regimes on a shift schedule.
-    Healthy sensors depend on regime (vibration & temps rise with load).
+    Operating states (the `regime` column; "regimes" in the literature and in the code):
+    R1 startup/idle (rpm~600, load~10), R2 running (rpm~1480, load~55), R3 heavy load
+    (rpm~1500, load~85). Each asset cycles states on a shift schedule. Healthy sensors
+    depend on the state (vibration & temps rise with load).
     Faulty assets get a drive-end bearing degradation: from onset, vibration_rms/kurtosis/crest
     and bearing_temp_c rise with a smooth monotone curve + noise, ending in failure at the
     end of the horizon. `health` decays 1->0, `failure_within_h` counts down; healthy assets
@@ -80,7 +81,7 @@ everything via HTTP as fast as possible (used for local dev and tests).
 `streaming/replay/work_orders.py` makes the replay double as the plant's CMMS: `RepairSimulator`
 polls `GET /work-orders`, drops that asset's rows for the contract's planned downtime once plant
 time reaches the approved window (motor offline), then streams the asset's own healthy baseline
-(pre-fault rows in the same regime and hour) with `health = 1.0`, reporting `in_progress` /
+(pre-fault rows in the same operating state and hour) with `health = 1.0`, reporting `in_progress` /
 `completed` via `POST /work-orders/{id}/events`. `--no-work-orders` / `REPLAY_WORK_ORDERS=0` turns
 it off. Maintenance windows are computed in plant time (`orchestrator.plant_now()`), not wall clock.
 
@@ -134,11 +135,11 @@ def profile_dataset(df: pd.DataFrame, asset_id: str, step_min: int = 10) -> Data
 ```python
 def build_feature_pipeline(df: pd.DataFrame, regimes: RegimeReport | None, horizon_h: float = 48.0, window_rows: int = 12) -> tuple[pd.DataFrame, FeatureSpec]
 ```
-Features (rolling per asset over `window_rows`, regime-normalized = z-score against that
-regime's healthy baseline computed from the first 20% of each asset's history):
+Features (rolling per asset over `window_rows`, state-normalized = z-score against that
+operating state's healthy baseline computed from the first 20% of each asset's history):
 `vib_rms_mean, vib_rms_slope, vib_kurt_mean, vib_crest_mean, bearing_temp_mean,
 bearing_temp_slope, temp_delta (bearing - motor), current_mean, rpm_mean, load_mean,
-vib_rms_z, bearing_temp_z, vib_rms_resid (actual - regime-expected)`.
+vib_rms_z, bearing_temp_z, vib_rms_resid (actual - state-expected)`.
 Label = 1 if `failure_within_h <= horizon_h` else 0; `rul_h = failure_within_h`.
 Drop the first `window_rows-1` rows per asset. Never include `health`, `failure_within_h`,
 `regime` strings, or `ts` as features.
@@ -319,7 +320,7 @@ index (best effort), start the MQTT subscriber. Mount routers. `GET /health`.
 ### Routes
 ```
 apps/api/routes/fleet.py
-  GET /fleet                        -> list[FleetAsset]  (health_score = 100*(1 - p_fail) from the latest approved-model prediction, else null = "no prediction yet"; regime inferred from rpm/load with the production baseline; never simulator ground truth)
+  GET /fleet                        -> list[FleetAsset]  (health_score = 100*(1 - p_fail) from the latest approved-model prediction, else null = "no prediction yet"; operating state (`regime` field) inferred from rpm/load with the production baseline; never simulator ground truth)
   GET /assets/{asset_id}            -> {asset, latest: TelemetryRow|null, prediction: float|null, contracts: list[DecisionContract], work_orders: list[WorkOrder], runs: list[run summaries]}
   GET /system/health                -> {db: ok, mqtt: bool, mlflow: bool, edge: bool, n_telemetry_rows, last_ingest_ts}
 apps/api/routes/pipeline.py
@@ -343,7 +344,7 @@ apps/api/routes/copilot.py
 apps/api/routes/work_orders.py     (handoff to the plant CMMS -- Thor only records what the plant reports back)
   GET  /work-orders?asset_id=&active=      -> list[WorkOrder]  (approved maintain_now/maintain_later contracts + plant-reported status; derived, never stored)
   POST /work-orders/{contract_id}/events   body {status: in_progress|completed, plant_ts, source, note} -> WorkOrder  (insert-only event; 404 unless approved, 409 out of order)
-apps/api/routes/twin.py            (Twin (Phase A): 3-D Digital Twin + X-Ray; read-only, deterministic, same scrub as /fleet -- no simulator ground truth, regime inferred; apps/api/plant.py (PLC tags, simulated MES feed) is imported here only)
+apps/api/routes/twin.py            (Twin (Phase A): 3-D Digital Twin + X-Ray; read-only, deterministic, same scrub as /fleet -- no simulator ground truth, operating state inferred; apps/api/plant.py (PLC tags, simulated MES feed) is imported here only)
   GET  /twin                               -> TwinSnapshot  {site, sites, plant_time, thresholds, lines: [TwinLine (+ simulated MES feed per packaging line)], assets: [TwinAsset (status glyph, data_state, decision_state, median probability, latest ObservedTelemetryRow, measured msgs_last_60s)], model: ModelProvenance|null, live: LiveCounters}  (polled every 2 s; fixed query count)
   GET  /twin/hud/{asset_id}                -> TwinHud  {asset, line, prediction_trend (last 36 per-sample rows), trend: rising|falling|flat|null, plc_tags (source field per tag; Speed_SP simulated), drivers (newest Decision Contract's SHAP), drivers_source, contract, contract_status, model, mes}  (404 unknown asset)
   GET  /twin/rewind?max_points=400&asset_id=  -> TwinRewind  {start, end, thresholds, assets: [RewindSeries (points <= max_points, plant-time markers: early_warning (3 sustained rows >= 0.3), predicted_failure (>= 0.5), work_order_started/completed; lead_time_h)], validated_lead_time_h}  (stored predictions only, newest 6000 rows per asset)
@@ -361,14 +362,14 @@ Vite + React 18 + TypeScript, React Router, no UI framework (hand-written CSS wi
    Includes a small "System" panel from `GET /system/health` (this is the health panel that
    replaces Grafana).
 2. `/assets/:id` **Asset 360** — live vibration/temp chart (poll `/assets/:id/telemetry` every
-   3s), regime badge, current failure probability, "Run analysis" button → `POST /pipeline/run`,
+   3s), state badge, current failure probability, "Run analysis" button → `POST /pipeline/run`,
    then a stage stepper driven by `WS /ws/runs/:run_id` (fallback poll `GET /pipeline/:run_id`).
    When stage = awaiting_approval, render the Decision Contract evidence: SHAP bars, cost
    comparison (3 options), recommended window, cited manual passages, explanation text, and
    **Approve / Reject** buttons → `POST /approvals/:contract_id/decision`. After decision show the
    immutable contract with approval row.
 3. `/studio` **AutoML Studio** — DATA → TASK → FEATURES → MODELS → VALIDATE → DEPLOY stages
-   for the latest/selected run: data quality score + regimes, task spec, feature list, 3
+   for the latest/selected run: data quality score + operating states, task spec, feature list, 3
    candidates with IMS breakdown, validation report (leakage, backtest folds, calibration bins,
    lead time), deploy status.
 4. `/modelops` **ModelOps** — registry table (`GET /models`), pending promotions with

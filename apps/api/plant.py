@@ -167,7 +167,7 @@ def plc_tags(
                 unit="rpm",
                 source=None,
                 simulated=True,
-                basis=f"simulated: centroid rpm of inferred regime {regime} (production baseline)",
+                basis=f"simulated: centroid rpm of the inferred operating state {regime} (production baseline)",
             )
         )
     else:
