@@ -308,3 +308,26 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
 - **Next:** fresh-context audit of the "done" list; `docker compose build` (python images
   running, web after the CSS fix); CLAUDE.md §15 Phase A status; final report; stop native
   processes (API 8010, edge 8011, vite 5175, chrome 9333).
+
+## 2026-10-11 21:10 — fresh-context audit and fixes
+
+- Audit (fresh-context sub-agent, read-only) re-ran the suites itself: `pytest` 237 passed,
+  `ruff` clean, web build ok, vitest 20 passed; verified items 2-10 of the done list against
+  code with file:line evidence. Flags fixed in `1b5c0f2`:
+  1. control-plane scores (Run analysis, `/pipeline/score`) pulsed as "edge prediction" and fed
+     the motor→edge→control-plane latency → `TwinEvent.source` ("edge" | "control_plane"), the
+     bus takes a path-latency sample only for edge predictions, the scene skips control-plane
+     pulses, counter labels say "(edge-scored)" / "(edge + control plane)";
+  2. the layout docstring stated a selection rule the table did not reproduce → the rule is now
+     code (`baseline_duty_index`, `derive_groups`), Lines 1-2 take the eight lowest healthy by
+     that index (MTR-010/019 in, MTR-007/014 to Line 5 / Compressor Hall), and
+     `test_committed_layout_equals_the_derived_groups` asserts the committed layout equals the
+     derived one on the default fleet; group table in the docstring regenerated from the CLI;
+  3. rewind button label reads `thresholds.classification`;
+  4. the contract-pending badge no longer uses the primary yellow (dashed accent instead).
+  Noted, not changed: rewind frames carry no offline/no-data state (stored predictions only);
+  the scene collapses stale/none into "no data" while the HUD says "stale"; MTR-042 is the
+  default rewind focus; the scene's 11 layout-math tests exceed the brief's test budget.
+- **Tests run after the fixes:** ruff clean; `pytest tests/test_simulator.py tests/test_twin.py
+  tests/test_ground_truth_isolation.py tests/test_orchestrator.py tests/test_telemetry_routes.py`
+  → 65 passed; `tsc` clean; vitest 20 passed; web build ok.
