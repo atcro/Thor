@@ -353,3 +353,27 @@ def test_industrial_model_score_formula() -> None:
     assert ims.latency_score == pytest.approx(0.8)
     expected = 0.35 * 0.8 + 0.25 * 0.5 + 0.15 * 0.5 + 0.15 * 0.8 + 0.10 * 0.8
     assert ims.total == pytest.approx(expected)
+
+
+def test_calibration_uses_the_probability_for_every_family(frame: pd.DataFrame) -> None:
+    """LightGBM's raw score can reach +-1e6 on a pure leaf; Platt scaling on that input is a
+    flat line and the edge (which only has the ONNX probability) cannot reproduce it. Every
+    family is therefore calibrated on predict_proba, and the sidecar transform says so."""
+    from lightgbm import LGBMClassifier
+
+    train = frame.loc[frame["asset_id"] <= "MTR-005"]
+    hold = frame.loc[frame["asset_id"] > "MTR-005"]
+    model = LGBMClassifier(
+        n_estimators=60, num_leaves=8, learning_rate=0.3, min_child_samples=5,
+        scale_pos_weight=90.0, random_state=0, verbose=-1,
+    ).fit(train[FEATURES], train["label"])
+    wrapper, rep = checks.calibrate_probabilities(
+        model, hold[FEATURES], hold["label"], n_positive_assets=1
+    )
+    assert rep.method == "sigmoid" and rep.transform["input"] == "predict_proba"
+    p = wrapper.predict_proba(hold[FEATURES])[:, 1]
+    assert p.max() - p.min() > 0.2  # not a flat line
+    # the exported transform applied to the raw probability reproduces the wrapper exactly
+    raw = model.predict_proba(hold[FEATURES])[:, 1]
+    a, b = rep.transform["a"], rep.transform["b"]
+    np.testing.assert_allclose(1.0 / (1.0 + np.exp(a * raw + b)), p, atol=1e-9)

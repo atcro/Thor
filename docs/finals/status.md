@@ -434,3 +434,53 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
   approval → green; record the new metrics in `metrics.md`, `model-card.md`, `prep-report.json`;
   web (Fleet rename, nav, replay indicator, sandbox panel, state wording) and Bolt hero answers
   are running as two sub-agents; then the walkthrough, Docker build, rehearsal, judge audit.
+
+## 2026-10-12 05:10 — measured the hero flow natively, three times; web and Bolt landed
+
+- **Web** (`79eab00`, sub-agent): Fleet back on `/`, twin on `/twin` under Bolt, sprites/cards/HUD
+  from the API's latched status, replay indicator with pause/resume, sandbox panel + banner, the
+  two lead-time figures, "state" wording with `wording.test.tsx`; vitest 6 files / 24 tests, build
+  ok. Fleet polls every 2 s now (the amber phase is short).
+- **Bolt** (`89db582`, sub-agent): `get_asset` carries status / alarm / trend / recent predictions /
+  contract details; template answers for the three shift questions before and after a contract;
+  eval 62/62 (100 %) in template mode with 9 new `hero` cases; visible "regime" → "state" in the
+  explanation, contract and profiling text; `ae38719` finishes the sweep in the docs and the
+  remaining API strings (identifiers, fields, feature names and the sidecar untouched).
+- **Measured natively** (broker 1884, API 8010, edge 8011, replay 900×, template mode;
+  scratchpad `hero_measure.py`, timelines `hero_timeline_{4,6,4b}.json`):
+  - start-up: 82,944 rows seeded, 0 models, 24 motors "no prediction yet", `/replay released=false`.
+  - training (`mode=train`, MTR-042 held out): 4 trials 118 s / 148 s, 6 trials 156 s, 2 and 3
+    trials 92 s — on a laptop also running the team's Docker stack and, in two runs, the test suite.
+    Split 12 / 3 / 3 / 6 (four groups: six completed failures), test positives MTR-003 + MTR-013.
+    The model differs run to run (Optuna): random forest each time; 4-trial runs gave recall
+    0.919–0.933, precision 0.90–0.96, lead time 53–59 h, IMS 0.888–0.908, parity ≤ 1.7e-6; 2–3
+    trials gave precision 0.75. Default set to 4 (`DEMO_PREP_TRIALS`, Studio form). The brief's
+    "about 60 s" is not reachable on this laptop: validation + parity alone take ~35 s.
+  - sign-off → promotion returns in 5–11 s (edge refresh True, 24 scored) → `released` and
+    24 green within 6–12 s of the click.
+  - MTR-042: green for 35–72 s after the sign-off (run 1 on the 16 h ramp: amber at 68 s for
+    ~2 s, red at 70 s; run 2 on the 10 h ramp: red at 35 s, no amber; run 3 on the 20 h ramp:
+    red at 72 s, no amber). The random-forest + Platt probability steps from < 0.01 to 0.81
+    within one sample (edge rows 14:40 0.005 → 14:50 0.81), so the warning and the critical fire
+    on the same sample; amber is a few seconds at most and cannot be promised. Kept the 20 h ramp
+    (onset 0.5 h after the seed point); documented in the walkthrough.
+  - red held 60–90 s → Run analysis 3.6–4.9 s (maintain_now, p 0.81, drivers vib_kurt_mean /
+    temp_delta / vib_rms); Bolt's three answers < 1 s each (template); approval → offline in
+    2–3 s → healthy with `work_order_completed` in 13–16 s; rewind: this run 17–24 h vs validated
+    53–59 h; alarm log: critical → healthy(work_order_completed).
+  - run 1 exposed a re-latch after the repair (the edge window mixed pre-outage and healthy rows):
+    fixed in `4e0b4b3` (window restarts after a gap > 2.5 steps, edge and control plane); runs 2–3
+    clean.
+  - **false latches over one full pass (no sandbox): 0** — after pass 0 (04:45 → 05:55 UTC) the
+    alarm log holds MTR-042's critical/healthy only (plus the sandbox motor I faulted on purpose).
+  - sandbox (`sandbox_check.py`): Troubleshoot MTR-001 → sandbox-tagged p 0.44 at 11 s, critical
+    (sandbox) at 12 s; sliders on MTR-005 (rpm 650 / load 12, then bearing 95 °C): sandbox-tagged
+    rows, no alarm; Shake up: 24 overrides, 23 healthy + the faulted motor, nothing broke; Run
+    analysis on the sandbox motor → contract `sandbox_scenario=true`, approval → green in 15.7 s
+    with a sandbox work order; Reset → no overrides, no sandbox flags, MTR-005 back on its recorded
+    stream. Exposed `clear` missing from `SandboxEvent.kind` (fixed in `d4b3ebb`, tested).
+- **Docs:** `demo-walkthrough.md` rewritten as the 10-step click path with these timings;
+  `CLAUDE.md` §3/§5/§9/§10/§15/§16, `DEMO.md`, `README.md`, `session-notes.md` updated.
+- **Next:** `scripts/demo_prep.py --force --n-trials 4` on the native stack → `prep-report.json`,
+  then `metrics.md` and `model-card.md` from it; `docker compose build` (running); Docker rehearsal
+  with `.\scripts\demo_reset.ps1` + headless Chrome; fresh-context judge audit; final report.

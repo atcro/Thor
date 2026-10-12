@@ -163,6 +163,38 @@ def _reliability_bins(
     return bins
 
 
+class _ProbabilityOnly:
+    """Expose a fitted classifier to the calibrator through `predict_proba` ONLY.
+
+    sklearn's calibrator prefers `decision_function` when the estimator has one (LightGBM and
+    XGBoost log-odds). On a pure leaf LightGBM's raw score can reach +-1e6, which turns Platt
+    scaling into a flat line (a ~ 0: every row gets the same probability) and cannot be
+    reproduced at the edge, which only has the ONNX probability. Calibrating on the bounded
+    probability instead keeps the centre and the edge on the same input for every family.
+    `estimator` is the wrapped model (the ONNX export unwraps it).
+    """
+
+    def __init__(self, estimator: Any) -> None:
+        self.estimator = estimator
+
+    def __getattr__(self, name: str) -> Any:
+        if name in ("estimator", "decision_function", "predict_log_proba"):
+            raise AttributeError(name)
+        return getattr(self.estimator, name)
+
+    def __sklearn_is_fitted__(self) -> bool:
+        return True
+
+    def fit(self, X: Any, y: Any, **kw: Any) -> _ProbabilityOnly:  # never refitted (frozen)
+        return self
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        return np.asarray(self.estimator.predict_proba(X))
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        return (_positive_proba(self.estimator, X) >= CLASSIFICATION_THRESHOLD).astype(int)
+
+
 class _IdentityCalibrator:
     """Pass-through wrapper used when calibration is impossible (one class in y_cal)."""
 
@@ -378,7 +410,7 @@ def calibrate_probabilities(
             "calibration: %d failing asset(s) among calibration rows; using sigmoid, not isotonic",
             n_positive_assets,
         )
-    calibrated = CalibratedClassifierCV(FrozenEstimator(model), method=method)
+    calibrated = CalibratedClassifierCV(FrozenEstimator(_ProbabilityOnly(model)), method=method)
     calibrated.fit(X_cal, y)
     p_after = _positive_proba(calibrated, X_cal)
     return calibrated, CalibrationReport(
@@ -416,6 +448,8 @@ def calibration_transform(model: Any) -> dict[str, Any]:
     # (LightGBM / XGBoost log-odds), else on predict_proba[:, 1]; the edge only has the ONNX
     # probability, so it must know which one to reconstruct (see `_calibrator_input`).
     frozen = calibrated[0].estimator
+    # Since 2026-10-12 every family is calibrated on predict_proba (see _ProbabilityOnly);
+    # older artifacts may still say decision_function and the edge honours either.
     inp = "decision_function" if hasattr(frozen, "decision_function") else "predict_proba"
     if hasattr(cal, "a_") and hasattr(cal, "b_"):
         return {"method": "sigmoid", "input": inp, "a": float(cal.a_), "b": float(cal.b_)}
