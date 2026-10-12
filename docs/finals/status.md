@@ -344,3 +344,21 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
   adds its own `DecisionState` values, HUD module and `/twin` badge styles. Before the demo:
   `.\scripts\demo_reset.ps1`, open http://localhost:5173 (lands on the 3-D Digital Twin), press
   Overview, then follow `docs/finals/demo-walkthrough.md` from the Dashboard/Asset 360 steps.
+
+## 2026-10-12 02:15 — demo reset on the real Docker stack with the Phase A images
+
+- `.\scripts\demo_reset.ps1` (team asked for it to be run): exit 0, prep trained and promoted
+  lightgbm v70478 in 82 s (recall 0.865, precision 1.0, lead time 41.5 h, IMS 0.844, parity
+  3.4e-5), 24/24 scored, edge + replay streaming, `/system/health` db/mqtt/mlflow/edge up
+  (LLM mode: the .env key is set, so the stack runs in LLM mode; template mode still works).
+- `/twin` on :8000 right after the reset: six lines in layout order, 24 motors live, model
+  provenance v70478 / demo-prep@thor / parity passed, live counters 36 msgs/s, 16.8 preds/s,
+  edge inference p50 0.17 ms, path latency p50 509 ms.
+- Headless Chrome against the Docker web on :5173 (Iris Xe, 1080p): overview with live pulses
+  49-60 fps, performance mode 60 fps, X-Ray hover + HUD (PLC `Speed_Act ← rpm`, simulated
+  `Speed_SP`, MES labelled), rewind, Dashboard X-Ray hover + HUD drawer; console errors 0.
+- MTR-042 status trace from `/twin` (plant time): healthy p 0.21 (08-27 21:00) → warning p 0.42
+  (22:00) → critical p 0.72 (23:30) → critical p 0.9-1.0 from 08-28 02:00 on, through R1/R2/R3.
+  Before the sustained rise one idle-shift window dipped the median back to 0.12 for about a
+  minute of wall clock; the decision contract path (Run analysis → approval → work order) was
+  not exercised here, the team rehearses it per `demo-walkthrough.md`.
