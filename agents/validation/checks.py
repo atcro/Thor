@@ -67,6 +67,11 @@ LEAKAGE_CORR_LIMIT: float = 0.98
 #   CLASSIFICATION_THRESHOLD  -> recall / precision / F1
 #   EARLY_WARNING_THRESHOLD   -> the alarm that defines warning lead time (sustained rows)
 ISOTONIC_MIN_ROWS: int = 200
+#: Isotonic regression needs several independent failure events to shape its step function;
+#: with fewer failing motors than this among the calibration assets it degenerates into a
+#: near-step (probability jumps from ~0 to ~1 within a sample), so Platt scaling (two
+#: parameters, smooth) is used instead.
+ISOTONIC_MIN_POSITIVE_ASSETS: int = 2
 MIN_RECALL_TO_PASS: float = 0.6
 MIN_LEAD_TIME_H_TO_PASS: float = 12.0
 HOLDOUT_ASSET_FRACTION: float = 0.25
@@ -336,16 +341,22 @@ def run_backtest(
 
 
 def calibrate_probabilities(
-    model: Any, X_cal: pd.DataFrame, y_cal: pd.Series
+    model: Any,
+    X_cal: pd.DataFrame,
+    y_cal: pd.Series,
+    n_positive_assets: int | None = None,
 ) -> tuple[Any, CalibrationReport]:
     """Fit a probability calibrator on top of an already-fitted classifier.
 
     Inputs: fitted model with predict_proba, calibration features (exactly the FeatureSpec
-    columns) and labels from assets the model was not trained on. Isotonic regression when
-    there are >= 200 calibration rows, Platt sigmoid otherwise. Output: (calibrated wrapper
-    exposing predict_proba, CalibrationReport with Brier score before/after and 10-bin
-    reliability data). If y_cal has a single class calibration is impossible; the model is
-    returned inside a pass-through wrapper with method="none".
+    columns) and labels from assets the model was not trained on, and optionally the number of
+    distinct failing assets among those rows. Method: isotonic regression when there are
+    >= ISOTONIC_MIN_ROWS rows AND (when known) >= ISOTONIC_MIN_POSITIVE_ASSETS failing
+    assets; Platt sigmoid otherwise -- isotonic fitted on one failure event is a near-step
+    function that makes the early-warning and classification thresholds fire together.
+    Output: (calibrated wrapper exposing predict_proba, CalibrationReport with Brier score
+    before/after and 10-bin reliability data). If y_cal has a single class calibration is
+    impossible; the model is returned inside a pass-through wrapper with method="none".
     """
     y = np.asarray(y_cal).astype(int)
     p_before = _positive_proba(model, X_cal)
@@ -360,7 +371,13 @@ def calibrate_probabilities(
             reliability_bins=_reliability_bins(y, p_before) if len(y) else [],
             transform={"method": "none"},
         )
-    method = "isotonic" if len(y) >= ISOTONIC_MIN_ROWS else "sigmoid"
+    enough_events = n_positive_assets is None or n_positive_assets >= ISOTONIC_MIN_POSITIVE_ASSETS
+    method = "isotonic" if len(y) >= ISOTONIC_MIN_ROWS and enough_events else "sigmoid"
+    if len(y) >= ISOTONIC_MIN_ROWS and not enough_events:
+        log.info(
+            "calibration: %d failing asset(s) among calibration rows; using sigmoid, not isotonic",
+            n_positive_assets,
+        )
     calibrated = CalibratedClassifierCV(FrozenEstimator(model), method=method)
     calibrated.fit(X_cal, y)
     p_after = _positive_proba(calibrated, X_cal)
@@ -599,8 +616,9 @@ def validate(candidates: CandidateSet, features_df: pd.DataFrame, run_id: str) -
       2. champion = the candidate with the highest Industrial Model Score on the VALIDATION
          assets, scored with its fitted artifact (metrics at CLASSIFICATION_THRESHOLD, lead
          time at EARLY_WARNING_THRESHOLD, see agents/metrics.py) -- test assets untouched;
-      3. the champion is calibrated on the CALIBRATION assets (isotonic >= 200 rows, else
-         sigmoid; "none" with one class) and saved as <candidate_id>_calibrated.joblib;
+      3. the champion is calibrated on the CALIBRATION assets (isotonic when >= 200 rows and
+         >= 2 failing assets, else Platt sigmoid; "none" with one class) and saved as
+         <candidate_id>_calibrated.joblib;
       4. final metrics come from the calibrated champion on the TEST assets only: one
          ``BacktestFold`` (fold 0, train_assets = split.train, test_assets = split.test),
          ``test_metrics``, ``lead_time`` (median over failing test assets) and the reported
@@ -645,8 +663,9 @@ def validate(candidates: CandidateSet, features_df: pd.DataFrame, run_id: str) -
     if cal_rows.empty:
         cal_rows = val_rows
         notes.append("calibration group empty: calibrated on validation rows")
+    n_pos_assets = int(cal_rows.loc[cal_rows["label"] == 1, "asset_id"].nunique())
     calibrated, calibration = calibrate_probabilities(
-        model, cal_rows[spec.features], cal_rows["label"].astype(int)
+        model, cal_rows[spec.features], cal_rows["label"].astype(int), n_positive_assets=n_pos_assets
     )
     original = Path(champion.artifact_path or f"{champion.candidate_id}.joblib")
     cal_path = original.with_name(f"{champion.candidate_id}_calibrated.joblib")
@@ -655,7 +674,7 @@ def validate(candidates: CandidateSet, features_df: pd.DataFrame, run_id: str) -
     notes.append(f"champion_artifact={cal_path}")
     notes.append(
         f"calibration ({calibration.method}) fitted on {len(cal_rows)} rows of "
-        f"{sorted(set(cal_rows['asset_id']))}"
+        f"{sorted(set(cal_rows['asset_id']))} with {n_pos_assets} failing asset(s)"
     )
 
     # Final, untouched test assets.

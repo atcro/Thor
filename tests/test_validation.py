@@ -167,6 +167,26 @@ def test_calibrate_isotonic_when_enough_rows(frame: pd.DataFrame, fitted_rf: Ran
     assert rep.reliability_bins and all(c > 0 for _, _, c in rep.reliability_bins)
 
 
+def test_calibrate_sigmoid_when_only_one_failing_asset(
+    frame: pd.DataFrame, fitted_rf: RandomForestClassifier
+) -> None:
+    """Isotonic on a single failure event is a near-step curve; with < 2 failing assets among
+    the calibration rows Platt scaling is used even when there are plenty of rows."""
+    hold = frame.loc[frame["asset_id"].isin(["MTR-007", "MTR-008"])]  # one failing motor
+    assert len(hold) >= 200 and hold.loc[hold["label"] == 1, "asset_id"].nunique() == 1
+    wrapper, rep = checks.calibrate_probabilities(
+        fitted_rf, hold[FEATURES], hold["label"], n_positive_assets=1
+    )
+    assert rep.method == "sigmoid" and rep.transform["method"] == "sigmoid"
+    assert wrapper.predict_proba(hold[FEATURES]).shape == (len(hold), 2)
+    # two failing motors -> isotonic again (same rows plus MTR-006)
+    hold2 = frame.loc[frame["asset_id"].isin(["MTR-006", "MTR-007", "MTR-008"])]
+    _, rep2 = checks.calibrate_probabilities(
+        fitted_rf, hold2[FEATURES], hold2["label"], n_positive_assets=2
+    )
+    assert rep2.method == "isotonic"
+
+
 def test_calibrate_sigmoid_when_few_rows(frame: pd.DataFrame, fitted_rf: RandomForestClassifier) -> None:
     hold = frame.loc[frame["asset_id"] == "MTR-008"].iloc[::6].head(100)
     assert hold["label"].nunique() == 2 and len(hold) < 200
