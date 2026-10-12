@@ -331,3 +331,16 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
 - **Tests run after the fixes:** ruff clean; `pytest tests/test_simulator.py tests/test_twin.py
   tests/test_ground_truth_isolation.py tests/test_orchestrator.py tests/test_telemetry_routes.py`
   → 65 passed; `tsc` clean; vitest 20 passed; web build ok.
+
+## 2026-10-11 21:30 — Docker images and wrap-up
+
+- `docker compose build`: `thor-main-api`, `thor-main-prep` (rebuilt after the audit fixes),
+  `thor-main-edge`, `thor-main-replay`, `thor-main-web` all built (exit 0); `docker compose config
+  --quiet` valid. The team's running stack still runs the pre-Phase-A images: `docker compose
+  up -d --build` (or `.\scripts\demo_reset.ps1`) picks up the new ones.
+- Native processes stopped (API 8010, edge 8011, vite 5175, headless Chrome 9333). Scratch state
+  lives only in `%LOCALAPPDATA%\Temp\thor-native`.
+- **Next (Prompt B session):** read `docs/finals/session-notes.md` Phase A section; Bolt Designer
+  adds its own `DecisionState` values, HUD module and `/twin` badge styles. Before the demo:
+  `.\scripts\demo_reset.ps1`, open http://localhost:5173 (lands on the 3-D Digital Twin), press
+  Overview, then follow `docs/finals/demo-walkthrough.md` from the Dashboard/Asset 360 steps.
