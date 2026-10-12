@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
 
-from apps.api import db
+from apps.api import db, live
 from apps.api.schemas import ObservedTelemetryRow, TelemetryRow
 from apps.api.settings import get_settings
 
@@ -60,6 +60,9 @@ class PredictionIn(BaseModel):
     model_version: str
     failure_probability: float = Field(ge=0.0, le=1.0)
     source: str = "edge"
+    #: Edge-reported inference time for this row (ms). Measured, not stored: it feeds the
+    #: twin's live counters (apps/api/live.py) and is ignored by the database insert.
+    inference_ms: float | None = None
 
 
 class PredictionOut(BaseModel):
@@ -108,8 +111,10 @@ def ingest(
 
     Input: TelemetryRow or list[TelemetryRow]. Output: {"inserted": rows submitted}.
     """
-    rows = payload if isinstance(payload, list) else [payload]
-    n = db.insert_telemetry([_normalize(r) for r in rows], engine=engine)
+    rows = [_normalize(r) for r in (payload if isinstance(payload, list) else [payload])]
+    n = db.insert_telemetry(rows, engine=engine)
+    for r in rows:
+        live.record_ingest(r.asset_id, r.ts)
     return {"inserted": n}
 
 
@@ -188,6 +193,8 @@ def post_prediction(
         ],
         engine=engine,
     )
+    for p in preds:
+        live.record_prediction(p.asset_id, _as_utc(p.ts), float(p.failure_probability), p.inference_ms)
     if isinstance(payload, list):
         return {"ok": True, "inserted": n}
     return {"ok": True}
@@ -248,6 +255,7 @@ class MqttSubscriber:
             return False
         self.messages_received += 1
         self.last_message_ts = row.ts
+        live.record_ingest(row.asset_id, row.ts)
         with self._lock:
             self._buffer.append(row)
             full = len(self._buffer) >= self.batch_size

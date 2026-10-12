@@ -168,5 +168,11 @@ def score_assets(
         )
     if rows:
         db.insert_predictions(rows, engine=engine)
+        # Control-plane scores are prediction arrivals too (the twin's pulses and counters);
+        # no inference_ms: the centre does not time itself, only the edge reports that.
+        from apps.api.live import record_prediction
+
+        for r in rows:
+            record_prediction(r["asset_id"], r["ts"], float(r["failure_probability"]))
     log.info("scored %d assets with %s (%d skipped)", len(scored), ref.version, len(skipped))
     return ScoreResult(model_version=ref.version, scored=scored, skipped=skipped)

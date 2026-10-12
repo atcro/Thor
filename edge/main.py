@@ -7,7 +7,8 @@ httpx / pydantic. Never imports from `apps/` or `agents/`.
 * Subscribes to `telemetry/#`, keeps a per-asset rolling buffer of raw rows, computes the
   canonical feature set with `edge.features` (regime inferred from rpm / load against the
   sidecar baseline), runs onnxruntime, applies the sidecar calibration and publishes
-  `predictions/{asset_id}` = {asset_id, ts, failure_probability, model_version}; the same
+  `predictions/{asset_id}` = {asset_id, ts, failure_probability, model_version, source,
+  inference_ms (measured feature + ONNX time for that row)}; the same
   payloads are POSTed best-effort to `{CONTROL_PLANE_URL}/predictions` in batches (a JSON
   array of up to EDGE_POST_BATCH_ROWS rows, at most every EDGE_POST_INTERVAL_S seconds).
 * GET  /health   -> {status, model_version, n_assets_seen, uptime_s, ...}
@@ -114,8 +115,8 @@ class EdgeState:
         """Buffer one raw telemetry row and score it when a full window is available.
 
         Input: telemetry dict with at least asset_id, ts and the 8 RAW_COLUMNS. Output: the
-        prediction payload {asset_id, ts, failure_probability, model_version} or None (no model
-        yet, window not full, or malformed row).
+        prediction payload {asset_id, ts, failure_probability, model_version, source,
+        inference_ms} or None (no model yet, window not full, or malformed row).
         """
         try:
             asset_id = str(payload["asset_id"])
@@ -138,6 +139,7 @@ class EdgeState:
             if model is None or len(buf) < model.window_rows:
                 return None
             window = list(buf)[-model.window_rows :]
+        t0 = time.perf_counter()
         try:
             feats = compute_features_dict(window, model.baseline)
             p = predict_one(model, feats)
@@ -145,6 +147,7 @@ class EdgeState:
             self.last_error = f"inference failed: {exc}"
             log.warning("inference failed for %s: %s", asset_id, exc)
             return None
+        inference_ms = (time.perf_counter() - t0) * 1000.0
         ts = row["ts"] or datetime.now(UTC).isoformat()
         pred = {
             "asset_id": asset_id,
@@ -152,6 +155,9 @@ class EdgeState:
             "failure_probability": round(float(p), 6),
             "model_version": model.version,
             "source": "edge",
+            # Measured wall time of feature computation + ONNX inference for this row. The
+            # control plane's twin reports its p50/p95; it is never stored with the prediction.
+            "inference_ms": round(inference_ms, 3),
         }
         with self.lock:
             self.n_predictions += 1

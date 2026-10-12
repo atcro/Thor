@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -25,11 +26,13 @@ from sqlalchemy.engine import Engine
 from apps.api import db
 from apps.api.graph_state import run_summary
 from apps.api.schemas import (
+    Asset,
     FeatureSpec,
     FleetAsset,
     ModelStage,
     ObservedTelemetryRow,
     Thresholds,
+    WorkOrder,
 )
 from apps.api.settings import get_settings
 
@@ -122,12 +125,29 @@ def _ts_of(value: Any) -> datetime | None:
     return None
 
 
-def compute_fleet(engine: Engine | None = None) -> list[FleetAsset]:
-    """Build the fleet table: one FleetAsset per registered asset.
+@dataclass
+class FleetInputs:
+    """Everything the fleet table and the 3-D twin read, loaded with a fixed handful of
+    queries (never one per asset): assets, newest telemetry row per asset (raw DB records,
+    never exposed as-is), displayed prediction per asset (median of the last
+    DISPLAY_MEDIAN_ROWS, see `db.latest_prediction_rows`), open contract ids, newest work
+    order per asset, the production FeatureSpec and the regime inferred per asset."""
 
-    Health and failure probability come only from the latest approved-model prediction; the
-    regime is inferred from the latest rpm/load with the production model's centroids. Sorted
-    by health ascending (worst first); assets with no prediction yet come last.
+    assets: list[Asset] = field(default_factory=list)
+    latest_by_asset: dict[str, dict[str, Any]] = field(default_factory=dict)
+    preds: dict[str, dict[str, Any]] = field(default_factory=dict)
+    open_contracts: dict[str, str] = field(default_factory=dict)
+    work_orders: dict[str, WorkOrder] = field(default_factory=dict)
+    spec: FeatureSpec | None = None
+    regime_by_asset: dict[str, str | None] = field(default_factory=dict)
+
+
+def load_fleet_inputs(engine: Engine | None = None) -> FleetInputs:
+    """Load the shared inputs of `/fleet` and `/twin` (see `FleetInputs`).
+
+    Input: engine (default process-wide). Output: FleetInputs. The regime is inferred from
+    each asset's latest rpm/load with the production baseline; the simulator's `regime`,
+    `health` and `failure_within_h` columns are never read for display.
     """
     engine = engine or db.get_engine()
     assets = db.list_assets(engine)
@@ -135,7 +155,6 @@ def compute_fleet(engine: Engine | None = None) -> list[FleetAsset]:
     preds = db.latest_prediction_rows(engine)
     open_contracts = db.open_contract_by_asset(engine)
     work_orders = db.work_order_by_asset(engine)
-    stage = _registry_stage(engine)
     spec = production_spec(engine)
     latest_by_asset: dict[str, dict[str, Any]] = {}
     if not latest.empty:
@@ -148,6 +167,33 @@ def compute_fleet(engine: Engine | None = None) -> list[FleetAsset]:
         if row is not None:
             regime_by_asset[a.asset_id] = regimes[i]
             i += 1
+    return FleetInputs(
+        assets=assets,
+        latest_by_asset=latest_by_asset,
+        preds=preds,
+        open_contracts=open_contracts,
+        work_orders=work_orders,
+        spec=spec,
+        regime_by_asset=regime_by_asset,
+    )
+
+
+def compute_fleet(engine: Engine | None = None) -> list[FleetAsset]:
+    """Build the fleet table: one FleetAsset per registered asset.
+
+    Health and failure probability come only from the latest approved-model prediction; the
+    regime is inferred from the latest rpm/load with the production model's centroids. Sorted
+    by health ascending (worst first); assets with no prediction yet come last.
+    """
+    engine = engine or db.get_engine()
+    inputs = load_fleet_inputs(engine)
+    assets = inputs.assets
+    latest_by_asset = inputs.latest_by_asset
+    preds = inputs.preds
+    open_contracts = inputs.open_contracts
+    work_orders = inputs.work_orders
+    regime_by_asset = inputs.regime_by_asset
+    stage = _registry_stage(engine)
     out: list[FleetAsset] = []
     for a in assets:
         row = latest_by_asset.get(a.asset_id)

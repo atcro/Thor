@@ -420,6 +420,8 @@ def test_edge_ingest_produces_prediction_after_full_window(
     assert pred["asset_id"] == "MTR-042" and pred["model_version"] == "v7"
     assert 0.0 <= pred["failure_probability"] <= 1.0
     assert pred["ts"] == payload[-1]["ts"]
+    # measured feature + ONNX time travels with the prediction (the twin's live counters)
+    assert isinstance(pred["inference_ms"], float) and 0.0 <= pred["inference_ms"] < 10_000
     h = c.get("/health").json()
     assert h["n_assets_seen"] == 1 and h["n_predictions"] == 3 and h["n_rows"] == 14
     assert c.post("/ingest", json={"asset_id": "MTR-001"}).json()["predictions"] == []

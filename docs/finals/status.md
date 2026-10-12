@@ -251,3 +251,22 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
 - **Next:** twin scaffolding (`apps/web/src/twin/{palette,status,sceneTypes}.ts`), then the HUD /
   X-Ray / rewind sub-agent and the 3D scene sub-agent; I write `Twin.tsx`, `useTwinLive.ts` and the
   route smoke test.
+
+## 2026-10-11 18:45 — twin API landed
+
+- Backend sub-agent delivered `apps/api/live.py` (live bus: seq'd events, 60 s per-asset message
+  counts, 10 s rates, edge `inference_ms` p50/p95, motor→edge→control-plane path latency from
+  one clock, `data_state` with `TWIN_STALE_AFTER_S` 30 s), `apps/api/plant.py` (simulated MES feed,
+  PLC tag mapping), `apps/api/routes/twin.py` (`/twin`, `/twin/hud/{id}`, `/twin/rewind`,
+  `/twin/events`, `/ws/twin`), hooks in `routes/telemetry.py`, `inference_ms` from `edge/main.py`,
+  `tests/test_twin.py` (18 tests incl. the MES-feeds-no-decision rule), isolation test extended
+  to the four twin routes, `docs/INTERFACES.md`. I added `record_prediction` to
+  `apps/api/scoring.py` so control-plane scores (Run analysis, `/pipeline/score`) pulse too.
+- **Tests run (by me):** `pytest tests/test_twin.py tests/test_ground_truth_isolation.py
+  tests/test_telemetry_routes.py tests/test_edge.py tests/test_api.py` → 59 passed;
+  `pytest tests/test_twin.py tests/test_orchestrator.py` → 35 passed; `ruff check .` clean.
+  Sub-agent's own full run: 237 passed. Native smoke on :8010 (reported by the sub-agent): events,
+  counters and `data_state` move after `POST /ingest` + `POST /predictions`.
+- **Next:** HUD/X-Ray/rewind sub-agent and 3D scene sub-agent are still running; then wire
+  `XRayProvider` in `App.tsx`, run web build + vitest + full pytest, native end-to-end with the
+  replay, fps measurement, Docker build, fresh-context audit.

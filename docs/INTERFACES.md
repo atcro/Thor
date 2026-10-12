@@ -88,7 +88,7 @@ router = APIRouter()
 POST /ingest            body: list[TelemetryRow] | TelemetryRow   -> {"inserted": int}
 GET  /assets/{asset_id}/telemetry?hours=24&limit=2000              -> list[TelemetryRow]
 GET  /assets/{asset_id}/predictions?limit=500                      -> list[{ts, failure_probability, model_version, source}]
-POST /predictions       body: {asset_id, ts, model_version, failure_probability, source} | [..]  -> {"ok": true[, "inserted": n]}
+POST /predictions       body: {asset_id, ts, model_version, failure_probability, source, inference_ms?} | [..]  -> {"ok": true[, "inserted": n]}   (inference_ms feeds the twin's live counters only; never stored)
                         duplicates on (asset_id, ts, model_version, source) are ignored
 def start_mqtt_subscriber(engine) -> None    # background paho client; subscribes telemetry/#,
                                              # inserts rows in batches of 50 or every 2s; never
@@ -341,6 +341,12 @@ apps/api/routes/copilot.py
 apps/api/routes/work_orders.py     (handoff to the plant CMMS -- Thor only records what the plant reports back)
   GET  /work-orders?asset_id=&active=      -> list[WorkOrder]  (approved maintain_now/maintain_later contracts + plant-reported status; derived, never stored)
   POST /work-orders/{contract_id}/events   body {status: in_progress|completed, plant_ts, source, note} -> WorkOrder  (insert-only event; 404 unless approved, 409 out of order)
+apps/api/routes/twin.py            (Twin (Phase A): 3-D Digital Twin + X-Ray; read-only, deterministic, same scrub as /fleet -- no simulator ground truth, regime inferred; apps/api/plant.py (PLC tags, simulated MES feed) is imported here only)
+  GET  /twin                               -> TwinSnapshot  {site, sites, plant_time, thresholds, lines: [TwinLine (+ simulated MES feed per packaging line)], assets: [TwinAsset (status glyph, data_state, decision_state, median probability, latest ObservedTelemetryRow, measured msgs_last_60s)], model: ModelProvenance|null, live: LiveCounters}  (polled every 2 s; fixed query count)
+  GET  /twin/hud/{asset_id}                -> TwinHud  {asset, line, prediction_trend (last 36 per-sample rows), trend: rising|falling|flat|null, plc_tags (source field per tag; Speed_SP simulated), drivers (newest Decision Contract's SHAP), drivers_source, contract, contract_status, model, mes}  (404 unknown asset)
+  GET  /twin/rewind?max_points=400&asset_id=  -> TwinRewind  {start, end, thresholds, assets: [RewindSeries (points <= max_points, plant-time markers: early_warning (3 sustained rows >= 0.3), predicted_failure (>= 0.5), work_order_started/completed; lead_time_h)], validated_lead_time_h}  (stored predictions only, newest 6000 rows per asset)
+  GET  /twin/events?since=0                -> TwinEventBatch  {since, next, events: [TwinEvent ingest|prediction with inference_ms, path_latency_ms], dropped, live: LiveCounters}  (pass `next` back as `since`; > 500 pending are aggregated per asset/kind with `count`)
+  WS   /ws/twin                            -> TwinEventBatch JSON frames every 250 ms when new events exist, heartbeat at least every 2 s; client may send {"since": N} to resync
 ```
 
 ---

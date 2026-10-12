@@ -18,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from apps.api import db
-from apps.api.schemas import GROUND_TRUTH_COLUMNS, SIMULATOR_ONLY_COLUMNS
+from apps.api.schemas import GROUND_TRUTH_COLUMNS, SENSOR_COLUMNS, SIMULATOR_ONLY_COLUMNS
 from tests.test_orchestrator import configure_env, seed_small_fleet
 
 
@@ -77,6 +77,18 @@ def test_db_rows_carry_ground_truth_but_responses_do_not(client: TestClient) -> 
     assert not (set(_keys(series)) & set(SIMULATOR_ONLY_COLUMNS))
     health = client.get("/system/health").json()
     _assert_no_ground_truth(health, "GET /system/health")
+    # the 3-D twin goes through the same scrub (CLAUDE.md section 15)
+    client.post("/ingest", json={**series[-1], "ts": "2026-09-01T12:10:00Z"})  # make it live
+    twin = client.get("/twin").json()
+    _assert_no_ground_truth(twin, "GET /twin")
+    for a in twin["assets"]:
+        assert a["latest"] is not None
+        assert set(a["latest"]) == {"asset_id", "ts", *SENSOR_COLUMNS}
+        assert not (set(_keys(a)) & set(GROUND_TRUTH_COLUMNS))
+    for path in ("/twin/hud/MTR-042", "/twin/rewind", "/twin/events"):
+        r = client.get(path)
+        assert r.status_code == 200, path
+        _assert_no_ground_truth(r.json(), f"GET {path}")
 
 
 def test_bolt_tools_never_see_ground_truth(client: TestClient) -> None:
