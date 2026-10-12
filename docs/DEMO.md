@@ -9,28 +9,29 @@ cp .env.example .env            # add ANTHROPIC_API_KEY for LLM-drafted explanat
 docker compose up --build       # api :8000, web :5173, mlflow :5000, edge :8001, mqtt :1883
 ```
 
-Wait for `api` to finish seeding and the replay container to start publishing. The API seeds the
-first 80% of the 30-day history (four completed bearing failures the model can learn from); the
-replay then streams the remaining six days at 1800x (30 minutes of plant time per second, so
-about 5 minutes of wall-clock). Timeline from the moment the replay starts:
+Wait for `api` to finish seeding. The API seeds the first 80 % of the 30-day history (six
+completed bearing failures the model learns from) and then NOTHING else happens: there is no
+production model, every motor on Fleet is grey ("no prediction yet") and the replay container
+holds. The presenter trains in AutoML Studio, signs the model off in ModelOps, and that sign-off
+releases the recorded history (900×, one plant hour every 4 s). MTR-042 — healthy for the whole
+seeded part — then goes amber and red on its own within about a minute and stays red (latched)
+until the engineer's work order repairs it.
 
-- ~1 min: MTR-021 fails unplanned (no model was watching it yet) — the "old way".
-- ~3 min: MTR-042 enters the 48 h pre-failure window; its approved-model probability is visibly
-  rising. Click **Run analysis** here. It reuses the production model and takes seconds.
-- ~5 min: the replay reaches the end of the history and loops.
-
-`docker compose down -v` resets everything to t=0. Open http://localhost:5173.
+`.\scripts\demo_reset.ps1` (or `scripts/demo_reset.sh`) resets everything; `-Prep` / `--prep`
+runs the fallback training job instead of training on stage. The finals click path with measured
+timings is `docs/finals/demo-walkthrough.md`; this file is the older 3-minute recording script.
+Open http://localhost:5173.
 
 ## Shot list
 
 | t | Screen | What happens | What to say |
 |---|---|---|---|
-| 0:00 | Dashboard (formerly Fleet; the 3-D Digital Twin is the landing view) | 24 motors, all green. MTR-042 turns amber as vibration RMS climbs. The System panel shows db / mqtt / mlflow / edge all up. | "Thor watches the whole fleet. This is replayed historical telemetry over MQTT, not random noise, so the story is reproducible." |
-| 0:25 | Asset 360 | Click MTR-042. Live vibration + bearing temperature chart; regime badge shows the current operating state (R1 idle/startup, R2 nominal, R3 high-load; the fleet spends roughly 23 / 47 / 30 % of its time in each). | "Before anything trains, Thor clusters operating state. A load change is never mistaken for a fault." |
-| 0:40 | Asset 360 | Click **Run analysis**. Stepper: load production model → explaining → awaiting approval, in seconds. Nothing is trained on stage: the model was trained, validated and promoted by the demo prep before the demo (see `docs/finals/model-card.md`). | "One LangGraph orchestrator, five deterministic toolboxes. The approved model scores the motor; the LLM only phrases the explanation of numbers Python already produced." |
-| 1:10 | AutoML Studio | Switch tabs while training finishes. Data quality 100/100 (clean synthetic channels; the score drops for missing or flatlined signals), task = classification, 13 regime-normalized features, three candidates (RF / XGBoost / LightGBM) ranked by **Industrial Model Score** — recall, lead time, calibration, latency — not accuracy. | "Validation is asset-level and time-ordered: the champion is scored on machines it has never seen." |
+| 0:00 | Fleet (the landing view; the 3-D Digital Twin has its own route under Bolt) | 24 motors, grey until a model is trained and signed off, then green ("within healthy baseline"). MTR-042 turns amber, then red, as vibration RMS climbs. The System panel shows db / mqtt / mlflow / edge all up. | "Thor watches the whole fleet. This is replayed historical telemetry over MQTT, not random noise, so the story is reproducible." |
+| 0:25 | Asset 360 | Click MTR-042. Live vibration + bearing temperature chart; the state badge shows the current operating state (startup/idle, running, heavy load; the fleet spends roughly 23 / 47 / 30 % of its time in each). | "Before anything trains, Thor clusters operating state. A load change is never mistaken for a fault." |
+| 0:40 | Asset 360 | Click **Run analysis**. Stepper: load production model → explaining → awaiting approval, in seconds. It reuses the model trained in AutoML Studio and signed off in ModelOps a minute earlier (see `docs/finals/model-card.md`). | "One LangGraph orchestrator, five deterministic toolboxes. The approved model scores the motor; the LLM only phrases the explanation of numbers Python already produced." |
+| 1:10 | AutoML Studio | The run that trained the model: data quality 100/100 (clean synthetic channels; the score drops for missing or flatlined signals), task = classification, 13 state-normalized features, three candidates (RF / XGBoost / LightGBM) ranked by **Industrial Model Score** — recall, lead time, calibration, latency — not accuracy. | "Validation is asset-level and time-ordered: the champion is scored on machines it has never seen." |
 | 1:40 | Asset 360 | Stage = awaiting approval. The Decision Contract panel: calibrated failure probability of about 0.5 within the 48 h horizon (isotonic calibration on rare positives, so it is honest rather than dramatic), SHAP bars led by bearing temperature and vibration RMS, three cost options, the recommended option and window, cited manual passages (the first is motor-maintenance.md section 4.2 Drive-end bearing wear), explanation text with a "drafted by LLM" or "template" chip. | "Prescriptive, not just predictive. Under configurable plant-cost assumptions Thor compares maintain now, maintain in the next low-load window, and run to failure, and recommends the cheapest expected outcome -- on the recorded runs that was maintain now. Every number here came from Python; the paragraph came from the LLM, restricted to those numbers." |
-| 2:15 | Asset 360 | Type an approver name, click **Approve**. Panel locks; approval row appears under the contract. Within seconds the Dashboard card flips to "offline · in maintenance", then the motor comes back on its healthy baseline and its probability falls (the simulated CMMS executes at the approval for the demo; the contract records the scheduled window a real plant would use). | "Nothing executes without this click. The contract is immutable — the approval is a linked row, and the contract hash is the audit trail. This JSON is what hands off to the plant's CMMS." |
+| 2:15 | Asset 360 | Type an approver name, click **Approve**. Panel locks; approval row appears under the contract. Within seconds the Fleet card flips to "offline · in maintenance", then the motor comes back on its healthy baseline, the latched alarm clears and its probability falls (the simulated CMMS executes at the approval for the demo; the contract records the scheduled window a real plant would use). | "Nothing executes without this click. The contract is immutable — the approval is a linked row, and the contract hash is the audit trail. This JSON is what hands off to the plant's CMMS." |
 | 2:35 | ModelOps | Registry shows the production model (promoted by a separate, named approval before the demo), its ONNX artifact path, and the promotion request with its approver. Drift panel shows PSI per feature. | "A maintenance approval never promotes a model. Promotion is its own decision with its own approver, and a model that fails validation or edge parity cannot be promoted at all. MLOps keeps watching for drift after the demo ends." |
 | 2:50 | Copilot | Ask Bolt: "why is MTR-042 at risk?" It chains three read-only tools and answers in three parts: the contract's evidence, the contract's own manual citation, and precedent -- real unplanned work orders on motor bearings from a public dataset, with labor hours. Follow with "how long does a bearing job usually take?" (quartiles over ~50 similar cases) and "approve it" (it refuses and points at the UI). | "The copilot reads the same evidence, adds precedent from 8,000 real work orders, and still cannot act." |
 
@@ -53,7 +54,7 @@ not single values, unless you are reading them off the screen.
 | warning lead time (held-out failures) | 38 h to 101 h median |
 | calibrated P(failure within 48 h) at the gate | 0.07 early in the window, about 0.5 inside it |
 | time to the approval gate | 82 to 85 s |
-| edge pickup after approval | ~30 s, then predictions flow to the Dashboard and the 3-D Digital Twin |
+| edge pickup after approval | ~30 s, then predictions flow to Fleet and the 3-D Digital Twin |
 | field history behind Bolt | 8,355 real unplanned work orders (FMUCD, CC BY-NC) |
 
 Never say a dollar figure as fact: the plant-cost assumptions are configurable settings.
@@ -64,7 +65,7 @@ Never say a dollar figure as fact: the plant-cost assumptions are configurable s
   identical otherwise. Say so on camera — it demonstrates that the LLM is not load-bearing.
 - No Docker: `python -m data.simulator.generate`, `uvicorn apps.api.main:app --reload`,
   `python -m streaming.replay.replay --once --speed 0`, `npm --prefix apps/web run dev`.
-- Reset between takes: `docker compose down -v` (drops the volumes; the replay restarts from t=0).
+- Reset between takes: `.\scripts\demo_reset.ps1` / `scripts/demo_reset.sh` (drops the volumes; seeded, no model, replay held until the sign-off).
 
 ## Never say
 

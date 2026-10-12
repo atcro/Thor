@@ -83,6 +83,7 @@ def latest_feature_rows(
     """
     from agents.ml_architect.features import build_feature_pipeline
 
+    df_asset = after_last_gap(df_asset)
     if len(df_asset) < int(spec.window_rows):
         return None
     fdf, _ = build_feature_pipeline(
@@ -102,6 +103,29 @@ def latest_feature_rows(
         x = pd.DataFrame([row[list(spec.features)].astype(float).to_dict()])
         out.append((x, ts.to_pydatetime()))
     return out
+
+
+#: A gap longer than this many sampling steps means the motor was off (an approved work
+#: order): the window restarts after it, as it does at the edge (`edge/main.py::GAP_STEPS`).
+GAP_STEPS: float = 2.5
+
+
+def after_last_gap(df_asset: pd.DataFrame) -> pd.DataFrame:
+    """Rows of one asset after its last outage gap (> GAP_STEPS sampling steps between
+    consecutive rows), so a repaired motor is scored on its return only. Input: one asset's
+    telemetry sorted by ts. Output: the trailing contiguous rows (the whole frame if no gap)."""
+    if len(df_asset) < 2 or "ts" not in df_asset.columns:
+        return df_asset
+    ts = pd.to_datetime(df_asset["ts"], utc=True).reset_index(drop=True)
+    deltas = ts.diff().dt.total_seconds()
+    positive = deltas[deltas > 0]
+    if positive.empty:
+        return df_asset
+    step = float(positive.median())
+    gaps = deltas[deltas > GAP_STEPS * step]
+    if gaps.empty:
+        return df_asset
+    return df_asset.iloc[int(gaps.index[-1]) :].reset_index(drop=True)
 
 
 def window_is_sandbox(df_asset: pd.DataFrame, ts: datetime, window_rows: int) -> bool:

@@ -314,3 +314,31 @@ def _row_dict(asset_id: str, ts: datetime) -> dict[str, Any]:
         "vibration_crest": 4.0, "bearing_temp_c": 61.0, "motor_temp_c": 55.0, "current_a": 40.0,
         "rpm": 1480.0, "load_pct": 55.0,
     }
+
+
+# --------------------------------------------------------------------------------------
+# Every approved motor comes back green: a repaired motor's window restarts after the outage
+# --------------------------------------------------------------------------------------
+
+
+def test_window_restarts_after_an_outage_gap() -> None:
+    import pandas as pd
+
+    from apps.api.scoring import after_last_gap
+    from edge.main import EdgeConfig, EdgeState
+
+    ts = pd.date_range("2025-08-26 00:00", periods=20, freq="10min", tz="UTC")
+    ts = ts[:10].append(ts[10:] + pd.Timedelta(hours=3))  # three hours off for the repair
+    df = pd.DataFrame({"asset_id": "MTR-042", "ts": ts, "vibration_rms": range(20)})
+    tail = after_last_gap(df)
+    assert len(tail) == 10 and int(tail["vibration_rms"].iloc[0]) == 10
+    assert len(after_last_gap(df.iloc[:10])) == 10  # no gap, nothing dropped
+
+    state = EdgeState(EdgeConfig(mqtt_enabled=False, buffer_rows=64))
+    base = {c: 1.0 for c in ("vibration_rms", "vibration_kurtosis", "vibration_crest", "bearing_temp_c",
+                             "motor_temp_c", "current_a", "rpm", "load_pct")}
+    for t in ts[:10]:
+        state.process_row({"asset_id": "MTR-042", "ts": t.isoformat(), **base})
+    assert len(state.buffers["MTR-042"]) == 10
+    state.process_row({"asset_id": "MTR-042", "ts": ts[10].isoformat(), **base})
+    assert len(state.buffers["MTR-042"]) == 1  # the pre-outage rows never meet the healthy return

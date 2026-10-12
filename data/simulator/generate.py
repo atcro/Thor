@@ -97,9 +97,11 @@ ASSET_IDS[3] = DEMO_ASSET
 SEED_FRACTION_DEFAULT: float = 0.80
 
 #: Onset of the demo motor's degradation as a fraction of the horizon: DEMO_ONSET_AFTER_H
-#: plant hours after the replay's first pass begins (16 s of wall clock at 900x). Measured on
-#: 2026-10-12 (docs/finals/demo-walkthrough.md): green for ~20 s, amber, then sustained red.
-DEMO_ONSET_AFTER_H: float = 4.0
+#: plant hours after the replay's first pass begins (4 s of wall clock at 900x). Measured on
+#: 2026-10-12 (docs/finals/demo-walkthrough.md): the model raises its warning at ~70 % of the
+#: ramp, so with a 10 h ramp MTR-042 is green for about half a minute after the sign-off, then
+#: amber, then sustained red (the calibrated probability climbs 0.3 -> 0.5 in a few samples).
+DEMO_ONSET_AFTER_H: float = 1.0
 DEMO_ONSET: float = SEED_FRACTION_DEFAULT + DEMO_ONSET_AFTER_H / (30 * 24)
 
 #: asset_id -> (onset, failure) as fractions of the horizon. Degradation runs from onset to
@@ -130,7 +132,7 @@ FAULT_AMPLITUDE: dict[str, float] = {DEMO_ASSET: 1.0, "MTR-017": 0.6}
 #: hours (the same per-sensor signature as every other fault, amplitude 1.0) and then runs on
 #: the damaged bearing until the end of the timeline; nothing in the data ever repairs it. The
 #: ground truth reads: health = 1 - severity, failure_within_h = hours to the failure point.
-FAULT_RAMP_H: dict[str, float] = {DEMO_ASSET: 16.0}
+FAULT_RAMP_H: dict[str, float] = {DEMO_ASSET: 10.0}
 
 SENSOR_COLUMNS: tuple[str, ...] = (
     "vibration_rms",

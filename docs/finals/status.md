@@ -382,3 +382,55 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
   Screenshots taken at contract-pending and offline (scratchpad only).
 - The stack is left running after this flow (MTR-042 repaired, work order completed); run
   `.\scripts\demo_reset.ps1` before the real demo.
+
+# Phase A.1 — the hero demo, shown by hand (2026-10-12)
+
+## 2026-10-12 04:30 — backend milestone: re-timed faults, the latch, the replay gate, the sandbox
+
+- **Fault timing** (`data/simulator/generate.py`, commit `dc743dc`): MTR-017 → (0.50, 0.72),
+  MTR-021 → (0.40, 0.62), so six completed failures (003/009/013/017/021/023) sit inside the seeded
+  80 %; MTR-042 → onset `DEMO_ONSET` = 0.80 + 4 h/720 h, ramp `FAULT_RAMP_H` = 16 h to full
+  severity, then held until the end of the timeline (never repaired in the data). Why a ramp and
+  hold instead of the plain `progress ** 2`: with the quadratic alone the model's sustained
+  critical comes at ~70 % of the onset→failure span and the self-repair at 100 %, so at ANY replay
+  speed the motor heals itself in the data only ~0.4× the time-to-red after turning red — never
+  enough for analysis + Bolt + approval. The per-sensor signature and `FAULT_AMPLITUDE` are
+  unchanged (`check_hashes`: only MTR-017/021/042 rows differ; every healthy motor is
+  byte-identical). Layout rule still reproduces `PLANT_LAYOUT`; docstring table regenerated.
+- **One status rule** `apps/api/alarms.py`: `ALARM_RAISE_ROWS` = 3 (the validation lead-time rule),
+  critical latches until `clear_alarm("work_order_completed")`, `WARNING_CLEAR_ROWS` = 6 (twice
+  the on-delay: more evidence to clear than to raise, never chatters). Insert-only `alarm_events`
+  (`GET /alarms`), in-memory cursors rebuilt from the DB after a restart. `asset_status` precedence:
+  offline > no_prediction > no_data (stale) > critical > warning > healthy; `DataState.none` (the
+  stream has not started) never hides a prediction. Used by `/fleet` (new `status`, `alarm`,
+  `alarm_since`, `alarm_reason`, `sandbox`), `/assets/{id}`, `/twin`, the HUD and the rewind
+  markers (`critical_alarm` = first of 3 sustained ≥ 0.5; `lead_time_label` / `validated_lead_time_label`).
+- **Clean start:** compose `prep` moved to profile `prep` (edge and replay no longer wait for it);
+  `GET /replay` (`apps/api/replay_control.py`) reports `released` iff a production model exists,
+  `POST /replay/pause|resume`; the replay container (`ReplayGate`) holds pass 0 until released and
+  honours pause. `decide_promotion_db` now refreshes the edge (`POST /models/refresh`) and scores
+  the fleet after a successful deploy, so sign-off → green immediately. Reset scripts rewritten
+  (`-Prep` / `--prep` = fallback `docker compose run --rm prep`).
+- **Sandbox:** `apps/api/sandbox.py` + routes (`GET /sandbox`, `POST /sandbox/set|fault|random-fault|shake|reset`)
+  as insert-only `sandbox_events`; the replay's `SandboxApplier` rewrites its own rows (sliders with
+  the simulator's load relations, `bearing_fault_delta` = the same signature, ramp `(t/2.5 h)²`
+  then hold) and tags them `sandbox=True`; the edge flushes a motor's buffer when the tag flips so
+  no window mixes sandbox and plant rows; `predictions.sandbox`, `DecisionContract.sandbox_scenario`,
+  `WorkOrder.sandbox_scenario`, `AlarmEvent.sandbox`. Training (`_telemetry`), drift and the rewind
+  read `include_sandbox=False` / `sandbox IS FALSE`; a reset retires sandbox predictions
+  (`retired_prediction_max_id`) and clears sandbox-only alarms as sandbox alarm events; a sandbox
+  work order starting clears that motor's override.
+- **Tests:** `tests/test_alarms.py` (11: on-delay, latch, warning clear, status precedence, latch
+  cleared only by a completed work order, restart, start-up has no model/predictions and holds the
+  replay, release on production, sandbox rows excluded from training, sandbox contracts/work orders
+  labelled, reset clears sandbox-only alarms, shake/random fault skip offline motors);
+  `tests/test_twin.py` rewritten for the latch; `tests/test_simulator.py` for the new timing
+  (5-day test fleet; state-aware bearing-temperature check). Full `pytest`: 195 passed (65 s) before
+  the last two simulator fixes, which pass on their own; `ruff` clean.
+- **Line endings:** the patch scripts converted 21 files to CRLF; restored to LF in `12c8eb7`
+  (lesson: write with `newline="\n"`).
+- **Next:** measure the hero flow natively (broker 1884 / API 8010 / edge 8011 / replay 900×):
+  training time per trial count, sign-off → green, MTR-042 green → amber → red, red → analysis →
+  approval → green; record the new metrics in `metrics.md`, `model-card.md`, `prep-report.json`;
+  web (Fleet rename, nav, replay indicator, sandbox panel, state wording) and Bolt hero answers
+  are running as two sub-agents; then the walkthrough, Docker build, rehearsal, judge audit.

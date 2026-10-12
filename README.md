@@ -10,7 +10,9 @@ artifact designed to feed one, not become one.
 ## Run everything
 
     cp .env.example .env        # optionally add ANTHROPIC_API_KEY
-    docker compose up --build
+    docker compose up --build   # seeds the recorded history; no model yet, the replay holds
+    # then: AutoML Studio > Train new model, ModelOps > Approve promotion -> the history streams
+    # fallback (no training on stage): docker compose run --rm prep
 
 - Web UI:     http://localhost:5173
 - API docs:   http://localhost:8000/docs
@@ -42,5 +44,5 @@ tool loop (OpenAI or Anthropic) -- still only over numbers that Python computed.
     python -c "from apps.api.orchestrator import llm_ping; print(llm_ping())"      # one tiny call
 
 The API logs `LLM mode: llm|template` at startup, `GET /system/health` returns the same
-under `llm`, and the Dashboard's System panel shows it. Only `apps/api/orchestrator.py`
+under `llm`, and the Fleet page's System panel shows it. Only `apps/api/orchestrator.py`
 may read the key (enforced by `tests/test_orchestrator.py`).

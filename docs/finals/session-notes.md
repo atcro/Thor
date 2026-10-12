@@ -177,3 +177,65 @@ Prompt B (Bolt Designer) build on this. Keep these true.
   truthfully report "up" for the other stack.
 - The rewind bar lays its series on plant time; contract/approval wall-clock times are not on
   the axis (only early_warning, predicted_failure, work_order_started/completed are).
+
+# Phase A.1 notes (the hero demo shown by hand, 2026-10-12)
+
+## What changed underneath (keep these true)
+
+- **Fault timing is re-timed** (team-approved 2026-10-12; CLAUDE.md §9/§15). Six completed
+  failures inside the seeded 80 %; MTR-042 healthy until 4 plant hours after the seed point,
+  ramps over `FAULT_RAMP_H` = 16 h and then runs on the damaged bearing until the end of the
+  timeline. Nothing in the data repairs it: the engineer's work order is the only repair. The
+  ramp-and-hold exists because the quadratic-only progression cannot give both a quick red and a
+  usable margin (red at ~70 % of the span, self-repair at 100 %, at any speed). `bearing_fault_delta`
+  is the same per-sensor signature as a scalar function; the sandbox uses it.
+- **The split has four groups now** (`make_asset_split`: ≥ 5 completed failures → validation and
+  calibration are separate): 12 train / 3 validation / 3 calibration / 6 test, MTR-042 forced into
+  test. Metrics on the re-timed data are in `docs/finals/metrics.md`; never quote the 0.865 / 41.5 h /
+  0.844 numbers again.
+- **Status is one rule in the API** (`apps/api/alarms.py`): on-delay 3 rows (the same sustained
+  rule validation uses for lead time), critical LATCHED until a completed work order, warning clears
+  after 6 rows below 0.3. `FleetAsset.status/alarm/alarm_since/alarm_reason/sandbox` and the same on
+  `TwinAsset`; the browser never recomputes a status (the rewind scrub maps STORED points with
+  `statusForProbability`, that is all). The raw per-sample probabilities stay visible (Asset 360
+  chart, HUD sparkline). `GET /alarms` lists the insert-only transitions.
+  - Precedence: offline > no_prediction > no_data (stale) > critical > warning > healthy.
+    `DataState.none` (nothing received since the API started, e.g. the replay is held) does not
+    hide a prediction; only `stale` (messages stopped) does.
+  - The cursors are in memory and rebuilt from `alarm_events` after a restart (the rows after the
+    newest event are walked again, capped at 5,000 per motor).
+- **Nothing happens at start-up.** `docker compose up` seeds and holds: no model, no predictions,
+  `GET /replay.released = false`. The replay container (`streaming/replay/sandbox.py::ReplayGate`)
+  polls it every second and starts pass 0 only when a production model exists; `POST /replay/pause`
+  / `resume` are the only other controls (in-memory, an API restart resumes). The promotion sign-off
+  (`decide_promotion_db`) also POSTs `EDGE_URL/models/refresh` and scores the fleet once, so Fleet
+  turns green within seconds of the click and the edge scores the live stream from its first window.
+- **The `prep` compose service is a profile** (`docker compose run --rm prep`); a plain `up` never
+  trains or promotes. `DEMO_PREP_TRIALS` default 4.
+- **Sandbox** (`apps/api/sandbox.py`, `streaming/replay/sandbox.py`): insert-only `sandbox_events`
+  (set / fault / shake / reset / clear); the active override of a motor is derived from the events
+  after the newest reset; the replay rewrites its own rows and tags them `sandbox=True`; the edge
+  clears a motor's buffer when the tag flips so a prediction window is never mixed. Everything
+  downstream carries the tag (`predictions.sandbox`, `DecisionContract.sandbox_scenario`,
+  `WorkOrder.sandbox_scenario`, `AlarmEvent.sandbox`). Excluded: training (`orchestrator._telemetry`
+  → `read_telemetry(include_sandbox=False)`), drift, the rewind series and its lead time. "Reset
+  sandbox" writes `retired_prediction_max_id` so retired sandbox predictions leave the displayed
+  median, and clears sandbox-raised alarms with `reason="sandbox_reset"`. A sandbox work order
+  starting writes a per-asset `clear`. Sliders re-derive the load-dependent sensors with the
+  simulator's healthy relations (current, housing temperatures through the same lags, vibration
+  scaled between state levels); the temperature slider sets the bearing housing (lagged).
+- **Ground truth isolation** still holds: `sandbox` is an observable tag on the reading, not ground
+  truth; `tests/test_ground_truth_isolation.py` expects it on `latest`.
+- **Line endings:** `Path.write_text` on Windows writes CRLF. Patch scripts must open with
+  `newline="\n"`; `git ls-files --eol | grep w/crlf` shows offenders.
+
+## Native hero-flow stack (what was used to measure)
+
+- Broker: `C:\Program Files\mosquitto\mosquitto.exe -c <conf>` with `listener 1884`,
+  `allow_anonymous true` (the Windows service stays stopped; the Docker broker owns 1883).
+- API on 8010 (scratch `DATABASE_URL`/`MODELS_DIR`/`CHROMA_PATH`/`MLFLOW_TRACKING_URI`, keys " ",
+  `MQTT_BROKER_URL=mqtt://127.0.0.1:1884`, `EDGE_URL=http://127.0.0.1:8011`, `SEED_ON_START=1`);
+  edge on 8011 (`CONTROL_PLANE_URL=http://127.0.0.1:8010`, `EDGE_MODEL_POLL_S=3`); replay with
+  `REPLAY_SPEED=900`, `CONTROL_PLANE_URL=http://127.0.0.1:8010` (held by the gate).
+- Driver script: scratchpad `hero_measure.py` (train → sign-off → watch MTR-042 → analysis → Bolt
+  → approve → green; writes a JSON timeline). Timings are in `docs/finals/demo-walkthrough.md`.

@@ -41,7 +41,7 @@ and use its language verbatim whenever drafting submission text; don't invent ne
 | RAG / retrieval | Chroma (embedded) + sentence-transformers | Local embedding model — **no external embedding API**. Index built once at startup from `data/manuals/*.pdf`, persisted to a Docker volume |
 | Agent orchestration | LangGraph | One process, five agent node groups — not five services |
 | API | FastAPI + Pydantic | Single control-plane service |
-| Frontend | React + TypeScript | Six screens (§5); the 3-D Digital Twin uses three.js via React Three Fiber 8 + drei 9 (React 18 kept), procedural geometry only, no CDN assets |
+| Frontend | React + TypeScript | Six screens (§5): Fleet is the landing view, the 3-D Digital Twin (three.js via React Three Fiber 8 + drei 9, React 18 kept, procedural geometry only, no CDN assets) has its own route |
 | Streaming | Mosquitto (MQTT) + a replay script | Time-accelerated historical replay, not random live data |
 | Storage | PostgreSQL + TimescaleDB extension | Telemetry hypertable, assets, decision contracts, registry metadata |
 | MLOps | MLflow | Experiment tracking + registry, artifacts on a mounted Docker volume — **not MinIO** |
@@ -75,7 +75,7 @@ flowchart TD
     MQTT -.direct stream.-> EDGE
 ```
 
-**Thor vs. Bolt, in one breath.** *Thor* is the whole system above: seven Compose services (plus a one-shot `prep` job) and
+**Thor vs. Bolt, in one breath.** *Thor* is the whole system above: seven Compose services (plus the optional one-shot `prep` fallback job) and
 one governed pipeline — MQTT telemetry into a FastAPI control plane and TimescaleDB, a
 LangGraph orchestrator (the only Claude caller, and only to route and to phrase) driving five
 deterministic toolboxes (regime-aware profiling, Optuna over RF/XGBoost/LightGBM ranked by the
@@ -92,12 +92,15 @@ Full prose + IN/OUT for every function: see `docs/architecture.html`.
 ## 5. Repository layout
 
 Run `ls` for the tree. Non-obvious: `agents/*` are tool modules imported by `apps/api`'s LangGraph
-graph, not services; the six web screens are 3-D Digital Twin (`/`, the landing view), Dashboard
-(`/dashboard`, the isometric/pixel fleet view formerly named "Fleet"), Asset 360, AutoML Studio,
-ModelOps, Copilot. The twin's code lives in `apps/web/src/twin/` (palette, X-Ray HUD, rewind,
-`scene/` for three.js) and its API in `apps/api/routes/twin.py` (+ `apps/api/live.py`,
-`apps/api/plant.py`). The plant layout (five packaging lines plus a compressor hall) and the
-measured reasoning behind it live in `data/simulator/layout.py`.
+graph, not services; the six web screens are Fleet (`/`, the landing view: the isometric/pixel
+fleet), Asset 360, AutoML Studio, ModelOps, Copilot (Bolt) and the 3-D Digital Twin (`/twin`,
+listed under Bolt in the side menu). The twin's code lives in `apps/web/src/twin/` (palette,
+X-Ray HUD, rewind, sandbox panel, `scene/` for three.js) and its API in `apps/api/routes/twin.py`
+(+ `apps/api/live.py`, `apps/api/plant.py`, `apps/api/sandbox.py`). The ONE status rule (alarm
+on-delay, latch, clear) is `apps/api/alarms.py`; the replay gate is `apps/api/replay_control.py`.
+The plant layout (five packaging lines plus a compressor hall) and the measured reasoning behind
+it live in `data/simulator/layout.py`. Person-visible wording says **"state"** (operating state),
+never "regime"; identifiers, API fields, DB columns and feature names keep `regime`.
 
 ## 6. Agent build spec (condensed — full detail in the linked artifact)
 
@@ -149,16 +152,34 @@ a full Playwright e2e suite.
 
 ## 9. Data strategy
 
-1. **Primary demo data — synthetic.** A regime-based generator (24 motors, RPM/load/startup
-   regimes, injected drive-end bearing degradation on `MTR-042` as the live demo fault plus a
-   handful of completed historical failures the model learns from — see `FAULTY_ASSETS` in
+1. **Primary demo data — synthetic.** A state-based generator (24 motors, three operating
+   states on a shift schedule, injected drive-end bearing degradations — see `FAULTY_ASSETS` in
    `data/simulator/generate.py`) gives full control over the "cinematic" demo moment and stays
-   100% reproducible via MQTT replay. The API seeds the first 80% of the history; the replay
-   streams the rest, then keeps replaying the same story with timestamps shifted by one full
-   timeline per pass, so plant time never stops moving and a repair after approval is always
-   visible (rows with an existing `(asset_id, ts)` are ignored on insert). Only *completed*
-   failures produce training labels — an in-progress
-   degradation is treated as unknown future, never as a known outcome.
+   100% reproducible via MQTT replay. **Fault timing (re-timed 2026-10-12, team-approved):** six
+   completed failures (MTR-003/009/013/017/021/023) all lie inside the seeded 80 % of the history
+   and are what the model learns from; `MTR-042` is healthy for the whole seeded part, starts
+   degrading 4 plant hours after the seed point (`DEMO_ONSET`), ramps to full severity over
+   `FAULT_RAMP_H` (16 plant hours, the same per-sensor signature as every other fault) and then
+   runs on the damaged bearing until the end of the timeline — nothing in the data repairs it;
+   only the engineer's work order does. Only MTR-042 goes wrong live.
+   The API seeds the first 80% of the history. **Nothing streams at start-up:** the replay
+   container polls `GET /replay` and starts only once a production model exists, i.e. after a
+   named approver signs off a promotion in ModelOps (pause/resume exist as a recovery tool, no
+   other controls). It then streams the rest and keeps replaying the same story with timestamps
+   shifted by one full timeline per pass, so plant time never stops moving and a repair after
+   approval is always visible (rows with an existing `(asset_id, ts)` are ignored on insert).
+   Only *completed* failures produce training labels — an in-progress degradation is treated as
+   unknown future, never as a known outcome. **Status is one rule in the API**
+   (`apps/api/alarms.py`): three consecutive predictions ≥ 0.3 raise a warning, three ≥ 0.5
+   raise a critical that stays latched until a completed work order clears it, a warning clears
+   after six consecutive predictions below 0.3. Fleet, twin, HUD, rewind markers and Bolt all read
+   it; the raw per-sample probabilities stay visible.
+   **Sandbox (3-D twin):** sliders, "Troubleshoot <motor>", "Random fault", "Shake up operations"
+   and "Reset sandbox" are insert-only `sandbox_events`; the replay applies them to its own
+   stream (`streaming/replay/sandbox.py`), so sandbox readings take the real path replay → MQTT →
+   edge → control plane and are scored like plant data. Every such reading, prediction, alarm,
+   contract and work order carries a `sandbox` tag; training, validation, drift and the rewind's
+   lead time exclude tagged rows; "Reset sandbox" clears alarms sandbox readings alone raised.
    **After an approval, the plant acts, not Thor.** The replay doubles as a simulated CMMS
    (`streaming/replay/work_orders.py`): once plant time reaches the approved window it takes the
    motor offline for the contract's planned downtime (no rows) and then streams that motor's own
@@ -179,14 +200,15 @@ a full Playwright e2e suite.
 Create these exactly as the project is scaffolded — don't invent different entrypoints:
 
 ```bash
-docker compose up --build        # everything: api, prep (train+promote once), web, timescale, mqtt, mlflow, edge, replay
+docker compose up --build        # everything: api, web, timescale, mqtt, mlflow, edge, replay (seeded; no model; replay held)
+docker compose run --rm prep     # MANUAL FALLBACK (profile "prep"): train, validate, promote as demo-prep@thor, score
 uvicorn apps.api.main:app --reload   # api only, for fast iteration
-python -m scripts.demo_prep --api http://localhost:8000   # train, validate, promote (as demo-prep@thor), export, score the fleet
+python -m scripts.demo_prep --api http://localhost:8000   # the same fallback, natively (train, validate, promote, export, score)
 npm --prefix apps/web run dev    # frontend only
 pytest                            # all Python tests
 ruff check .                      # lint
 npm --prefix apps/web run build && npm --prefix apps/web run test  # frontend build + smoke tests
-scripts/demo_reset.sh   # (or .\scripts\demo_reset.ps1) wipe DB/model volumes, reseed 80%, run prep, replay the rest live
+scripts/demo_reset.sh   # (or .\scripts\demo_reset.ps1) wipe DB/model volumes, reseed 80%, hold the replay; --prep / -Prep runs the fallback
 python -m data.benchmark.ai4i_benchmark --n-trials 6 --seed 0   # AI4I credibility benchmark
 python -m data.simulator.layout                                 # print the measured duty table behind the plant layout
 python evals/bolt/run_bolt_eval.py --min-pass 0.95              # Bolt copilot eval (template mode)
@@ -266,14 +288,26 @@ Competing teams also build with Claude, so polish and a coherent story beat feat
 - **Phase A — 3-D Digital Twin + X-Ray.** Built 2026-10-11 (see `docs/finals/status.md` Phase A
   and `docs/finals/session-notes.md`; file map in §16). The plant has two views of the same live data,
   with exactly these names in the UI:
-  - **Dashboard:** the existing isometric/pixel fleet view (formerly "Fleet").
+  - **Fleet:** the existing isometric/pixel fleet view (the landing view again since Phase A.1;
+    it was called "Dashboard" during Phase A).
   - **3-D Digital Twin:** a 3D, low-poly, "corporate clean" modern factory showing five packaging
-    lines plus a compressor hall, driven by live API data.
+    lines plus a compressor hall, driven by live API data; its own route, listed under Bolt.
   - An X-Ray toggle works in both views: hover shows a status glyph and key facts, click opens a
     futuristic HUD panel.
   - The app keeps its existing color scheme. Only the 3-D Digital Twin scene and its HUD try a
     neon-yellow and electric-blue scheme, kept in one place so it can be swapped back. The team
     evaluates it.
+- **Phase A.1 — the hero demo, shown by hand** (`docs/finals/prompt-A1-hero-demo.md`, built
+  2026-10-12). Only the plant data is simulated; everything the judges see really runs:
+  1. open on Fleet, every motor grey ("no prediction yet"), no model exists; 2. AutoML Studio →
+  **Train new model** (about a minute, talked over); 3. ModelOps → approve the promotion with a
+  name — the fleet turns green ("within healthy baseline"), the edge loads the model and the
+  recorded history starts streaming by itself; 4. MTR-042 goes amber then red on its own and
+  stays red (latched); 5. Run analysis; 6. Bolt answers "What's happening with MTR-042?", "Give
+  me the details.", "What are the possible fixes?"; 7. approve the Decision Contract on Asset 360;
+  8. the motor goes offline and comes back green; 9. the 3-D Digital Twin (HUD, physical layout,
+  rewind with "this run" vs "validated" lead time side by side); 10. the twin's sandbox. Click
+  path, measured timings and recovery moves: `docs/finals/demo-walkthrough.md`.
 - **Phase B — Bolt Designer.** This is Bolt's design mode, with its own nav item, Bolt's chat on
   the left and a spec workbench on the right. It answers a judge's question ("could it be used to
   create a motor?").
@@ -304,17 +338,19 @@ Competing teams also build with Claude, so polish and a coherent story beat feat
 **Finals-specific constraints:**
 - Plant layout: the 24 existing motors are regrouped as Packaging Lines 1–5 (4 motors each) plus a
   Compressor Hall (4 motors). Only asset metadata (name, line) changes — never the telemetry
-  generator's signals or `FAULTY_ASSETS` timing; MTR-042 stays the hero fault.
+  generator's signals. `FAULTY_ASSETS` timing WAS re-timed on 2026-10-12 with the team's approval
+  (§9: historical failures inside the seeded 80 %, MTR-042 healthy until after the seed point);
+  the fault signature itself is unchanged and MTR-042 stays the hero fault, the Line 3 filler.
 - Molding and Batching appear only as greyed-out site tabs (scalability story), not built.
 - Cut for time: Streamline swim-lane/container drill-down, Plant Personas, real external plant data.
 - 3D must hold ≥45 fps on Iris Xe at 1080p, work fully offline (no CDN assets, all geometry
-  procedural or bundled), and fall back to the Dashboard view if WebGL is unavailable.
+  procedural or bundled), and fall back to the Fleet view if WebGL is unavailable.
 - **The 3-D Digital Twin is data-first.**
   - It has no buildings, vehicles, people or decorative motion; everything that moves is driven
     by data.
   - It shows motors and their machines, the live message path motor → edge → control plane with
-    measured rate and latency, regime rings, decision-state badges, model provenance, and a
-    rewind of stored predictions that makes warning lead time visible.
+    measured rate and latency, state rings, decision badges, model provenance, and a rewind of
+    stored predictions that shows this run's lead time next to the validated figure.
   - The test: an ABB engineer can point at any pixel and we can trace it to its source.
 - Every number in the 3D view, the HUD and Bolt Designer comes from the API (deterministic Python).
 - Plant-data integration panels show the kind of data a plant already captures:
@@ -322,13 +358,18 @@ Competing teams also build with Claude, so polish and a coherent story beat feat
     telemetry source are marked "simulated".
   - MES context (SKU, container, quantity, UOM) is a deterministic "simulated MES feed". It is
     context only and never feeds a model, score or decision.
-- Status encoding: healthy = green circle, warning = amber triangle, critical = red stop-octagon.
-  Brand yellow is never used to mean "warning".
+- Status encoding: healthy = green circle ("within healthy baseline"), warning = amber triangle,
+  critical = red stop-octagon. Brand yellow is never used to mean "warning". Status comes from the
+  API's latched alarm (`apps/api/alarms.py`), never from a browser-side threshold.
+- Wording: a person reads or hears **"state"** ("State: heavy load", "the motor changed state",
+  "state ring"), never "regime"; decision / data / alarm are labelled "Decision", "Data", "Status".
 - The demo must run end to end in LLM template mode (venue Wi-Fi may drop).
 - Simulator ground truth (`health`, `failure_within_h`) is for training labels and evaluation only.
   It never reaches live MQTT, fleet or asset responses, Bolt, Decision Contracts or the edge.
-- The live demo shows inference, a Decision Contract and approval with a model prepared beforehand
-  by the demo-prep script. It never waits on training.
+- The live demo trains on stage (AutoML Studio, about a minute, talked over) and signs the model
+  off in ModelOps; the inference, the Decision Contract and the approval follow on the model just
+  trained. `scripts/demo_prep.py` (`docker compose run --rm prep`) is the fallback if training
+  fails on stage.
 - Cut for time (from the external review): 120-motor scale, risk events and priority scoring,
   Decision Contract V2, maintenance outcomes, RAG metadata, Bolt tool expansion. They're roadmap
   material for the slides.
@@ -342,7 +383,7 @@ Facts that save exploration. Re-verify anything that looks wrong rather than tru
   `$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')`.
 - **Python:** the repo's `.venv` has every dependency, including dev extras, already installed.
   - Use `.\.venv\Scripts\python.exe -m pytest` and `.\.venv\Scripts\python.exe -m ruff check .`.
-    The full suite has 180 tests; collecting them takes about 12 s.
+    The full suite has about 205 tests and takes about 70 s; collecting them takes about 12 s.
   - Set `MLFLOW_DISABLE_AGENT_HINT=1` to silence an MLflow banner.
 - **Web:** `npm --prefix apps/web run build` / `run test`. Its `node_modules` is already installed.
 - **Native end-to-end run** (preferred for checks):
@@ -352,10 +393,14 @@ Facts that save exploration. Re-verify anything that looks wrong rather than tru
   - Keys: `.env` holds real provider keys, and PowerShell's `$env:X = ""` deletes a variable
     instead of blanking it, so the API will go to LLM mode. Set `$env:ANTHROPIC_API_KEY = " "`
     and `$env:OPENAI_API_KEY = " "` (a space) to force template mode for a native check.
-  - Prep: `python -m scripts.demo_prep --api http://127.0.0.1:8010 --report docs/finals/prep-report.json`
-    (about 60 s with 6 trials). The 2026-10-11 run is committed as `docs/finals/prep-report.json`.
+  - Prep (fallback / metrics record): `python -m scripts.demo_prep --api http://127.0.0.1:8010
+    --report docs/finals/prep-report.json`. The committed `docs/finals/prep-report.json` is the
+    2026-10-12 run on the re-timed data (six completed failures).
   - Replay: `python -m streaming.replay.replay`. It uses MQTT if a broker is up, otherwise it POSTs
-    to `/ingest`.
+    to `/ingest`; it HOLDS until `GET /replay` reports a production model (`--no-gate` /
+    `REPLAY_GATE=0` streams at once). A native broker for a second stack: run
+    `C:\Program Files\mosquitto\mosquitto.exe -c <conf with "listener 1884">` directly (the
+    Windows service stays stopped) and point `MQTT_BROKER_URL` at 1884.
   - Stop both when done.
   - The Docker stack must be down first, or port 8000 clashes.
 - **Docker:** Docker Desktop runs on WSL2. Code is baked into the images (no source mounts), so
@@ -403,4 +448,18 @@ Facts that save exploration. Re-verify anything that looks wrong rather than tru
   | Twin screen, live hook, palette (one-line theme switch `TWIN_THEME`) | `apps/web/src/screens/Twin.tsx`, `apps/web/src/twin/{useTwinLive.ts,palette.ts,status.ts,sceneTypes.ts,twin.css}` |
   | 3-D scene (three.js / R3F) | `apps/web/src/twin/scene/` |
   | X-Ray HUD, tooltip, toggle, rewind scrubber | `apps/web/src/twin/{XRayHud,XRayTooltip,XRayToggle,RewindBar,TwinThemeRoot}.tsx`, `useXRay.ts`, `xray.css` |
-  | Dashboard (formerly Fleet) | `apps/web/src/screens/Dashboard.tsx` |
+  | Fleet (the landing view; "Dashboard" during Phase A) | `apps/web/src/screens/Fleet.tsx` |
+
+- **Where Phase A.1's code lives (hero demo, latch, replay gate, sandbox):**
+
+  | Area | Files |
+  | --- | --- |
+  | Fault timing (`FAULTY_ASSETS`, `DEMO_ONSET`, `FAULT_RAMP_H`, `bearing_fault_delta`) | `data/simulator/generate.py` |
+  | The one status rule: on-delay, latch, warning clear, `asset_status` | `apps/api/alarms.py`, `GET /alarms` in `routes/fleet.py` |
+  | Replay gate and pause/resume | `apps/api/replay_control.py`, `apps/api/routes/replay.py`, `streaming/replay/sandbox.py::ReplayGate` |
+  | Sign-off consequences (edge refresh + fleet scoring) | `apps/api/routes/approvals.py::decide_promotion_db` |
+  | Sandbox API and replay-side applier | `apps/api/sandbox.py`, `apps/api/routes/sandbox.py`, `streaming/replay/sandbox.py::SandboxApplier` |
+  | Sandbox tags (telemetry, predictions, contracts, work orders) | `apps/api/schemas.py`, `apps/api/db.py`, `apps/api/scoring.py`, `edge/main.py` |
+  | Replay indicator, Fleet rename, nav, sandbox panel, state wording | `apps/web/src/components/Layout.tsx`, `apps/web/src/screens/Fleet.tsx`, `apps/web/src/twin/SandboxPanel.tsx` |
+  | Compose profile `prep`, reset scripts | `infra/docker-compose.yml`, `scripts/demo_reset.ps1`, `scripts/demo_reset.sh` |
+  | Tests | `tests/test_alarms.py`, `tests/test_twin.py`, `tests/test_simulator.py` |

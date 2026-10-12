@@ -47,6 +47,24 @@ logging.basicConfig(level=os.getenv("EDGE_LOG_LEVEL", "INFO"))
 
 TELEMETRY_TOPIC = "telemetry/#"
 PREDICTION_TOPIC_FMT = "predictions/{asset_id}"
+#: A gap between consecutive rows of one motor longer than this many sampling steps (the step
+#: is measured from the buffer itself) means the motor was off: the rolling window restarts, so a
+#: repaired motor's first predictions never mix pre-outage rows with its healthy return.
+GAP_STEPS: float = float(os.getenv("EDGE_GAP_STEPS", "2.5"))
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    """ISO-8601 (with or without 'Z') -> aware UTC datetime; None when unparsable."""
+    if value is None:
+        return None
+    try:
+        text = str(value).strip()
+        if text.endswith(("Z", "z")):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
 def parse_broker_url(url: str) -> tuple[str, int]:
@@ -127,6 +145,7 @@ class EdgeState:
             return None
         row["ts"] = payload.get("ts")
         row["sandbox"] = bool(payload.get("sandbox", False))
+        row["_dt"] = _parse_ts(row["ts"])
         # No regime label is read from the payload: the regime is inferred from rpm / load
         # inside edge.features, exactly as in training.
         with self.lock:
@@ -137,6 +156,9 @@ class EdgeState:
             if buf and bool(buf[-1].get("sandbox", False)) != row["sandbox"]:
                 # Sandbox readings start or stop: never score a window that mixes sandbox
                 # and recorded rows, so every prediction's sandbox flag is exact.
+                buf.clear()
+            if buf and self._gap(buf, row["_dt"]):
+                # The motor was off (an approved work order): its window restarts.
                 buf.clear()
             buf.append(row)
             self.n_rows += 1
@@ -170,6 +192,20 @@ class EdgeState:
             self.n_predictions += 1
             self.last_prediction[asset_id] = pred
         return pred
+
+    @staticmethod
+    def _gap(buf: deque[dict[str, Any]], dt: datetime | None) -> bool:
+        """True when `dt` is more than GAP_STEPS sampling steps after the buffer's last row."""
+        last = buf[-1].get("_dt")
+        if dt is None or last is None:
+            return False
+        if len(buf) >= 2 and buf[-2].get("_dt") is not None:
+            step = (last - buf[-2]["_dt"]).total_seconds()
+        else:
+            step = 600.0
+        if step <= 0:
+            step = 600.0
+        return (dt - last).total_seconds() > GAP_STEPS * step
 
     def emit(self, pred: dict[str, Any]) -> None:
         """Publish a prediction to MQTT (if connected) and queue the control-plane POST."""
