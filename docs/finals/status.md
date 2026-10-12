@@ -362,3 +362,23 @@ substance (model card, AutoML Studio view, AI4I rerun, Bolt eval case).
   Before the sustained rise one idle-shift window dipped the median back to 0.12 for about a
   minute of wall clock; the decision contract path (Run analysis → approval → work order) was
   not exercised here, the team rehearses it per `demo-walkthrough.md`.
+
+## 2026-10-12 02:30 — approval flow on MTR-042, live Docker stack (reset, v71489)
+
+- Status trace from `/twin` after prep (900×, plant time): the first ~3 min of wall clock flap
+  healthy ↔ warning ↔ critical as regimes change (08-26 05:30 critical p 1.0 → 07:00 healthy
+  0.0 → … → 08-28 02:50 critical 0.94), then **sustained critical from 08-28 02:50 on**
+  (p 0.99 in R3). Start the story once the motor has been red for a minute (about 3.5 min after
+  prep finishes), not at the first red flash. This is the production model's regime behaviour
+  (Phase 0 calibration + median-of-3 rule), unchanged by Phase A.
+- Run analysis (mode analyze, model v71489): awaiting_approval in 18 s, `maintain_now`, p 0.996,
+  window 08-28 20:50–23:50, drivers temp_delta / vib_kurt_mean / vib_crest_mean; twin badge
+  `contract_pending`; HUD drivers cite the contract id.
+- Approval as engineer@plant via `POST /approvals/{id}/decision`: registry unchanged
+  (production still v71489, no promotion); twin went `offline · work order` /
+  `work_order_in_progress` within 2 s, then healthy p 0.0 with `work_order_completed` at 17 s.
+  `/twin/rewind` for MTR-042: early_warning 08-26 05:10, work_order_started 08-29 04:50,
+  completed 07:50, lead_time_h 71.7 ("early warning → plant took the motor offline").
+  Screenshots taken at contract-pending and offline (scratchpad only).
+- The stack is left running after this flow (MTR-042 repaired, work order completed); run
+  `.\scripts\demo_reset.ps1` before the real demo.
