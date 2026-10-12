@@ -859,7 +859,8 @@ class SandboxEvent(BaseModel):
     """Insert-only record of every sandbox action (set / fault / shake / reset)."""
 
     event_id: str
-    kind: Literal["set", "fault", "shake", "reset"]
+    #: `clear` drops one motor's override (written when its sandbox work order starts).
+    kind: Literal["set", "fault", "shake", "reset", "clear"]
     asset_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     recorded_at: datetime

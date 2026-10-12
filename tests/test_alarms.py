@@ -249,6 +249,13 @@ def test_sandbox_contracts_and_work_orders_are_labelled(client: TestClient) -> N
     assert wo["sandbox_scenario"] is True
     hud = client.get("/twin/hud/MTR-042").json()
     assert hud["contract"]["sandbox_scenario"] is True
+    # the plant starting the sandbox work order ends that motor's override (and only that one)
+    client.post("/sandbox/fault", json={"asset_id": "MTR-042"})
+    client.post("/sandbox/fault", json={"asset_id": "MTR-001"})
+    ev = {"status": "in_progress", "plant_ts": (NOW + timedelta(hours=1)).isoformat()}
+    assert client.post(f"/work-orders/{dc.contract_id}/events", json=ev).status_code == 200
+    assert [o["asset_id"] for o in client.get("/sandbox").json()["overrides"]] == ["MTR-001"]
+    assert client.get("/sandbox").json()["events"][-1]["kind"] == "clear"
     # a plain contract is not labelled
     dc2 = create_decision_contract(make_bundle("MTR-002"), "run_p", "t", "template", engine=engine)
     assert dc2.sandbox_scenario is False

@@ -164,7 +164,7 @@ function ParityBox({ parity }: { parity: ParityReport }) {
 
 function TrainForm({ onStarted }: { onStarted: (runId: string) => void }) {
   const [assetId, setAssetId] = useState("MTR-042");
-  const [trials, setTrials] = useState(6);
+  const [trials, setTrials] = useState(4); // measured: 4 trials per family pass the gate in ~2.5 min on the demo laptop
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const start = async () => {

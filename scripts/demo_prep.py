@@ -1,6 +1,6 @@
 """One-command demo preparation, through the control plane's own governed API.
 
-    python -m scripts.demo_prep [--api http://localhost:8000] [--asset MTR-042] [--n-trials 6]
+    python -m scripts.demo_prep [--api http://localhost:8000] [--asset MTR-042] [--n-trials 4]
                                 [--report docs/finals/prep-report.json] [--force] [--timeout 900]
 
 What it does, in order, against a RUNNING control plane (the api seeds the first 80 % of the
@@ -120,7 +120,7 @@ def main() -> int:
     ap.add_argument(
         "--n-trials",
         type=int,
-        default=int(os.environ.get("DEMO_PREP_TRIALS", "6")),
+        default=int(os.environ.get("DEMO_PREP_TRIALS", "4")),
         help="Optuna trials per model family (env DEMO_PREP_TRIALS)",
     )
     ap.add_argument("--report", default="docs/finals/prep-report.json")

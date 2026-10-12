@@ -112,7 +112,7 @@ def active_overrides(engine: Engine | None = None) -> list[SandboxOverride]:
     cut = max((i for i, ev in enumerate(events) if ev.kind == "reset"), default=-1)
     state: dict[str, dict[str, Any]] = {}
     for ev in events[cut + 1 :]:
-        if ev.kind == "clear" and ev.asset_id:  # type: ignore[comparison-overlap]
+        if ev.kind == "clear" and ev.asset_id:
             state.pop(ev.asset_id, None)
             continue
         targets: list[tuple[str, dict[str, Any]]]
