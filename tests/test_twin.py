@@ -355,7 +355,7 @@ def test_trend_rule_and_plc_setpoint_units() -> None:
     tags = {t.tag: t for t in plant.plc_tags(latest, "R2", baseline)}
     assert tags["Speed_SP"].value == 1480.0 and tags["Speed_SP"].simulated
     assert tags["Speed_SP"].basis == (
-        "simulated: centroid rpm of inferred regime R2 (production baseline)"
+        "simulated: centroid rpm of the inferred operating state R2 (production baseline)"
     )
     assert tags["Speed_Act"].value == 1470.0 and tags["Speed_Act"].source == "rpm"
     assert tags["Run_Bit"].value is True
